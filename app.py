@@ -10,7 +10,7 @@ st.set_page_config(
 )
 
 from engine import Profil, berechne_rente
-from tabs import dashboard, simulation, auszahlung, steuern
+from tabs import dashboard, simulation, auszahlung, steuern, vorsorge
 
 
 def _sidebar() -> Profil:
@@ -110,15 +110,18 @@ def _sidebar() -> Profil:
 profil = _sidebar()
 ergebnis = berechne_rente(profil)
 
-tabs = st.tabs(["📊 Dashboard", "🔮 Simulation", "💰 Kapital vs. Rente", "🧾 Steuern & KV"])
+tabs = st.tabs(["📊 Dashboard", "🔮 Simulation", "🏦 Vorsorge-Bausteine",
+                "💰 Kapital vs. Rente", "🧾 Steuern & KV"])
 T = {
     "Dashboard":  tabs[0],
     "Simulation": tabs[1],
-    "Auszahlung": tabs[2],
-    "Steuern":    tabs[3],
+    "Vorsorge":   tabs[2],
+    "Auszahlung": tabs[3],
+    "Steuern":    tabs[4],
 }
 
 dashboard.render(T, profil, ergebnis)
 simulation.render(T, profil, ergebnis)
+vorsorge.render(T, profil, ergebnis)
 auszahlung.render(T, profil, ergebnis)
 steuern.render(T, profil, ergebnis)

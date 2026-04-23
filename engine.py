@@ -6,6 +6,7 @@ Keine Haftung für steuerliche oder rechtliche Entscheidungen.
 
 from __future__ import annotations
 from dataclasses import dataclass, replace
+import numpy as np
 
 # ── Konstanten ────────────────────────────────────────────────────────────────
 RENTENWERT_2024 = 39.32        # €/Punkt West, Stand 01.07.2024
@@ -166,6 +167,92 @@ def simuliere_szenarien(p: Profil) -> dict[str, RentenErgebnis]:
         "Neutral":       berechne_rente(replace(p, rentenanpassung_pa=p.rentenanpassung_pa,
                                                     rendite_pa=p.rendite_pa)),
         "Optimistisch":  berechne_rente(replace(p, rentenanpassung_pa=0.03, rendite_pa=0.07)),
+    }
+
+
+# ── Vorsorge-Bausteine ────────────────────────────────────────────────────────
+
+@dataclass
+class VorsorgeProdukt:
+    id: str
+    typ: str            # "bAV" | "PrivateRente" | "Riester" | "LV"
+    name: str
+    kapital: float      # Kapitalwert bei Renteneintritt (Einmalauszahlung)
+    monatsrente: float  # Monatliche Rente laut Versicherungsangebot (0 = unbekannt)
+    laufzeit_jahre: int # 0 = lebenslang (= Horizont), sonst befristete Laufzeit
+
+    @property
+    def ist_lebensversicherung(self) -> bool:
+        return self.typ == "LV"
+
+
+def _annuitaet(kapital: float, rendite_pa: float, jahre: int) -> float:
+    """Monatliche Entnahme-Annuität: Kapital wird über `jahre` aufgebraucht."""
+    if jahre <= 0 or kapital <= 0:
+        return 0.0
+    r_m = rendite_pa / 12
+    n = jahre * 12
+    if r_m > 0:
+        return kapital * r_m / (1 - (1 + r_m) ** (-n))
+    return kapital / n
+
+
+def vergleiche_produkt(
+    produkt: VorsorgeProdukt,
+    rendite_pa: float,
+    horizon_jahre: int,
+) -> dict:
+    """
+    Vergleicht Einmal / Monatlich / Kombiniert für ein Produkt.
+
+    Rückgabe je Szenario: {'monatlich': float, 'total': float}
+    Zusätzlich: 'bestes' (Schlüssel des besten Szenarios),
+                'kombiniert_anteil' (optimaler Kapitalanteil 0–1).
+    """
+    H = horizon_jahre
+    K = produkt.kapital
+    M = produkt.monatsrente if produkt.monatsrente > 0 else _annuitaet(K, rendite_pa, H)
+    lz = produkt.laufzeit_jahre if produkt.laufzeit_jahre > 0 else H
+    effective_lz = min(lz, H)
+
+    # Einmalauszahlung: K investieren, als Annuität über H Jahre entnehmen
+    m_einmal = _annuitaet(K, rendite_pa, H)
+    t_einmal = m_einmal * 12 * H
+
+    # Monatliche Rente (Versicherer / eigene Berechnung)
+    t_monatlich = M * 12 * effective_lz
+    m_monatlich = M
+
+    # Kombiniert: optimalen Kapitalanteil x suchen
+    if not produkt.ist_lebensversicherung and produkt.monatsrente > 0:
+        xs = np.linspace(0.0, 1.0, 101)
+        totale = [
+            _annuitaet(K * x, rendite_pa, H) * 12 * H
+            + M * (1 - x) * 12 * effective_lz
+            for x in xs
+        ]
+        best_idx = int(np.argmax(totale))
+        best_x = float(xs[best_idx])
+        t_komb = float(totale[best_idx])
+        m_komb = _annuitaet(K * best_x, rendite_pa, H) + M * (1 - best_x)
+    else:
+        best_x = 1.0
+        t_komb = t_einmal
+        m_komb = m_einmal
+
+    if produkt.ist_lebensversicherung or produkt.monatsrente <= 0:
+        bestes = "einmal"
+    else:
+        bestes = max(
+            {"einmal": t_einmal, "monatlich": t_monatlich, "kombiniert": t_komb},
+            key=lambda k: {"einmal": t_einmal, "monatlich": t_monatlich, "kombiniert": t_komb}[k],
+        )
+
+    return {
+        "einmal":     {"monatlich": m_einmal,    "total": t_einmal},
+        "monatlich":  {"monatlich": m_monatlich, "total": t_monatlich},
+        "kombiniert": {"monatlich": m_komb,      "total": t_komb, "anteil": best_x},
+        "bestes": bestes,
     }
 
 
