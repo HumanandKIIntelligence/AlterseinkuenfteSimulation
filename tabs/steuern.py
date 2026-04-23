@@ -10,10 +10,12 @@ from engine import (
     Profil,
     RentenErgebnis,
     besteuerungsanteil,
+    einkommensteuer,
 )
 
 
-def render(T: dict, profil: Profil, ergebnis: RentenErgebnis) -> None:
+def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
+           mieteinnahmen: float = 0.0) -> None:
     with T["Steuern"]:
         st.header("🧾 Steuern & Krankenversicherung")
 
@@ -21,46 +23,54 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis) -> None:
         st.subheader("Einkommensteuer auf die Rente")
 
         jahresbrutto = ergebnis.brutto_monatlich * 12
+        miet_jahres = mieteinnahmen * 12
         besteuerter_anteil = jahresbrutto * ergebnis.besteuerungsanteil
         abzuege = WERBUNGSKOSTEN_PAUSCHBETRAG + SONDERAUSGABEN_PAUSCHBETRAG
-        unterhalb_freibetrag = max(0.0, besteuerter_anteil - GRUNDFREIBETRAG_2024 - abzuege)
+        zvE_gesamt = max(0.0, besteuerter_anteil + miet_jahres - abzuege)
+        jahressteuer_gesamt = einkommensteuer(zvE_gesamt)
 
         col1, col2 = st.columns([1, 1])
 
         with col1:
             st.markdown("**Berechnung Schritt für Schritt:**")
-            rows = {
+            rows: dict = {
                 "Jahresbruttorente":                    f"{jahresbrutto:,.0f} €",
                 f"× Besteuerungsanteil ({ergebnis.besteuerungsanteil:.1%})":
                                                         f"{besteuerter_anteil:,.0f} €",
+            }
+            if miet_jahres > 0:
+                rows[f"+ Mieteinnahmen (§ 21 EStG)"] = f"+{miet_jahres:,.0f} €"
+            rows.update({
                 "− Werbungskosten-Pauschbetrag":        f"−{WERBUNGSKOSTEN_PAUSCHBETRAG} €",
                 "− Sonderausgaben-Pauschbetrag":        f"−{SONDERAUSGABEN_PAUSCHBETRAG} €",
                 "− Grundfreibetrag":                    f"−{GRUNDFREIBETRAG_2024:,} €",
-                "**= Zu versteuerndes Einkommen**":     f"**{ergebnis.zvE_jahres:,.0f} €**",
-                "**Jahressteuer**":                     f"**{ergebnis.jahressteuer:,.0f} €**",
-                "**Steuer / Monat**":                   f"**{ergebnis.steuer_monatlich:,.0f} €**",
-                "**Effektiver Steuersatz**":            f"**{ergebnis.effektiver_steuersatz:.1%}**",
-            }
+                "**= Zu versteuerndes Einkommen**":     f"**{zvE_gesamt:,.0f} €**",
+                "**Jahressteuer**":                     f"**{jahressteuer_gesamt:,.0f} €**",
+                "**Steuer / Monat**":                   f"**{jahressteuer_gesamt / 12:,.0f} €**",
+                "**Effektiver Steuersatz**":
+                    f"**{jahressteuer_gesamt / (jahresbrutto + miet_jahres):.1%}**"
+                    if (jahresbrutto + miet_jahres) > 0 else "**0,0 %**",
+            })
             for label, value in rows.items():
                 c_l, c_r = st.columns([2, 1])
                 c_l.markdown(label)
                 c_r.markdown(value)
 
         with col2:
+            x_labels = ["Jahresbrutto\n(Rente)", "Besteuerter\nAnteil"]
+            y_vals = [jahresbrutto, besteuerter_anteil]
+            colors = ["#90CAF9", "#FFF176"]
+            if miet_jahres > 0:
+                x_labels.append("Mieteinnahmen")
+                y_vals.append(miet_jahres)
+                colors.append("#FFCC80")
+            x_labels += ["Steuerlast", "Netto (Jahr)"]
+            y_vals += [jahressteuer_gesamt, (jahresbrutto + miet_jahres) - jahressteuer_gesamt - ergebnis.kv_monatlich * 12]
+            colors += ["#EF9A9A", "#A5D6A7"]
             fig_st = go.Figure(go.Bar(
-                x=["Jahresbrutto", "Besteuerter\nAnteil", "Steuerlast", "Netto (Jahr)"],
-                y=[
-                    jahresbrutto,
-                    besteuerter_anteil,
-                    ergebnis.jahressteuer,
-                    ergebnis.netto_monatlich * 12,
-                ],
-                marker_color=["#90CAF9", "#FFF176", "#EF9A9A", "#A5D6A7"],
-                text=[
-                    f"{v:,.0f} €"
-                    for v in [jahresbrutto, besteuerter_anteil,
-                               ergebnis.jahressteuer, ergebnis.netto_monatlich * 12]
-                ],
+                x=x_labels, y=y_vals,
+                marker_color=colors,
+                text=[f"{v:,.0f} €" for v in y_vals],
                 textposition="outside",
             ))
             fig_st.update_layout(

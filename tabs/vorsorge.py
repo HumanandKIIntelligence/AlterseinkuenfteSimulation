@@ -60,7 +60,8 @@ def _aus_dict(d: dict) -> VorsorgeProdukt:
     )
 
 
-def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None) -> None:
+def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
+           mieteinnahmen: float = 0.0, mietsteigerung: float = 0.0) -> None:
     _init_state()
     st.session_state.vp_produkte = [_migriere(p) for p in st.session_state.vp_produkte]
 
@@ -206,15 +207,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None) -> N
 
         # ── Steueroptimierung ─────────────────────────────────────────────────
         st.subheader("🔍 Steueroptimierung – beste Kombination")
+        miete_hinweis = (
+            f" Mieteinnahmen ({mieteinnahmen:,.0f} €/Mon., +{mietsteigerung:.1%} p.a.) "
+            "erhöhen die Steuerprogression und beeinflussen die optimale Auszahlungsstrategie."
+        ) if mieteinnahmen > 0 else ""
         st.caption(
             "Das System berechnet alle Kombinationen aus Startjahr und Auszahlungsart "
             "für jeden Vertrag und sucht die Kombination mit dem höchsten Netto-Gesamteinkommen "
-            f"über {horizon} Jahre (Steuer + KV berücksichtigt, Jahr für Jahr)."
+            f"über {horizon} Jahre (Steuer + KV berücksichtigt, Jahr für Jahr).{miete_hinweis}"
         )
 
         produkte_obj = [_aus_dict(p) for p in produkte_dicts]
         with st.spinner("Optimierung läuft …"):
-            opt = optimiere_auszahlungen(profil, ergebnis, produkte_obj, horizon)
+            opt = optimiere_auszahlungen(profil, ergebnis, produkte_obj, horizon,
+                                         mieteinnahmen, mietsteigerung)
 
         if not opt:
             st.info("Keine Produkte für Optimierung vorhanden.")

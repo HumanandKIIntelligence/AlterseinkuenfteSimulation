@@ -184,23 +184,40 @@ def einkommensteuer_splitting(zvE_gesamt: float) -> float:
 def berechne_haushalt(
     erg1: RentenErgebnis,
     erg2: "RentenErgebnis | None",
-    veranlagung: str,  # "Zusammen" | "Getrennt"
+    veranlagung: str,           # "Zusammen" | "Getrennt"
+    mieteinnahmen_monatlich: float = 0.0,
 ) -> dict:
-    """Haushalts-Nettoeinkommen mit optionalem Splitting."""
+    """Haushalts-Nettoeinkommen mit optionalem Splitting und Mieteinnahmen.
+
+    Mieteinnahmen (§ 21 EStG): voll steuerpflichtig, keine KV-Pflicht.
+    Bei Getrennte Veranlagung werden die Mieteinnahmen 50/50 aufgeteilt.
+    """
+    miet_jahres = mieteinnahmen_monatlich * 12
+
     if erg2 is None:
+        brutto = erg1.brutto_monatlich + mieteinnahmen_monatlich
+        kv = erg1.kv_monatlich
+        zvE = erg1.zvE_jahres + miet_jahres
+        steuer = einkommensteuer(zvE) / 12
         return {
-            "netto_gesamt": erg1.netto_monatlich,
-            "steuer_gesamt": erg1.steuer_monatlich,
-            "kv_gesamt": erg1.kv_monatlich,
-            "brutto_gesamt": erg1.brutto_monatlich,
+            "netto_gesamt": brutto - steuer - kv,
+            "steuer_gesamt": steuer,
+            "kv_gesamt": kv,
+            "brutto_gesamt": brutto,
             "steuerersparnis_splitting": 0.0,
         }
-    brutto = erg1.brutto_monatlich + erg2.brutto_monatlich
+
+    brutto = erg1.brutto_monatlich + erg2.brutto_monatlich + mieteinnahmen_monatlich
     kv = erg1.kv_monatlich + erg2.kv_monatlich
-    steuer_getrennt = erg1.steuer_monatlich + erg2.steuer_monatlich
+
+    # Getrennte Veranlagung: Mieteinnahmen 50/50 aufgeteilt
+    steuer_getrennt = (
+        einkommensteuer(erg1.zvE_jahres + miet_jahres / 2)
+        + einkommensteuer(erg2.zvE_jahres + miet_jahres / 2)
+    ) / 12
 
     if veranlagung == "Zusammen":
-        zvE_gesamt = erg1.zvE_jahres + erg2.zvE_jahres
+        zvE_gesamt = erg1.zvE_jahres + erg2.zvE_jahres + miet_jahres
         steuer_zusammen = einkommensteuer_splitting(zvE_gesamt) / 12
         ersparnis = max(0.0, steuer_getrennt - steuer_zusammen)
         steuer = steuer_zusammen
@@ -306,6 +323,8 @@ def _netto_ueber_horizont(
     ergebnis: RentenErgebnis,
     entscheidungen: list,   # [(VorsorgeProdukt, startjahr: int, einmal_anteil: float)]
     horizont_jahre: int,
+    mieteinnahmen_monatlich: float = 0.0,
+    mietsteigerung_pa: float = 0.0,
 ) -> tuple[float, list[dict]]:
     """
     Simuliert das Netto-Einkommen Jahr für Jahr über `horizont_jahre` ab Renteneintritt.
@@ -330,6 +349,7 @@ def _netto_ueber_horizont(
         jahr = profil.eintritt_jahr + y
 
         gesetzl_jahres = gesetzl_mono * 12
+        miet_jahres = mieteinnahmen_monatlich * 12 * (1 + mietsteigerung_pa) ** y
         bav_mono_jahres = zusatz_bav_mono * 12      # laufende bAV-Rente (KVdR-pflichtig)
         bav_einmal_kv_jahres = 0.0                  # bAV-Einmal: KV-Basis 1/10 p.a. (§229 SGB V)
         privat_jahres = 0.0                         # PrivateRV/Riester/LV: nicht KVdR-pflichtig
@@ -357,15 +377,17 @@ def _netto_ueber_horizont(
                     privat_jahres += mono
 
         # Einkommensteuer (alle Einkünfte voll steuerpflichtig – vereinfacht)
+        # Mieteinnahmen §21 EStG: voll steuerpflichtig, kein Besteuerungsanteil
         zvE = max(
             0.0,
             gesetzl_jahres * ba
             + bav_mono_jahres + privat_jahres + einmal_steuer_jahres
+            + miet_jahres
             - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG,
         )
         steuer = einkommensteuer(zvE)
 
-        # KV / PV
+        # KV / PV – Mieteinnahmen nicht KVdR-pflichtig
         if ist_pkv:
             kv = profil.pkv_beitrag * 12
         else:
@@ -375,7 +397,7 @@ def _netto_ueber_horizont(
             kv_basis_mono = min(gesetzl_mono + bav_kv_basis, BBG_KV_MONATLICH)
             kv = kv_basis_mono * 12 * kv_rate
 
-        brutto = gesetzl_jahres + bav_mono_jahres + privat_jahres + einmal_steuer_jahres
+        brutto = gesetzl_jahres + bav_mono_jahres + privat_jahres + einmal_steuer_jahres + miet_jahres
         netto = brutto - steuer - kv
         total_netto += netto
         jahresdaten.append({
@@ -394,6 +416,8 @@ def optimiere_auszahlungen(
     ergebnis: RentenErgebnis,
     produkte: list,
     horizont_jahre: int,
+    mieteinnahmen_monatlich: float = 0.0,
+    mietsteigerung_pa: float = 0.0,
 ) -> dict:
     """
     Durchsucht alle Kombinationen aus Startjahr × Auszahlungsart je Vertrag
@@ -424,7 +448,8 @@ def optimiere_auszahlungen(
 
     for kombi in iterproduct(*alle_optionen):
         ents = [(produkte[i], kombi[i][0], kombi[i][1]) for i in range(len(produkte))]
-        netto, _ = _netto_ueber_horizont(profil, ergebnis, ents, horizont_jahre)
+        netto, _ = _netto_ueber_horizont(profil, ergebnis, ents, horizont_jahre,
+                                          mieteinnahmen_monatlich, mietsteigerung_pa)
         label = " | ".join(
             f"{produkte[i].name}: "
             f"{'Einmal' if kombi[i][1] == 1.0 else 'Monatlich' if kombi[i][1] == 0.0 else '50/50'} "
@@ -437,12 +462,15 @@ def optimiere_auszahlungen(
             beste_entscheidungen = ents
 
     alle_ergebnisse.sort(key=lambda x: x["Netto gesamt (€)"], reverse=True)
-    _, jahresdaten = _netto_ueber_horizont(profil, ergebnis, beste_entscheidungen, horizont_jahre)
+    _, jahresdaten = _netto_ueber_horizont(profil, ergebnis, beste_entscheidungen, horizont_jahre,
+                                           mieteinnahmen_monatlich, mietsteigerung_pa)
 
     ref_mono   = [(p, p.fruehestes_startjahr, 0.0) for p in produkte]
     ref_einmal = [(p, p.fruehestes_startjahr, 1.0) for p in produkte]
-    netto_mono,   _ = _netto_ueber_horizont(profil, ergebnis, ref_mono,   horizont_jahre)
-    netto_einmal, _ = _netto_ueber_horizont(profil, ergebnis, ref_einmal, horizont_jahre)
+    netto_mono,   _ = _netto_ueber_horizont(profil, ergebnis, ref_mono,   horizont_jahre,
+                                            mieteinnahmen_monatlich, mietsteigerung_pa)
+    netto_einmal, _ = _netto_ueber_horizont(profil, ergebnis, ref_einmal, horizont_jahre,
+                                            mieteinnahmen_monatlich, mietsteigerung_pa)
 
     return {
         "bestes_netto":          bestes_netto,

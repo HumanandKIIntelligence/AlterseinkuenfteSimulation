@@ -160,6 +160,8 @@ def _sidebar():
                     st.session_state["hat_partner"] = False
                 st.session_state["veranlagung"] = data.get("veranlagung", "Getrennt")
                 st.session_state["vp_produkte"] = data.get("produkte", [])
+                st.session_state["hh_miet"] = data.get("mieteinnahmen", 0.0)
+                st.session_state["hh_miet_stg"] = data.get("mietsteigerung", 0.015) * 100
                 st.rerun()
 
     st.sidebar.markdown("---")
@@ -192,6 +194,22 @@ def _sidebar():
 
     st.sidebar.markdown("---")
 
+    # ── Mieteinnahmen (Haushalt gesamt) ───────────────────────────────────────
+    with st.sidebar.expander("🏠 Mieteinnahmen", expanded=False):
+        mieteinnahmen = st.sidebar.number_input(
+            "Netto-Mieteinnahmen (€/Mon.)",
+            min_value=0.0, max_value=50_000.0,
+            value=st.session_state.get("hh_miet", 0.0),
+            step=50.0, key="hh_miet",
+            help="Gemeinsame Nettomieteinnahmen nach abzugsfähigen Werbungskosten (§ 21 EStG). "
+                 "Voll steuerpflichtig, keine KV-Pflicht.",
+        )
+        mietsteigerung = st.sidebar.slider(
+            "Jährl. Mietsteigerung (%)", 0.0, 5.0,
+            value=st.session_state.get("hh_miet_stg", 1.5),
+            step=0.1, key="hh_miet_stg",
+        ) / 100
+
     # ── Speichern ─────────────────────────────────────────────────────────────
     with st.sidebar.expander("💾 Profil speichern", expanded=False):
         save_name = st.text_input("Name der Sicherung", value="MeinProfil", key="save_name")
@@ -202,18 +220,20 @@ def _sidebar():
                 profil2=profil2,
                 veranlagung=veranlagung,
                 produkte=st.session_state.get("vp_produkte", []),
+                mieteinnahmen=mieteinnahmen,
+                mietsteigerung=mietsteigerung,
             )
             st.success(f"Gespeichert: {pfad}")
 
-    return profil1, profil2, veranlagung
+    return profil1, profil2, veranlagung, mieteinnahmen, mietsteigerung
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-profil1, profil2, veranlagung = _sidebar()
+profil1, profil2, veranlagung, mieteinnahmen, mietsteigerung = _sidebar()
 ergebnis1 = berechne_rente(profil1)
 ergebnis2 = berechne_rente(profil2) if profil2 else None
-haushalt_daten = berechne_haushalt(ergebnis1, ergebnis2, veranlagung)
+haushalt_daten = berechne_haushalt(ergebnis1, ergebnis2, veranlagung, mieteinnahmen)
 
 tab_labels = ["📊 Dashboard", "🔮 Simulation", "🏦 Vorsorge-Bausteine",
               "💰 Kapital vs. Rente", "🧾 Steuern & KV"]
@@ -232,10 +252,12 @@ T["Vorsorge"]   = tabs[idx]; idx += 1
 T["Auszahlung"] = tabs[idx]; idx += 1
 T["Steuern"]    = tabs[idx]; idx += 1
 
-dashboard.render(T, profil1, ergebnis1)
+dashboard.render(T, profil1, ergebnis1, mieteinnahmen=mieteinnahmen)
 if profil2:
-    haushalt.render(T, profil1, profil2, ergebnis1, ergebnis2, veranlagung, haushalt_daten)
+    haushalt.render(T, profil1, profil2, ergebnis1, ergebnis2, veranlagung, haushalt_daten,
+                    mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
 simulation.render(T, profil1, ergebnis1)
-vorsorge.render(T, profil1, ergebnis1, profil2=profil2)
+vorsorge.render(T, profil1, ergebnis1, profil2=profil2,
+                mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
 auszahlung.render(T, profil1, ergebnis1)
-steuern.render(T, profil1, ergebnis1)
+steuern.render(T, profil1, ergebnis1, mieteinnahmen=mieteinnahmen)

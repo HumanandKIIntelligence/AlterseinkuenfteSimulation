@@ -18,6 +18,8 @@ def save_session(
     profil2: Profil | None,
     veranlagung: str,
     produkte: list[dict],
+    mieteinnahmen: float = 0.0,
+    mietsteigerung: float = 0.0,
 ) -> str:
     os.makedirs(DATA_DIR, exist_ok=True)
     safe = "".join(c for c in name if c.isalnum() or c in "-_")
@@ -28,6 +30,8 @@ def save_session(
         "profil2": dataclasses.asdict(profil2) if profil2 else None,
         "veranlagung": veranlagung,
         "produkte": produkte,
+        "mieteinnahmen": mieteinnahmen,
+        "mietsteigerung": mietsteigerung,
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

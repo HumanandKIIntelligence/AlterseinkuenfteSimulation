@@ -6,7 +6,8 @@ import streamlit as st
 from engine import Profil, RentenErgebnis
 
 
-def render(T: dict, profil: Profil, ergebnis: RentenErgebnis) -> None:
+def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
+           mieteinnahmen: float = 0.0) -> None:
     with T["Dashboard"]:
         st.header("📊 Rentenübersicht")
 
@@ -42,6 +43,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis) -> None:
         c6.metric("Steuerabzug / Monat", f"{ergebnis.steuer_monatlich:,.0f} €")
         c7.metric("KV-Abzug / Monat", f"{ergebnis.kv_monatlich:,.0f} €")
         c8.metric(
+            "Mieteinnahmen (Haushalt)", f"{mieteinnahmen:,.0f} €/Monat",
+            help="Gemeinsame Nettomieteinnahmen (§ 21 EStG). Steuerlich wirksam, keine KV-Pflicht."
+        ) if mieteinnahmen > 0 else c8.metric(
             "Eff. Steuersatz", f"{ergebnis.effektiver_steuersatz:.1%}",
             help=f"Besteuerungsanteil: {ergebnis.besteuerungsanteil:.1%} "
                  f"(Renteneintritt {profil.eintritt_jahr})",

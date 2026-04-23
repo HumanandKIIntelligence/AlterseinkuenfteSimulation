@@ -19,6 +19,8 @@ def render(
     e2: RentenErgebnis,
     veranlagung: str,
     hh: dict,
+    mieteinnahmen: float = 0.0,
+    mietsteigerung: float = 0.0,
 ) -> None:
     with T["Haushalt"]:
         st.header("👥 Haushalts-Übersicht")
@@ -34,7 +36,8 @@ def render(
         # ── Kennzahlen ────────────────────────────────────────────────────────
         st.subheader("Monatliches Haushaltseinkommen")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Brutto gesamt", f"{hh['brutto_gesamt']:,.0f} €")
+        c1.metric("Brutto gesamt", f"{hh['brutto_gesamt']:,.0f} €",
+                  help="Renten (brutto) beider Partner + Mieteinnahmen")
         c2.metric("Netto gesamt", f"{hh['netto_gesamt']:,.0f} €")
         c3.metric("Steuer gesamt", f"{hh['steuer_gesamt']:,.0f} €")
         if hh["steuerersparnis_splitting"] > 0:
@@ -111,13 +114,19 @@ def render(
             )
             st.plotly_chart(fig, use_container_width=True)
 
+        if mieteinnahmen > 0:
+            st.info(
+                f"🏠 **Mieteinnahmen:** {mieteinnahmen:,.0f} €/Monat "
+                f"(+{mietsteigerung:.1%} p.a.) – in Steuerberechnung enthalten, keine KV-Pflicht."
+            )
+
         st.divider()
 
         # ── Steuervergleich: Zusammen vs. Getrennt ────────────────────────────
         st.subheader("Steuervergleich: Zusammen- vs. Getrennte Veranlagung")
 
-        hh_zusammen = berechne_haushalt(e1, e2, "Zusammen")
-        hh_getrennt = berechne_haushalt(e1, e2, "Getrennt")
+        hh_zusammen = berechne_haushalt(e1, e2, "Zusammen", mieteinnahmen)
+        hh_getrennt = berechne_haushalt(e1, e2, "Getrennt", mieteinnahmen)
 
         sv1, sv2, sv3, sv4 = st.columns(4)
         sv1.metric("Steuer Zusammen (Mon.)", f"{hh_zusammen['steuer_gesamt']:,.0f} €")
