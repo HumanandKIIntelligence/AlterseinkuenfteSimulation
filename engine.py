@@ -15,6 +15,10 @@ WERBUNGSKOSTEN_PAUSCHBETRAG = 102   # € Pauschbetrag für Rentner
 SONDERAUSGABEN_PAUSCHBETRAG = 36    # €
 AKTUELLES_JAHR = 2025
 
+# KV/PV-Konstanten 2024 (§ 226 Abs. 2 SGB V, § 223 Abs. 3 SGB V)
+BAV_FREIBETRAG_MONATLICH = 187.25   # Freibetrag für Versorgungsbezüge (bAV) 2024
+BBG_KV_MONATLICH = 5_175.0          # Beitragsbemessungsgrenze KV/PV 2024
+
 
 # ── Steuerformeln (§ 32a EStG Grundtarif 2024) ────────────────────────────────
 
@@ -305,11 +309,17 @@ def _netto_ueber_horizont(
 ) -> tuple[float, list[dict]]:
     """
     Simuliert das Netto-Einkommen Jahr für Jahr über `horizont_jahre` ab Renteneintritt.
-    Lump sums werden im Startjahr als Sondereinkommen gewertet.
-    Alle Vertragseinnahmen werden vereinfacht voll besteuert (konservativ, korrekt für bAV).
+
+    KV/PV-Behandlung (GKV):
+    - bAV: KVdR-pflichtig; Freibetrag BAV_FREIBETRAG_MONATLICH (§ 226 Abs. 2 SGB V);
+      Einmalauszahlung auf 10 Jahre verteilt (§ 229 Abs. 1 S. 3 SGB V).
+    - PrivateRente / Riester / LV: NICHT KVdR-pflichtig.
+    - Beitragsbemessungsgrenze: BBG_KV_MONATLICH.
+    Steuer: alle Einkünfte voll angesetzt (vereinfacht konservativ; korrekt für bAV/Riester).
     """
     ba = ergebnis.besteuerungsanteil
-    gesetzl_mono = ergebnis.brutto_monatlich
+    gesetzl_mono = ergebnis.brutto_gesetzlich       # nur gesetzliche Rente
+    zusatz_bav_mono = profil.zusatz_monatlich       # Sidebar-Zusatz → als bAV behandelt
     ist_pkv = profil.krankenversicherung == "PKV"
     kv_rate = (0.073 + profil.gkv_zusatzbeitrag / 2) + (0.034 if profil.kinder else 0.040)
 
@@ -318,29 +328,54 @@ def _netto_ueber_horizont(
 
     for y in range(horizont_jahre):
         jahr = profil.eintritt_jahr + y
+
         gesetzl_jahres = gesetzl_mono * 12
-        mono_jahres = 0.0
-        einmal_jahres = 0.0
+        bav_mono_jahres = zusatz_bav_mono * 12      # laufende bAV-Rente (KVdR-pflichtig)
+        bav_einmal_kv_jahres = 0.0                  # bAV-Einmal: KV-Basis 1/10 p.a. (§229 SGB V)
+        privat_jahres = 0.0                         # PrivateRV/Riester/LV: nicht KVdR-pflichtig
+        einmal_steuer_jahres = 0.0                  # alle Einmalauszahlungen → Steuer im Startjahr
 
         for prod, startjahr, anteil in entscheidungen:
             if jahr < startjahr:
                 continue
             einmal_wert, mono_wert = _wert_bei_start(prod, startjahr)
-            if jahr == startjahr and anteil > 0:
-                einmal_jahres += einmal_wert * anteil
+            ist_bav = prod.typ == "bAV"
             lz = prod.laufzeit_jahre if prod.laufzeit_jahre > 0 else horizont_jahre
-            if 0 <= jahr - startjahr < lz and anteil < 1.0:
-                mono_jahres += mono_wert * (1 - anteil) * 12
 
+            if anteil > 0:
+                betrag = einmal_wert * anteil
+                if jahr == startjahr:
+                    einmal_steuer_jahres += betrag          # Brutto/Steuer: einmalig im Startjahr
+                if ist_bav and 0 <= jahr - startjahr < 10:
+                    bav_einmal_kv_jahres += betrag / 10     # KV-Basis: 1/10 über 10 Jahre
+
+            if 0 <= jahr - startjahr < lz and anteil < 1.0:
+                mono = mono_wert * (1 - anteil) * 12
+                if ist_bav:
+                    bav_mono_jahres += mono
+                else:
+                    privat_jahres += mono
+
+        # Einkommensteuer (alle Einkünfte voll steuerpflichtig – vereinfacht)
         zvE = max(
             0.0,
-            gesetzl_jahres * ba + mono_jahres + einmal_jahres
+            gesetzl_jahres * ba
+            + bav_mono_jahres + privat_jahres + einmal_steuer_jahres
             - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG,
         )
         steuer = einkommensteuer(zvE)
-        brutto_mono_ges = gesetzl_mono + (mono_jahres + einmal_jahres) / 12
-        kv = profil.pkv_beitrag * 12 if ist_pkv else brutto_mono_ges * 12 * kv_rate
-        brutto = gesetzl_jahres + mono_jahres + einmal_jahres
+
+        # KV / PV
+        if ist_pkv:
+            kv = profil.pkv_beitrag * 12
+        else:
+            # KVdR-Basis: gesetzliche Rente + bAV (nach Freibetrag), max BBG
+            bav_kv_mono = (bav_mono_jahres + bav_einmal_kv_jahres) / 12
+            bav_kv_basis = max(0.0, bav_kv_mono - BAV_FREIBETRAG_MONATLICH)
+            kv_basis_mono = min(gesetzl_mono + bav_kv_basis, BBG_KV_MONATLICH)
+            kv = kv_basis_mono * 12 * kv_rate
+
+        brutto = gesetzl_jahres + bav_mono_jahres + privat_jahres + einmal_steuer_jahres
         netto = brutto - steuer - kv
         total_netto += netto
         jahresdaten.append({
