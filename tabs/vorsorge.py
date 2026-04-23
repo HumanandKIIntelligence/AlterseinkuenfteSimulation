@@ -35,7 +35,7 @@ def _produkt_aus_state(d: dict) -> VorsorgeProdukt:
     )
 
 
-def render(T: dict, profil: Profil, ergebnis: RentenErgebnis) -> None:
+def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None) -> None:
     _init_state()
 
     with T["Vorsorge"]:
@@ -54,6 +54,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis) -> None:
                 typ_label = st.selectbox("Produkttyp", _TYPEN, key="vp_add_typ")
                 typ_key = _TYP_KEYS[typ_label]
                 name = st.text_input("Bezeichnung (z.B. bAV Firma Müller)", key="vp_add_name")
+                person_optionen = ["Person 1"] + (["Person 2"] if profil2 else [])
+                person = st.selectbox("Zugeordnet zu", person_optionen, key="vp_add_person")
                 kapital = st.number_input(
                     "Kapitalwert bei Renteneintritt (€)",
                     min_value=0.0, max_value=2_000_000.0, value=50_000.0, step=1_000.0,
@@ -98,6 +100,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis) -> None:
                         "kapital": kapital,
                         "monatsrente": monatsrente,
                         "laufzeit_jahre": laufzeit_jahre,
+                        "person": person,
                     })
                     st.rerun()
 
@@ -120,12 +123,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis) -> None:
             lz_text = "lebenslang" if p["laufzeit_jahre"] == 0 else f"{p['laufzeit_jahre']} Jahre"
             rente_text = f"{p['monatsrente']:,.0f} €/Mon." if p["monatsrente"] > 0 else "aus Kapital berechnet"
             lv_hint = " · nur Einmalzahlung" if p["typ"] == "LV" else f" · Rente: {rente_text} · Laufzeit: {lz_text}"
+            person_badge = f" · 👤 {p.get('person', 'Person 1')}"
             with st.container(border=True):
                 col_info, col_del = st.columns([10, 1])
                 with col_info:
                     st.markdown(
                         f"**{p['name']}** &nbsp;·&nbsp; {p['typ_label']} &nbsp;·&nbsp; "
-                        f"Kapital: **{p['kapital']:,.0f} €**{lv_hint}"
+                        f"Kapital: **{p['kapital']:,.0f} €**{lv_hint}{person_badge}"
                     )
                 with col_del:
                     if st.button("🗑", key=f"vp_del_{p['id']}", help="Produkt löschen"):

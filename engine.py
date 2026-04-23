@@ -170,6 +170,49 @@ def simuliere_szenarien(p: Profil) -> dict[str, RentenErgebnis]:
     }
 
 
+# ── Ehegatten-Splitting ───────────────────────────────────────────────────────
+
+def einkommensteuer_splitting(zvE_gesamt: float) -> float:
+    """Splittingtarif (§ 32a Abs. 5 EStG): 2 × ESt(zvE / 2)."""
+    return 2.0 * einkommensteuer(zvE_gesamt / 2.0)
+
+
+def berechne_haushalt(
+    erg1: RentenErgebnis,
+    erg2: "RentenErgebnis | None",
+    veranlagung: str,  # "Zusammen" | "Getrennt"
+) -> dict:
+    """Haushalts-Nettoeinkommen mit optionalem Splitting."""
+    if erg2 is None:
+        return {
+            "netto_gesamt": erg1.netto_monatlich,
+            "steuer_gesamt": erg1.steuer_monatlich,
+            "kv_gesamt": erg1.kv_monatlich,
+            "brutto_gesamt": erg1.brutto_monatlich,
+            "steuerersparnis_splitting": 0.0,
+        }
+    brutto = erg1.brutto_monatlich + erg2.brutto_monatlich
+    kv = erg1.kv_monatlich + erg2.kv_monatlich
+    steuer_getrennt = erg1.steuer_monatlich + erg2.steuer_monatlich
+
+    if veranlagung == "Zusammen":
+        zvE_gesamt = erg1.zvE_jahres + erg2.zvE_jahres
+        steuer_zusammen = einkommensteuer_splitting(zvE_gesamt) / 12
+        ersparnis = max(0.0, steuer_getrennt - steuer_zusammen)
+        steuer = steuer_zusammen
+    else:
+        steuer = steuer_getrennt
+        ersparnis = 0.0
+
+    return {
+        "netto_gesamt": brutto - steuer - kv,
+        "steuer_gesamt": steuer,
+        "kv_gesamt": kv,
+        "brutto_gesamt": brutto,
+        "steuerersparnis_splitting": ersparnis,
+    }
+
+
 # ── Vorsorge-Bausteine ────────────────────────────────────────────────────────
 
 @dataclass
