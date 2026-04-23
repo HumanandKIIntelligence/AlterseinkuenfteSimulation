@@ -218,11 +218,15 @@ def berechne_haushalt(
 @dataclass
 class VorsorgeProdukt:
     id: str
-    typ: str            # "bAV" | "PrivateRente" | "Riester" | "LV"
+    typ: str                   # "bAV" | "PrivateRente" | "Riester" | "LV"
     name: str
-    kapital: float      # Kapitalwert bei Renteneintritt (Einmalauszahlung)
-    monatsrente: float  # Monatliche Rente laut Versicherungsangebot (0 = unbekannt)
-    laufzeit_jahre: int # 0 = lebenslang (= Horizont), sonst befristete Laufzeit
+    person: str                # "Person 1" | "Person 2"
+    max_einmalzahlung: float   # Maximale Einmalauszahlung ab frühestem Startdatum
+    max_monatsrente: float     # Maximale monatliche Rente ab frühestem Startdatum
+    laufzeit_jahre: int        # 0 = lebenslang, sonst befristet
+    fruehestes_startjahr: int  # Frühestes mögliches Startjahr
+    spaetestes_startjahr: int  # Spätestes mögliches Startjahr
+    aufschub_rendite: float    # Verzinsung je Aufschubjahr (0.02 = 2 % p.a.)
 
     @property
     def ist_lebensversicherung(self) -> bool:
@@ -240,38 +244,34 @@ def _annuitaet(kapital: float, rendite_pa: float, jahre: int) -> float:
     return kapital / n
 
 
+def _wert_bei_start(prod: VorsorgeProdukt, startjahr: int) -> tuple[float, float]:
+    """Einmalbetrag und Monatsrente nach Aufschubverzinsung bis `startjahr`."""
+    deferral = max(0, startjahr - prod.fruehestes_startjahr)
+    f = (1 + prod.aufschub_rendite) ** deferral
+    return prod.max_einmalzahlung * f, prod.max_monatsrente * f
+
+
 def vergleiche_produkt(
     produkt: VorsorgeProdukt,
     rendite_pa: float,
     horizon_jahre: int,
 ) -> dict:
-    """
-    Vergleicht Einmal / Monatlich / Kombiniert für ein Produkt.
-
-    Rückgabe je Szenario: {'monatlich': float, 'total': float}
-    Zusätzlich: 'bestes' (Schlüssel des besten Szenarios),
-                'kombiniert_anteil' (optimaler Kapitalanteil 0–1).
-    """
+    """Vergleicht Einmal / Monatlich / Kombiniert für ein Produkt am frühesten Startdatum."""
     H = horizon_jahre
-    K = produkt.kapital
-    M = produkt.monatsrente if produkt.monatsrente > 0 else _annuitaet(K, rendite_pa, H)
+    K = produkt.max_einmalzahlung
+    M = produkt.max_monatsrente if produkt.max_monatsrente > 0 else _annuitaet(K, rendite_pa, H)
     lz = produkt.laufzeit_jahre if produkt.laufzeit_jahre > 0 else H
     effective_lz = min(lz, H)
 
-    # Einmalauszahlung: K investieren, als Annuität über H Jahre entnehmen
     m_einmal = _annuitaet(K, rendite_pa, H)
     t_einmal = m_einmal * 12 * H
-
-    # Monatliche Rente (Versicherer / eigene Berechnung)
     t_monatlich = M * 12 * effective_lz
     m_monatlich = M
 
-    # Kombiniert: optimalen Kapitalanteil x suchen
-    if not produkt.ist_lebensversicherung and produkt.monatsrente > 0:
+    if not produkt.ist_lebensversicherung and produkt.max_monatsrente > 0:
         xs = np.linspace(0.0, 1.0, 101)
         totale = [
-            _annuitaet(K * x, rendite_pa, H) * 12 * H
-            + M * (1 - x) * 12 * effective_lz
+            _annuitaet(K * x, rendite_pa, H) * 12 * H + M * (1 - x) * 12 * effective_lz
             for x in xs
         ]
         best_idx = int(np.argmax(totale))
@@ -283,19 +283,140 @@ def vergleiche_produkt(
         t_komb = t_einmal
         m_komb = m_einmal
 
-    if produkt.ist_lebensversicherung or produkt.monatsrente <= 0:
-        bestes = "einmal"
-    else:
-        bestes = max(
-            {"einmal": t_einmal, "monatlich": t_monatlich, "kombiniert": t_komb},
-            key=lambda k: {"einmal": t_einmal, "monatlich": t_monatlich, "kombiniert": t_komb}[k],
-        )
-
+    bestes = "einmal" if (produkt.ist_lebensversicherung or produkt.max_monatsrente <= 0) else max(
+        {"einmal": t_einmal, "monatlich": t_monatlich, "kombiniert": t_komb},
+        key=lambda k: {"einmal": t_einmal, "monatlich": t_monatlich, "kombiniert": t_komb}[k],
+    )
     return {
         "einmal":     {"monatlich": m_einmal,    "total": t_einmal},
         "monatlich":  {"monatlich": m_monatlich, "total": t_monatlich},
         "kombiniert": {"monatlich": m_komb,      "total": t_komb, "anteil": best_x},
         "bestes": bestes,
+    }
+
+
+# ── Steueroptimierung Vertragsauszahlungen ────────────────────────────────────
+
+def _netto_ueber_horizont(
+    profil: Profil,
+    ergebnis: RentenErgebnis,
+    entscheidungen: list,   # [(VorsorgeProdukt, startjahr: int, einmal_anteil: float)]
+    horizont_jahre: int,
+) -> tuple[float, list[dict]]:
+    """
+    Simuliert das Netto-Einkommen Jahr für Jahr über `horizont_jahre` ab Renteneintritt.
+    Lump sums werden im Startjahr als Sondereinkommen gewertet.
+    Alle Vertragseinnahmen werden vereinfacht voll besteuert (konservativ, korrekt für bAV).
+    """
+    ba = ergebnis.besteuerungsanteil
+    gesetzl_mono = ergebnis.brutto_monatlich
+    ist_pkv = profil.krankenversicherung == "PKV"
+    kv_rate = (0.073 + profil.gkv_zusatzbeitrag / 2) + (0.034 if profil.kinder else 0.040)
+
+    total_netto = 0.0
+    jahresdaten: list[dict] = []
+
+    for y in range(horizont_jahre):
+        jahr = profil.eintritt_jahr + y
+        gesetzl_jahres = gesetzl_mono * 12
+        mono_jahres = 0.0
+        einmal_jahres = 0.0
+
+        for prod, startjahr, anteil in entscheidungen:
+            if jahr < startjahr:
+                continue
+            einmal_wert, mono_wert = _wert_bei_start(prod, startjahr)
+            if jahr == startjahr and anteil > 0:
+                einmal_jahres += einmal_wert * anteil
+            lz = prod.laufzeit_jahre if prod.laufzeit_jahre > 0 else horizont_jahre
+            if 0 <= jahr - startjahr < lz and anteil < 1.0:
+                mono_jahres += mono_wert * (1 - anteil) * 12
+
+        zvE = max(
+            0.0,
+            gesetzl_jahres * ba + mono_jahres + einmal_jahres
+            - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG,
+        )
+        steuer = einkommensteuer(zvE)
+        brutto_mono_ges = gesetzl_mono + (mono_jahres + einmal_jahres) / 12
+        kv = profil.pkv_beitrag * 12 if ist_pkv else brutto_mono_ges * 12 * kv_rate
+        brutto = gesetzl_jahres + mono_jahres + einmal_jahres
+        netto = brutto - steuer - kv
+        total_netto += netto
+        jahresdaten.append({
+            "Jahr": jahr,
+            "Brutto (€)": round(brutto),
+            "Steuer (€)": round(steuer),
+            "KV/PV (€)": round(kv),
+            "Netto (€)": round(netto),
+        })
+
+    return total_netto, jahresdaten
+
+
+def optimiere_auszahlungen(
+    profil: Profil,
+    ergebnis: RentenErgebnis,
+    produkte: list,
+    horizont_jahre: int,
+) -> dict:
+    """
+    Durchsucht alle Kombinationen aus Startjahr × Auszahlungsart je Vertrag
+    und gibt die steuerlich optimale Kombination zurück.
+
+    Startjahre: bis zu 4 gleichmäßig verteilte Punkte im erlaubten Bereich.
+    Auszahlungsarten: Einmal (100%), Kombiniert (50/50), Monatlich (0%).
+    """
+    from itertools import product as iterproduct
+
+    if not produkte:
+        return {}
+
+    def optionen(prod: VorsorgeProdukt) -> list[tuple[int, float]]:
+        jahre = list(range(prod.fruehestes_startjahr, prod.spaetestes_startjahr + 1))
+        # Max 4 Stützstellen für Rechenzeit
+        if len(jahre) > 4:
+            idx = [0, len(jahre) // 3, 2 * len(jahre) // 3, len(jahre) - 1]
+            jahre = [jahre[i] for i in idx]
+        anteile = [1.0] if prod.ist_lebensversicherung or prod.max_monatsrente <= 0 \
+            else [0.0, 0.5, 1.0]
+        return [(j, a) for j in jahre for a in anteile]
+
+    alle_optionen = [optionen(p) for p in produkte]
+    bestes_netto = float("-inf")
+    beste_entscheidungen: list = []
+    alle_ergebnisse: list[dict] = []
+
+    for kombi in iterproduct(*alle_optionen):
+        ents = [(produkte[i], kombi[i][0], kombi[i][1]) for i in range(len(produkte))]
+        netto, _ = _netto_ueber_horizont(profil, ergebnis, ents, horizont_jahre)
+        label = " | ".join(
+            f"{produkte[i].name}: "
+            f"{'Einmal' if kombi[i][1] == 1.0 else 'Monatlich' if kombi[i][1] == 0.0 else '50/50'} "
+            f"ab {kombi[i][0]}"
+            for i in range(len(produkte))
+        )
+        alle_ergebnisse.append({"Kombination": label, "Netto gesamt (€)": round(netto)})
+        if netto > bestes_netto:
+            bestes_netto = netto
+            beste_entscheidungen = ents
+
+    alle_ergebnisse.sort(key=lambda x: x["Netto gesamt (€)"], reverse=True)
+    _, jahresdaten = _netto_ueber_horizont(profil, ergebnis, beste_entscheidungen, horizont_jahre)
+
+    ref_mono   = [(p, p.fruehestes_startjahr, 0.0) for p in produkte]
+    ref_einmal = [(p, p.fruehestes_startjahr, 1.0) for p in produkte]
+    netto_mono,   _ = _netto_ueber_horizont(profil, ergebnis, ref_mono,   horizont_jahre)
+    netto_einmal, _ = _netto_ueber_horizont(profil, ergebnis, ref_einmal, horizont_jahre)
+
+    return {
+        "bestes_netto":          bestes_netto,
+        "beste_entscheidungen":  beste_entscheidungen,
+        "jahresdaten":           jahresdaten,
+        "top10":                 alle_ergebnisse[:10],
+        "netto_alle_monatlich":  netto_mono,
+        "netto_alle_einmal":     netto_einmal,
+        "anzahl_kombinationen":  len(alle_ergebnisse),
     }
 
 
