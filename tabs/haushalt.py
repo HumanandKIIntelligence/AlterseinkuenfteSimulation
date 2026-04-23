@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from engine import (
-    Profil, RentenErgebnis,
+    AKTUELLES_JAHR, Profil, RentenErgebnis,
     berechne_haushalt, einkommensteuer_splitting,
     simuliere_szenarien,
 )
@@ -27,10 +27,16 @@ def render(
 
         veranlagung_label = "Zusammenveranlagung (Splitting)" if veranlagung == "Zusammen" \
             else "Getrennte Veranlagung"
+
+        def _status(p: Profil) -> str:
+            if p.bereits_rentner:
+                return f"Im Ruhestand seit {p.rentenbeginn_jahr}"
+            return f"Renteneintritt {p.eintritt_jahr}"
+
         st.info(
             f"**Steuerliche Veranlagung:** {veranlagung_label}  |  "
-            f"**Person 1:** Renteneintritt {p1.eintritt_jahr}  |  "
-            f"**Person 2:** Renteneintritt {p2.eintritt_jahr}"
+            f"**Person 1:** {_status(p1)}  |  "
+            f"**Person 2:** {_status(p2)}"
         )
 
         # ── Kennzahlen ────────────────────────────────────────────────────────
@@ -64,7 +70,8 @@ def render(
                 ("− KV / PV", f"{e1.kv_monatlich:,.0f} €"),
                 ("**= Netto**", f"**{e1.netto_monatlich:,.0f} €**"),
                 ("Rentenpunkte", f"{e1.gesamtpunkte:.1f}"),
-                ("Renteneintritt", str(p1.eintritt_jahr)),
+                ("Ruhestand seit" if p1.bereits_rentner else "Renteneintritt",
+                 str(p1.rentenbeginn_jahr if p1.bereits_rentner else p1.eintritt_jahr)),
             ]:
                 a, b = st.columns([2, 1])
                 a.markdown(label)
@@ -78,7 +85,8 @@ def render(
                 ("− KV / PV", f"{e2.kv_monatlich:,.0f} €"),
                 ("**= Netto**", f"**{e2.netto_monatlich:,.0f} €**"),
                 ("Rentenpunkte", f"{e2.gesamtpunkte:.1f}"),
-                ("Renteneintritt", str(p2.eintritt_jahr)),
+                ("Ruhestand seit" if p2.bereits_rentner else "Renteneintritt",
+                 str(p2.rentenbeginn_jahr if p2.bereits_rentner else p2.eintritt_jahr)),
             ]:
                 a, b = st.columns([2, 1])
                 a.markdown(label)
@@ -183,20 +191,44 @@ def render(
 
         st.divider()
 
-        # ── Gemeinsame Renteneintrittslücke ───────────────────────────────────
-        st.subheader("Zeitraum mit unterschiedlichen Renteneintrittsjahren")
-        years_diff = abs(p1.eintritt_jahr - p2.eintritt_jahr)
-        if years_diff > 0:
-            erster = "Person 1" if p1.eintritt_jahr <= p2.eintritt_jahr else "Person 2"
-            zweiter = "Person 2" if erster == "Person 1" else "Person 1"
-            e_erst = e1 if erster == "Person 1" else e2
+        # ── Ruhestandsstatus und Übergangszeitraum ────────────────────────────
+        st.subheader("Ruhestandsstatus und Übergangszeitraum")
+        if p1.bereits_rentner and not p2.bereits_rentner:
+            diff = p2.eintritt_jahr - AKTUELLES_JAHR
+            diff_txt = f"in {diff} Jahren" if diff > 0 else "in diesem Jahr"
             st.info(
-                f"**{erster}** geht {years_diff} Jahr(e) früher in Rente als **{zweiter}**. "
-                f"In dieser Zeit steht nur die Rente von {erster} zur Verfügung: "
-                f"**{e_erst.netto_monatlich:,.0f} €/Monat netto**."
+                f"**Person 1** befindet sich bereits im Ruhestand (seit {p1.rentenbeginn_jahr}). "
+                f"**Person 2** tritt voraussichtlich **{p2.eintritt_jahr}** in Rente ({diff_txt}). "
+                f"Bis dahin trägt Person 1 allein zum Renteneinkommen bei: "
+                f"**{e1.netto_monatlich:,.0f} €/Monat netto**."
+            )
+        elif p2.bereits_rentner and not p1.bereits_rentner:
+            diff = p1.eintritt_jahr - AKTUELLES_JAHR
+            diff_txt = f"in {diff} Jahren" if diff > 0 else "in diesem Jahr"
+            st.info(
+                f"**Person 2** befindet sich bereits im Ruhestand (seit {p2.rentenbeginn_jahr}). "
+                f"**Person 1** tritt voraussichtlich **{p1.eintritt_jahr}** in Rente ({diff_txt}). "
+                f"Bis dahin trägt Person 2 allein zum Renteneinkommen bei: "
+                f"**{e2.netto_monatlich:,.0f} €/Monat netto**."
+            )
+        elif p1.bereits_rentner and p2.bereits_rentner:
+            st.info(
+                f"Beide Partner befinden sich bereits im Ruhestand "
+                f"(Person 1 seit {p1.rentenbeginn_jahr}, Person 2 seit {p2.rentenbeginn_jahr})."
             )
         else:
-            st.info("Beide Partner gehen im gleichen Jahr in Rente.")
+            years_diff = abs(p1.eintritt_jahr - p2.eintritt_jahr)
+            if years_diff > 0:
+                erster = "Person 1" if p1.eintritt_jahr <= p2.eintritt_jahr else "Person 2"
+                zweiter = "Person 2" if erster == "Person 1" else "Person 1"
+                e_erst = e1 if erster == "Person 1" else e2
+                st.info(
+                    f"**{erster}** geht {years_diff} Jahr(e) früher in Rente als **{zweiter}**. "
+                    f"In dieser Zeit steht nur die Rente von {erster} zur Verfügung: "
+                    f"**{e_erst.netto_monatlich:,.0f} €/Monat netto**."
+                )
+            else:
+                st.info("Beide Partner gehen voraussichtlich im gleichen Jahr in Rente.")
 
         st.caption(
             "⚠️ Vereinfachte Berechnung. Splitting-Vorteil basiert auf Renteneinnahmen. "

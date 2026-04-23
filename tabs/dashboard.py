@@ -3,19 +3,103 @@
 import plotly.graph_objects as go
 import streamlit as st
 
-from engine import Profil, RentenErgebnis
+from engine import Profil, RentenErgebnis, einkommensteuer, GRUNDFREIBETRAG_2024
+from tabs import steuern
+
+
+def _grenzsteuersatz(zvE: float) -> float:
+    """Analytischer Grenzsteuersatz (§ 32a EStG 2024) als Dezimalzahl."""
+    if zvE <= 11_604:
+        return 0.0
+    if zvE <= 17_005:
+        y = (zvE - 11_604) / 10_000
+        return (1_856.74 * y + 1_400) / 10_000
+    if zvE <= 66_760:
+        z = (zvE - 17_005) / 10_000
+        return (353.28 * z + 2_397) / 10_000
+    if zvE <= 277_825:
+        return 0.42
+    return 0.45
+
+
+def _steuerampel(zvE: float) -> None:
+    """Progressionszone-Ampel: Zone, Grenzsteuersatz, Freiraum bis nächste Zone, Tipp."""
+    if zvE <= 0:
+        zvE = 0.0
+
+    if zvE <= GRUNDFREIBETRAG_2024:
+        zone = "Steuerfrei"
+        farbe = "✅"
+        gst = 0.0
+        freiraum = GRUNDFREIBETRAG_2024 - zvE
+        naechste = f"Grundfreibetrag ({GRUNDFREIBETRAG_2024:,} €)"
+        tipp = "Optimale Zone – Einkommen vollständig unter Grundfreibetrag."
+    elif zvE <= 17_005:
+        zone = "Progressionszone 1 (14–24 %)"
+        farbe = "🟢"
+        gst = _grenzsteuersatz(zvE)
+        freiraum = 17_005 - zvE
+        naechste = "Zone 2 (17.005 €)"
+        tipp = "Geringe Progression – Einnahmen vorziehen oder strecken prüfen."
+    elif zvE <= 66_760:
+        zone = "Progressionszone 2 (24–42 %)"
+        farbe = "🟡"
+        gst = _grenzsteuersatz(zvE)
+        freiraum = 66_760 - zvE
+        naechste = "42%-Zone (66.760 €)"
+        tipp = "Wachsende Progression – Aufschub oder Einmalentnahme-Streckung sinnvoll."
+    elif zvE <= 277_825:
+        zone = "Proportionalzone 42 %"
+        farbe = "🟠"
+        gst = 0.42
+        freiraum = 277_825 - zvE
+        naechste = "Spitzensteuersatz (277.825 €)"
+        tipp = "42 % Grenzsteuersatz – Einnahmen auf mehrere Jahre verteilen."
+    else:
+        zone = "Spitzensteuersatz 45 %"
+        farbe = "🔴"
+        gst = 0.45
+        freiraum = 0.0
+        naechste = "–"
+        tipp = "Maximale Steuerbelastung – intensive Steuerplanung und -beratung empfohlen."
+
+    st.subheader(f"{farbe} Steuerzone: {zone}")
+    zc1, zc2, zc3 = st.columns(3)
+    zc1.metric("Grenzsteuersatz", f"{gst:.1%}",
+               help="Steuersatz auf jeden zusätzlichen Euro Einkommen.")
+    zc2.metric("zvE aktuell", f"{zvE:,.0f} €/Jahr")
+    if freiraum > 0:
+        zc3.metric(f"Freiraum bis {naechste}", f"{freiraum:,.0f} €",
+                   help="Um diesen Betrag kann das zvE noch steigen, bevor der nächste Steuersatz greift.")
+    else:
+        zc3.metric("Nächste Zone", "–")
+    st.info(f"💡 **Handlungshinweis:** {tipp}")
 
 
 def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
-           mieteinnahmen: float = 0.0) -> None:
+           mieteinnahmen: float = 0.0,
+           profil2: Profil | None = None,
+           ergebnis2: RentenErgebnis | None = None) -> None:
     with T["Dashboard"]:
         st.header("📊 Rentenübersicht")
 
+        if profil2 is not None and ergebnis2 is not None:
+            wahl = st.radio("Person", ["Person 1", "Person 2"],
+                            horizontal=True, key="dash_person")
+            if wahl == "Person 2":
+                profil, ergebnis = profil2, ergebnis2
+
         # Infozeile
+        abschlag_info = (
+            f"  |  **Rentenabschlag:** {ergebnis.rentenabschlag:.1%} "
+            f"({(67 - profil.renteneintritt_alter) * 12} Monate × 0,3 % § 77 SGB VI)"
+            if ergebnis.rentenabschlag > 0 else ""
+        )
         st.info(
             f"**Alter heute:** {profil.aktuelles_alter} Jahre  |  "
             f"**Renteneintritt:** {profil.renteneintritt_alter} Jahre ({profil.eintritt_jahr})  |  "
             f"**Noch {profil.jahre_bis_rente} Jahre bis zur Rente**"
+            + abschlag_info
         )
 
         # ── Kennzahlen ────────────────────────────────────────────────────────
@@ -39,7 +123,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         )
 
         c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Gesetzl. Rente (brutto)", f"{ergebnis.brutto_gesetzlich:,.0f} €/Monat")
+        c5.metric(
+            "Gesetzl. Rente (brutto)", f"{ergebnis.brutto_gesetzlich:,.0f} €/Monat",
+            help=f"Rentenabschlag: {ergebnis.rentenabschlag:.1%} (§ 77 SGB VI)"
+                 if ergebnis.rentenabschlag > 0 else None,
+        )
         c6.metric("Steuerabzug / Monat", f"{ergebnis.steuer_monatlich:,.0f} €")
         c7.metric("KV-Abzug / Monat", f"{ergebnis.kv_monatlich:,.0f} €")
         c8.metric(
@@ -126,6 +214,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Die eigene Rentenanpassungs-Annahme von {profil.rentenanpassung_pa:.0%} p.a. "
                 f"{'federt dies ab' if profil.rentenanpassung_pa >= inflation else 'deckt dies nicht vollständig ab'}."
             )
+
+        st.divider()
+
+        # ── O1: Progressionszone-Ampel ────────────────────────────────────────
+        zvE_mit_miete = ergebnis.zvE_jahres + mieteinnahmen * 12
+        _steuerampel(zvE_mit_miete)
+
+        st.divider()
+
+        # ── O3b: Steuer & KV Details ──────────────────────────────────────────
+        with st.expander("🧾 Steuer- & KV-Details", expanded=False):
+            steuern.render_section(profil, ergebnis, mieteinnahmen)
 
         st.caption(
             "⚠️ Alle Angaben sind Simulationswerte auf Basis vereinfachter Annahmen. "

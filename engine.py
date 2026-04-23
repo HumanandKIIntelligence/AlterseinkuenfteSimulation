@@ -14,10 +14,73 @@ GRUNDFREIBETRAG_2024 = 11_604  # €
 WERBUNGSKOSTEN_PAUSCHBETRAG = 102   # € Pauschbetrag für Rentner
 SONDERAUSGABEN_PAUSCHBETRAG = 36    # €
 AKTUELLES_JAHR = 2025
+REGELALTERSGRENZE = 67         # Jahrgänge ab 1964 (§ 35 SGB VI)
+ABSCHLAG_PRO_MONAT = 0.003     # 0,3 % je Monat Frühverrentung (§ 77 SGB VI)
 
 # KV/PV-Konstanten 2024 (§ 226 Abs. 2 SGB V, § 223 Abs. 3 SGB V)
 BAV_FREIBETRAG_MONATLICH = 187.25   # Freibetrag für Versorgungsbezüge (bAV) 2024
 BBG_KV_MONATLICH = 5_175.0          # Beitragsbemessungsgrenze KV/PV 2024
+SPARERPAUSCHBETRAG = 1_000          # € pro Person (§ 20 Abs. 9 EStG 2024)
+
+# Versorgungsfreibetrag § 19 Abs. 2 EStG – für Beamtenpensionen
+# Format: Versorgungsbeginn-Jahr → (Anteil, MaxBetrag_€, Zuschlag_€)
+# 2005–2020: Absenkung je -1,6 % / -120 € / -36 € pro Jahr
+# 2021–2039: Absenkung je -0,8 % / -60 € / -18 € pro Jahr; ab 2040: 0
+_VFB_2005 = (0.40, 3_000, 900)
+_VFB_SCHRITT_A = (0.016, 120, 36)   # 2006–2020
+_VFB_SCHRITT_B = (0.008,  60, 18)   # 2021–2039
+
+
+def versorgungsfreibetrag(ruhestand_jahr: int, pension_jahres: float) -> float:
+    """Versorgungsfreibetrag § 19 Abs. 2 EStG 2024 für Beamtenpensionen.
+
+    Gibt den vom Bruttobezug abzuziehenden Freibetragsbetrag zurück.
+    Bei Versorgungsbeginn ab 2040: 0 €.
+    """
+    j = max(2005, ruhestand_jahr)
+    if j >= 2040:
+        return 0.0
+    if j <= 2005:
+        anteil, max_betrag, zuschlag = _VFB_2005
+    elif j <= 2020:
+        n = j - 2005
+        anteil    = _VFB_2005[0] - n * _VFB_SCHRITT_A[0]
+        max_betrag = _VFB_2005[1] - n * _VFB_SCHRITT_A[1]
+        zuschlag   = _VFB_2005[2] - n * _VFB_SCHRITT_A[2]
+    else:
+        # Wert für 2020 als Ausgangsbasis
+        anteil_2020    = _VFB_2005[0] - 15 * _VFB_SCHRITT_A[0]   # = 0.16
+        max_betrag_2020 = _VFB_2005[1] - 15 * _VFB_SCHRITT_A[1]  # = 1200
+        zuschlag_2020   = _VFB_2005[2] - 15 * _VFB_SCHRITT_A[2]  # = 360
+        n = j - 2020
+        anteil    = anteil_2020    - n * _VFB_SCHRITT_B[0]
+        max_betrag = max_betrag_2020 - n * _VFB_SCHRITT_B[1]
+        zuschlag   = zuschlag_2020   - n * _VFB_SCHRITT_B[2]
+    return max(0.0, min(pension_jahres * anteil, float(max_betrag)) + zuschlag)
+
+# Ertragsanteil-Tabelle § 22 Nr. 1 S. 3a bb EStG (Anlage, vollständige gesetzliche Tabelle)
+_ERTRAGSANTEIL: dict[int, int] = {
+    0: 59, 1: 59, 2: 58, 3: 58, 4: 57, 5: 57, 6: 56, 7: 56, 8: 56,
+    9: 55, 10: 55, 11: 54, 12: 54, 13: 53, 14: 53, 15: 52, 16: 52,
+    17: 51, 18: 51, 19: 50, 20: 50, 21: 49, 22: 49, 23: 48, 24: 48,
+    25: 47, 26: 47, 27: 46, 28: 45, 29: 45, 30: 44, 31: 44, 32: 43,
+    33: 42, 34: 42, 35: 41, 36: 40, 37: 40, 38: 39, 39: 38, 40: 38,
+    41: 37, 42: 36, 43: 35, 44: 35, 45: 34, 46: 33, 47: 33, 48: 32,
+    49: 31, 50: 30, 51: 29, 52: 29, 53: 28, 54: 27, 55: 26, 56: 26,
+    57: 25, 58: 24, 59: 23, 60: 22, 61: 22, 62: 21, 63: 20, 64: 19,
+    65: 18, 66: 18, 67: 17, 68: 16, 69: 15, 70: 15, 71: 14, 72: 13,
+    73: 13, 74: 12, 75: 11, 76: 10, 77: 10, 78: 9,  79: 9,  80: 8,
+    81: 7,  82: 7,  83: 6,  84: 6,  85: 5,  86: 5,  87: 5,
+    88: 4,  89: 4,  90: 4,  91: 4,  92: 3,  93: 3,
+    94: 2,  95: 2,  96: 2,
+}
+
+
+def ertragsanteil(alter: int) -> float:
+    """Ertragsanteil einer Leibrente (§ 22 Nr. 1 S. 3a bb EStG) als Dezimalzahl."""
+    if alter < 0:
+        return 0.59
+    return _ERTRAGSANTEIL.get(alter, 1) / 100
 
 
 # ── Steuerformeln (§ 32a EStG Grundtarif 2024) ────────────────────────────────
@@ -69,6 +132,24 @@ class Profil:
     gkv_zusatzbeitrag: float = 0.017   # kassenindividueller Zusatzbeitrag
     kinder: bool = True
 
+    zusatz_typ: str = "bAV"   # "bAV" | "Riester" | "Rürup" | "PrivateRente"
+
+    # Ruhestand-Status
+    ist_pensionaer:            bool  = False  # Beamter → § 19 EStG Versorgungsfreibetrag
+    bereits_rentner:           bool  = False  # Rente/Pension wird bereits bezogen
+    rentenbeginn_jahr:         int   = 2025   # Nur wenn bereits_rentner=True
+    aktuelles_brutto_monatlich: float = 0.0   # Aktuelle/erwartete Brutto-Rente/Pension €/Mon.
+
+    # Dienstunfähigkeitsversicherung (nur relevant wenn ist_pensionaer=True)
+    duv_monatlich: float = 0.0    # Monatsrente aus DUV (§ 22 Nr. 1 S. 3a bb EStG, kein KVdR)
+    duv_endjahr:   int   = 2040   # DUV läuft bis einschließlich dieses Jahres
+
+    # Private Berufsunfähigkeitsversicherung (für Nicht-Beamte)
+    # Steuerpflichtig mit Ertragsanteil § 22 Nr. 1 S. 3a bb EStG;
+    # NICHT KVdR-pflichtig (private Versicherung, § 229 SGB V nicht anwendbar)
+    buv_monatlich: float = 0.0    # Monatsrente aus privater BUV
+    buv_endjahr:   int   = 2040   # BUV läuft bis einschließlich dieses Jahres
+
     @property
     def aktuelles_alter(self) -> int:
         return AKTUELLES_JAHR - self.geburtsjahr
@@ -98,6 +179,7 @@ class RentenErgebnis:
     rentenwert_angepasst: float
     zvE_jahres: float
     jahressteuer: float
+    rentenabschlag: float = 0.0   # Kürzungsfaktor gesetzl. Rente (0 = kein Abschlag)
 
 
 # ── Kernberechnungen ──────────────────────────────────────────────────────────
@@ -116,36 +198,106 @@ def kapitalwachstum(kapital: float, sparrate: float, rendite_pa: float, jahre: i
     return endwert
 
 
-def berechne_rente(p: Profil) -> RentenErgebnis:
-    # Gesetzliche Rente
-    gesamtpunkte = p.aktuelle_punkte + p.punkte_pro_jahr * p.jahre_bis_rente
-    rentenwert = RENTENWERT_2024 * (1 + p.rentenanpassung_pa) ** p.jahre_bis_rente
-    brutto_gesetzlich = gesamtpunkte * rentenwert
+def berechne_rente(p: Profil) -> RentenErgebnis:  # noqa: C901
+    """Berechnet Brutto, Steuer, KV und Netto-Monatseinkommen.
+
+    Fallunterscheidung:
+    - Standard GRV: Rentenpunkte × Rentenwert, Besteuerungsanteil § 22 Nr. 1 EStG
+    - Pensionär (Beamter): direkte Pensionseingabe, Versorgungsfreibetrag § 19 Abs. 2 EStG,
+      volle KV-Basis (kein Freibetrag wie bei bAV, § 229 Abs. 1 Nr. 1 SGB V)
+    - Bereits im Ruhestand: direkte Eingabe, kein Ansparzeitraum mehr
+    """
+    abschlag     = 0.0
+    gesamtpunkte = 0.0
+    rentenwert   = RENTENWERT_2024
+
+    # ── Einkommensberechnung ──────────────────────────────────────────────────
+    if p.bereits_rentner:
+        # Rente wird bereits bezogen: direkte Bruttoeingabe, kein Ansparen
+        brutto_gesetzlich = p.aktuelles_brutto_monatlich
+        kapital           = p.sparkapital
+        rentenbeginn      = p.rentenbeginn_jahr
+    elif p.ist_pensionaer:
+        # Beamter noch aktiv: erwartete Bruttopension direkt eingegeben
+        brutto_gesetzlich = p.aktuelles_brutto_monatlich
+        kapital           = kapitalwachstum(p.sparkapital, p.sparrate, p.rendite_pa,
+                                            p.jahre_bis_rente)
+        rentenbeginn      = p.eintritt_jahr
+    else:
+        # Standard GRV
+        gesamtpunkte  = p.aktuelle_punkte + p.punkte_pro_jahr * p.jahre_bis_rente
+        rentenwert    = RENTENWERT_2024 * (1 + p.rentenanpassung_pa) ** p.jahre_bis_rente
+        monate_frueh  = max(0, (REGELALTERSGRENZE - p.renteneintritt_alter) * 12)
+        abschlag      = monate_frueh * ABSCHLAG_PRO_MONAT
+        brutto_gesetzlich = gesamtpunkte * rentenwert * (1.0 - abschlag)
+        kapital       = kapitalwachstum(p.sparkapital, p.sparrate, p.rendite_pa,
+                                        p.jahre_bis_rente)
+        rentenbeginn  = p.eintritt_jahr
+
     brutto_total = brutto_gesetzlich + p.zusatz_monatlich
 
-    # Sparkapital
-    kapital = kapitalwachstum(p.sparkapital, p.sparrate, p.rendite_pa, p.jahre_bis_rente)
+    # Alter bei Rentenbeginn (für Ertragsanteil PrivateRente / DUV)
+    alter_rente = (p.rentenbeginn_jahr - p.geburtsjahr) if p.bereits_rentner \
+        else p.renteneintritt_alter
 
-    # Einkommensteuer
-    ba = besteuerungsanteil(p.eintritt_jahr)
-    zvE = max(
-        0.0,
-        brutto_total * 12 * ba
-        - WERBUNGSKOSTEN_PAUSCHBETRAG
-        - SONDERAUSGABEN_PAUSCHBETRAG,
-    )
-    jahressteuer = einkommensteuer(zvE)
+    # Zusatzrente → zvE (typ-abhängig; bAV default für Sidebar ohne Typangabe)
+    if p.zusatz_typ == "PrivateRente":
+        zusatz_zvE = p.zusatz_monatlich * 12 * ertragsanteil(alter_rente)
+    else:
+        zusatz_zvE = p.zusatz_monatlich * 12
+
+    # DUV: Ertragsanteil § 22 Nr. 1 S. 3a bb EStG; nicht KVdR-pflichtig
+    duv_monatl = 0.0
+    duv_zvE_j  = 0.0
+    if p.ist_pensionaer and p.duv_monatlich > 0 and rentenbeginn <= p.duv_endjahr:
+        duv_monatl = p.duv_monatlich
+        alter_duv  = AKTUELLES_JAHR - p.geburtsjahr   # Alter ca. bei DU-Beginn
+        duv_zvE_j  = duv_monatl * 12 * ertragsanteil(alter_duv)
+
+    # BUV (Nicht-Beamte): Ertragsanteil § 22 Nr. 1 S. 3a bb EStG; nicht KVdR-pflichtig
+    buv_monatl = 0.0
+    buv_zvE_j  = 0.0
+    if not p.ist_pensionaer and p.buv_monatlich > 0 and rentenbeginn <= p.buv_endjahr:
+        buv_monatl = p.buv_monatlich
+        alter_bu   = AKTUELLES_JAHR - p.geburtsjahr   # Alter ca. bei BU-Beginn
+        buv_zvE_j  = buv_monatl * 12 * ertragsanteil(alter_bu)
+
+    brutto_total += duv_monatl + buv_monatl
+
+    # ── Einkommensteuer ────────────────────────────────────────────────────────
+    if p.ist_pensionaer:
+        # § 19 Abs. 2 EStG: Versorgungsfreibetrag (Beamtenpension)
+        pension_j = brutto_gesetzlich * 12
+        vfb = versorgungsfreibetrag(rentenbeginn, pension_j)
+        zvE = max(0.0, pension_j - vfb + zusatz_zvE + duv_zvE_j
+                  - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG)
+        # Effektiver Besteuerungsanteil (für Kompatibilität mit _netto_ueber_horizont)
+        ba = max(0.0, pension_j - vfb) / pension_j if pension_j > 0 else 0.0
+    else:
+        # § 22 Nr. 1 S. 3a aa EStG: Besteuerungsanteil GRV
+        ba  = besteuerungsanteil(rentenbeginn)
+        zvE = max(0.0, brutto_gesetzlich * 12 * ba + zusatz_zvE + buv_zvE_j
+                  - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG)
+
+    jahressteuer     = einkommensteuer(zvE)
     steuer_monatlich = jahressteuer / 12
 
-    # Krankenversicherung
+    # ── Krankenversicherung ────────────────────────────────────────────────────
     if p.krankenversicherung == "PKV":
         kv = p.pkv_beitrag
     else:
         kv_satz = 0.073 + p.gkv_zusatzbeitrag / 2
         pv_satz = 0.034 if p.kinder else 0.040
-        kv = brutto_total * (kv_satz + pv_satz)
+        if p.ist_pensionaer:
+            # § 229 Abs. 1 Nr. 1 SGB V: Beamtenversorgung → volle KV-Basis,
+            # kein Freibetrag (der gilt nur für bAV nach § 226 Abs. 2 SGB V)
+            kv_basis = min(brutto_gesetzlich, BBG_KV_MONATLICH)
+        else:
+            # Private BUV ist kein Versorgungsbezug i.S.v. § 229 SGB V → nicht KVdR-pflichtig
+            kv_basis = brutto_total - buv_monatl
+        kv = kv_basis * (kv_satz + pv_satz)
 
-    netto = brutto_total - steuer_monatlich - kv
+    netto  = brutto_total - steuer_monatlich - kv
     eff_st = steuer_monatlich / brutto_total if brutto_total > 0 else 0.0
 
     return RentenErgebnis(
@@ -158,9 +310,10 @@ def berechne_rente(p: Profil) -> RentenErgebnis:
         effektiver_steuersatz=eff_st,
         gesamtpunkte=gesamtpunkte,
         brutto_gesetzlich=brutto_gesetzlich,
-        rentenwert_angepasst=rentenwert,
+        rentenwert_angepasst=0.0 if (p.ist_pensionaer or p.bereits_rentner) else rentenwert,
         zvE_jahres=zvE,
         jahressteuer=jahressteuer,
+        rentenabschlag=abschlag,
     )
 
 
@@ -248,10 +401,18 @@ class VorsorgeProdukt:
     fruehestes_startjahr: int  # Frühestes mögliches Startjahr
     spaetestes_startjahr: int  # Spätestes mögliches Startjahr
     aufschub_rendite: float    # Verzinsung je Aufschubjahr (0.02 = 2 % p.a.)
+    vertragsbeginn: int = 2010        # Jahr des Vertragsabschlusses (§ 20 Abs. 1 Nr. 6 EStG)
+    einzahlungen_gesamt: float = 0.0  # Summe eingezahlter Beiträge (für Ertragsberechnung)
+    teilfreistellung: float = 0.30    # ETF: 30 % Teilfreistellung (§ 20 InvStG 2018)
 
     @property
     def ist_lebensversicherung(self) -> bool:
         return self.typ == "LV"
+
+    @property
+    def ist_nur_monatsrente(self) -> bool:
+        """Rürup/Basisrente: kein Kapitalwahlrecht (§ 10 Abs. 1 Nr. 2b EStG)."""
+        return self.typ == "Rürup"
 
 
 def _annuitaet(kapital: float, rendite_pa: float, jahre: int) -> float:
@@ -289,7 +450,14 @@ def vergleiche_produkt(
     t_monatlich = M * 12 * effective_lz
     m_monatlich = M
 
-    if not produkt.ist_lebensversicherung and produkt.max_monatsrente > 0:
+    nur_einmal = produkt.ist_lebensversicherung or produkt.typ == "ETF" or produkt.max_monatsrente <= 0
+    if produkt.ist_nur_monatsrente:
+        best_x, t_komb, m_komb = 0.0, t_monatlich, m_monatlich
+        bestes = "monatlich"
+    elif nur_einmal:
+        best_x, t_komb, m_komb = 1.0, t_einmal, m_einmal
+        bestes = "einmal"
+    else:
         xs = np.linspace(0.0, 1.0, 101)
         totale = [
             _annuitaet(K * x, rendite_pa, H) * 12 * H + M * (1 - x) * 12 * effective_lz
@@ -299,15 +467,10 @@ def vergleiche_produkt(
         best_x = float(xs[best_idx])
         t_komb = float(totale[best_idx])
         m_komb = _annuitaet(K * best_x, rendite_pa, H) + M * (1 - best_x)
-    else:
-        best_x = 1.0
-        t_komb = t_einmal
-        m_komb = m_einmal
-
-    bestes = "einmal" if (produkt.ist_lebensversicherung or produkt.max_monatsrente <= 0) else max(
-        {"einmal": t_einmal, "monatlich": t_monatlich, "kombiniert": t_komb},
-        key=lambda k: {"einmal": t_einmal, "monatlich": t_monatlich, "kombiniert": t_komb}[k],
-    )
+        bestes = max(
+            {"einmal": t_einmal, "monatlich": t_monatlich, "kombiniert": t_komb},
+            key=lambda k: {"einmal": t_einmal, "monatlich": t_monatlich, "kombiniert": t_komb}[k],
+        )
     return {
         "einmal":     {"monatlich": m_einmal,    "total": t_einmal},
         "monatlich":  {"monatlich": m_monatlich, "total": t_monatlich},
@@ -329,75 +492,195 @@ def _netto_ueber_horizont(
     """
     Simuliert das Netto-Einkommen Jahr für Jahr über `horizont_jahre` ab Renteneintritt.
 
-    KV/PV-Behandlung (GKV):
-    - bAV: KVdR-pflichtig; Freibetrag BAV_FREIBETRAG_MONATLICH (§ 226 Abs. 2 SGB V);
-      Einmalauszahlung auf 10 Jahre verteilt (§ 229 Abs. 1 S. 3 SGB V).
-    - PrivateRente / Riester / LV: NICHT KVdR-pflichtig.
-    - Beitragsbemessungsgrenze: BBG_KV_MONATLICH.
-    Steuer: alle Einkünfte voll angesetzt (vereinfacht konservativ; korrekt für bAV/Riester).
+    Steuer- und KV-Behandlung:
+    - Gesetzliche Rente: Besteuerungsanteil § 22 Nr. 1 S. 3a aa EStG.
+    - bAV (monatl./Einmal): 100 % steuerpflichtig § 19 / § 22 Nr. 5 EStG; KVdR-pflichtig.
+      Einmalauszahlung KV-Basis auf 10 Jahre verteilt (§ 229 Abs. 1 S. 3 SGB V).
+    - Riester (monatl./Einmal): 100 % steuerpflichtig § 22 Nr. 5 EStG; NICHT KVdR.
+    - Rürup (monatl.): Besteuerungsanteil § 22 Nr. 1 S. 3a aa EStG; NICHT KVdR; kein Einmal.
+    - Private RV (monatl.): nur Ertragsanteil steuerpflichtig § 22 Nr. 1 S. 3a bb EStG; NICHT KVdR.
+    - LV / Private RV (Einmal): § 20 Abs. 1 Nr. 6 EStG:
+        - Vertrag vor 01.01.2005: steuerfrei (Altvertrag).
+        - Ab 2005, Laufzeit ≥ 12 J. und Alter ≥ 60 (bis 2011) / ≥ 62 (ab 2012):
+          50 % des Ertrags → progressiver Tarif (Halbeinkünfteverfahren).
+        - Sonst: 25 % Abgeltungsteuer auf vollen Ertrag.
+    - ETF (Einmal): Abgeltungsteuer auf Ertrag × (1 – Teilfreistellung); Sparerpauschbetrag.
+    - Mieteinnahmen: voll steuerpflichtig § 21 EStG; NICHT KVdR.
+    - Sparerpauschbetrag (§ 20 Abs. 9 EStG): 1.000 € auf Abgeltungsteuer-Pool.
     """
     ba = ergebnis.besteuerungsanteil
-    gesetzl_mono = ergebnis.brutto_gesetzlich       # nur gesetzliche Rente
-    zusatz_bav_mono = profil.zusatz_monatlich       # Sidebar-Zusatz → als bAV behandelt
+    gesetzl_mono = ergebnis.brutto_gesetzlich
     ist_pkv = profil.krankenversicherung == "PKV"
     kv_rate = (0.073 + profil.gkv_zusatzbeitrag / 2) + (0.034 if profil.kinder else 0.040)
+
+    # Sidebar-Zusatzrente: Initialwerte je nach Typ (einmalig vor dem Loop berechnen)
+    _z = profil.zusatz_monatlich * 12
+    if profil.zusatz_typ == "bAV":
+        _s_bav_j, _s_riester_j = _z, 0.0
+        _s_ruerup_brutto_j, _s_ruerup_zvE_j = 0.0, 0.0
+        _s_priv_brutto_j, _s_priv_zvE_j = 0.0, 0.0
+    elif profil.zusatz_typ == "Riester":
+        _s_bav_j, _s_riester_j = 0.0, _z
+        _s_ruerup_brutto_j, _s_ruerup_zvE_j = 0.0, 0.0
+        _s_priv_brutto_j, _s_priv_zvE_j = 0.0, 0.0
+    elif profil.zusatz_typ == "Rürup":
+        _s_bav_j, _s_riester_j = 0.0, 0.0
+        _ba_r = besteuerungsanteil(profil.eintritt_jahr)
+        _s_ruerup_brutto_j, _s_ruerup_zvE_j = _z, _z * _ba_r
+        _s_priv_brutto_j, _s_priv_zvE_j = 0.0, 0.0
+    else:  # PrivateRente
+        ea_z = ertragsanteil(profil.renteneintritt_alter)
+        _s_bav_j, _s_riester_j = 0.0, 0.0
+        _s_ruerup_brutto_j, _s_ruerup_zvE_j = 0.0, 0.0
+        _s_priv_brutto_j, _s_priv_zvE_j = _z, _z * ea_z
+
+    # DUV: Ertragsanteil auf Basis des Alters bei DU-Beginn (ca. aktuelles Alter)
+    _duv_ea = (ertragsanteil(AKTUELLES_JAHR - profil.geburtsjahr)
+               if profil.ist_pensionaer and profil.duv_monatlich > 0 else 0.0)
+
+    # BUV: Ertragsanteil § 22 Nr. 1 S. 3a bb EStG; nicht KVdR-pflichtig
+    _buv_ea = (ertragsanteil(AKTUELLES_JAHR - profil.geburtsjahr)
+               if not profil.ist_pensionaer and profil.buv_monatlich > 0 else 0.0)
+
+    # M6: für bereits_rentner gilt rentenbeginn_jahr als Simulationsstartpunkt
+    _sim_start = profil.rentenbeginn_jahr if profil.bereits_rentner else profil.eintritt_jahr
 
     total_netto = 0.0
     jahresdaten: list[dict] = []
 
     for y in range(horizont_jahre):
-        jahr = profil.eintritt_jahr + y
+        jahr = _sim_start + y
+        # M5: gesetzliche Rente wächst mit Rentenanpassung (0 % für Pensionäre)
+        gesetzl_j = gesetzl_mono * 12 * (1 + profil.rentenanpassung_pa) ** y
+        miet_j = mieteinnahmen_monatlich * 12 * (1 + mietsteigerung_pa) ** y
 
-        gesetzl_jahres = gesetzl_mono * 12
-        miet_jahres = mieteinnahmen_monatlich * 12 * (1 + mietsteigerung_pa) ** y
-        bav_mono_jahres = zusatz_bav_mono * 12      # laufende bAV-Rente (KVdR-pflichtig)
-        bav_einmal_kv_jahres = 0.0                  # bAV-Einmal: KV-Basis 1/10 p.a. (§229 SGB V)
-        privat_jahres = 0.0                         # PrivateRV/Riester/LV: nicht KVdR-pflichtig
-        einmal_steuer_jahres = 0.0                  # alle Einmalauszahlungen → Steuer im Startjahr
+        # DUV: aktiv solange Jahr ≤ duv_endjahr (nicht KVdR, Ertragsanteil)
+        duv_j     = 0.0
+        duv_zvE_j = 0.0
+        if profil.ist_pensionaer and profil.duv_monatlich > 0 and jahr <= profil.duv_endjahr:
+            duv_j     = profil.duv_monatlich * 12
+            duv_zvE_j = duv_j * _duv_ea
+
+        # BUV: aktiv solange Jahr ≤ buv_endjahr (nicht KVdR, Ertragsanteil)
+        buv_j     = 0.0
+        buv_zvE_j = 0.0
+        if not profil.ist_pensionaer and profil.buv_monatlich > 0 and jahr <= profil.buv_endjahr:
+            buv_j     = profil.buv_monatlich * 12
+            buv_zvE_j = buv_j * _buv_ea
+
+        # Laufende Renten (Sidebar-Basis + Verträge)
+        bav_lfd_j     = _s_bav_j           # bAV: 100 % steuerpfl., KVdR
+        riester_lfd_j = _s_riester_j       # Riester: 100 % steuerpfl., nicht KVdR
+        ruerup_brutto_j = _s_ruerup_brutto_j  # Rürup: besteuerungsanteil, nicht KVdR
+        ruerup_zvE_j    = _s_ruerup_zvE_j
+        priv_brutto_j   = _s_priv_brutto_j    # PrivRV: ertragsanteil, nicht KVdR
+        priv_zvE_j      = _s_priv_zvE_j
+
+        # Einmalauszahlungen
+        bav_einmal_kv_j = 0.0    # bAV-Einmal KV-Basis §229 SGB V
+        einmal_brutto_j = 0.0    # alle sonstigen Einmal brutto
+        einmal_progr_j  = 0.0    # → zvE progressiv (bAV 100 %, Halbeink. 50 % Ertrag, Rürup BA)
+        einmal_abgelt_j = 0.0    # LV/PrivRV → Abgeltungsteuer (voller Ertrag)
+        etf_brutto_j    = 0.0    # ETF-Entnahme brutto
+        etf_abgelt_j    = 0.0    # ETF → Abgeltungsteuer (Ertrag × (1 – TF))
 
         for prod, startjahr, anteil in entscheidungen:
             if jahr < startjahr:
                 continue
             einmal_wert, mono_wert = _wert_bei_start(prod, startjahr)
-            ist_bav = prod.typ == "bAV"
+            ist_bav     = prod.typ == "bAV"
+            ist_riester = prod.typ == "Riester"
+            ist_ruerup  = prod.typ == "Rürup"
+            ist_etf     = prod.typ == "ETF"
             lz = prod.laufzeit_jahre if prod.laufzeit_jahre > 0 else horizont_jahre
 
+            # ── Einmalauszahlung ──────────────────────────────────────────────
             if anteil > 0:
                 betrag = einmal_wert * anteil
                 if jahr == startjahr:
-                    einmal_steuer_jahres += betrag          # Brutto/Steuer: einmalig im Startjahr
-                if ist_bav and 0 <= jahr - startjahr < 10:
-                    bav_einmal_kv_jahres += betrag / 10     # KV-Basis: 1/10 über 10 Jahre
+                    if ist_etf:
+                        gain_ratio = (
+                            max(0.0, 1.0 - prod.einzahlungen_gesamt / einmal_wert)
+                            if einmal_wert > 0 else 0.0
+                        )
+                        etf_brutto_j   += betrag
+                        etf_abgelt_j   += betrag * gain_ratio * (1.0 - prod.teilfreistellung)
+                    else:
+                        einmal_brutto_j += betrag
+                        if ist_bav or ist_riester:
+                            einmal_progr_j += betrag           # 100 % steuerpflichtig
+                        elif ist_ruerup:
+                            einmal_progr_j += betrag * besteuerungsanteil(startjahr)
+                        else:
+                            # LV / PrivateRente: § 20 Abs. 1 Nr. 6 EStG
+                            ertrag = max(0.0, betrag - prod.einzahlungen_gesamt * anteil)
+                            if prod.vertragsbeginn < 2005:
+                                pass                           # Altvertrag: steuerfrei
+                            else:
+                                laufzeit_vtr = max(0, startjahr - prod.vertragsbeginn)
+                                min_alter_hb = 60 if prod.vertragsbeginn <= 2011 else 62
+                                alter_az = startjahr - profil.geburtsjahr
+                                if laufzeit_vtr >= 12 and alter_az >= min_alter_hb:
+                                    einmal_progr_j += ertrag * 0.5   # Halbeinkünfte
+                                else:
+                                    einmal_abgelt_j += ertrag        # Abgeltungsteuer
 
+                # KV-Verteilung bAV-Einmal über 10 Jahre (§ 229 Abs. 1 S. 3 SGB V)
+                if ist_bav and 0 <= jahr - startjahr < 10:
+                    bav_einmal_kv_j += betrag / 10
+
+            # ── Laufende Monatsrente ──────────────────────────────────────────
             if 0 <= jahr - startjahr < lz and anteil < 1.0:
                 mono = mono_wert * (1 - anteil) * 12
                 if ist_bav:
-                    bav_mono_jahres += mono
-                else:
-                    privat_jahres += mono
+                    bav_lfd_j += mono
+                elif ist_riester:
+                    riester_lfd_j += mono
+                elif ist_ruerup:
+                    ba_r = besteuerungsanteil(startjahr)
+                    ruerup_brutto_j += mono
+                    ruerup_zvE_j    += mono * ba_r
+                elif not ist_etf:
+                    # PrivateRente: nur Ertragsanteil steuerpflichtig
+                    alter_start = startjahr - profil.geburtsjahr
+                    ea = ertragsanteil(alter_start)
+                    priv_brutto_j += mono
+                    priv_zvE_j    += mono * ea
 
-        # Einkommensteuer (alle Einkünfte voll steuerpflichtig – vereinfacht)
-        # Mieteinnahmen §21 EStG: voll steuerpflichtig, kein Besteuerungsanteil
+        # DUV und BUV gehen in privaten Renten-Tracker (nicht KVdR)
+        priv_brutto_j += duv_j + buv_j
+        priv_zvE_j    += duv_zvE_j + buv_zvE_j
+
+        # ── Einkommensteuer ───────────────────────────────────────────────────
         zvE = max(
             0.0,
-            gesetzl_jahres * ba
-            + bav_mono_jahres + privat_jahres + einmal_steuer_jahres
-            + miet_jahres
+            gesetzl_j * ba
+            + bav_lfd_j + riester_lfd_j
+            + ruerup_zvE_j
+            + priv_zvE_j
+            + einmal_progr_j
+            + miet_j
             - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG,
         )
-        steuer = einkommensteuer(zvE)
+        abgelt_pool  = einmal_abgelt_j + etf_abgelt_j
+        steuer_abgelt = max(0.0, abgelt_pool - SPARERPAUSCHBETRAG) * 0.25
+        steuer_progr  = einkommensteuer(zvE)
+        steuer = steuer_progr + steuer_abgelt
 
-        # KV / PV – Mieteinnahmen nicht KVdR-pflichtig
+        # ── KV / PV ───────────────────────────────────────────────────────────
         if ist_pkv:
             kv = profil.pkv_beitrag * 12
         else:
-            # KVdR-Basis: gesetzliche Rente + bAV (nach Freibetrag), max BBG
-            bav_kv_mono = (bav_mono_jahres + bav_einmal_kv_jahres) / 12
+            bav_kv_mono = (bav_lfd_j + bav_einmal_kv_j) / 12
             bav_kv_basis = max(0.0, bav_kv_mono - BAV_FREIBETRAG_MONATLICH)
             kv_basis_mono = min(gesetzl_mono + bav_kv_basis, BBG_KV_MONATLICH)
             kv = kv_basis_mono * 12 * kv_rate
 
-        brutto = gesetzl_jahres + bav_mono_jahres + privat_jahres + einmal_steuer_jahres + miet_jahres
+        brutto = (
+            gesetzl_j + bav_lfd_j + riester_lfd_j
+            + ruerup_brutto_j + priv_brutto_j
+            + einmal_brutto_j + etf_brutto_j + miet_j
+        )
         netto = brutto - steuer - kv
         total_netto += netto
         jahresdaten.append({
@@ -406,6 +689,13 @@ def _netto_ueber_horizont(
             "Steuer": round(steuer),
             "KV_PV": round(kv),
             "Netto": round(netto),
+            "Src_GesRente":   round(gesetzl_j),
+            "Src_Versorgung": round(bav_lfd_j + riester_lfd_j + ruerup_brutto_j + priv_brutto_j),
+            "Src_Einmal":     round(einmal_brutto_j + etf_brutto_j),
+            "Src_Miete":      round(miet_j),
+            "zvE":            round(zvE),
+            "Steuer_Progressiv": round(steuer_progr),
+            "Steuer_Abgeltung":  round(steuer_abgelt),
         })
 
     return total_netto, jahresdaten
@@ -433,12 +723,15 @@ def optimiere_auszahlungen(
 
     def optionen(prod: VorsorgeProdukt) -> list[tuple[int, float]]:
         jahre = list(range(prod.fruehestes_startjahr, prod.spaetestes_startjahr + 1))
-        # Max 4 Stützstellen für Rechenzeit
         if len(jahre) > 4:
             idx = [0, len(jahre) // 3, 2 * len(jahre) // 3, len(jahre) - 1]
             jahre = [jahre[i] for i in idx]
-        anteile = [1.0] if prod.ist_lebensversicherung or prod.max_monatsrente <= 0 \
-            else [0.0, 0.5, 1.0]
+        if prod.ist_nur_monatsrente:
+            anteile = [0.0]                              # Rürup: kein Kapitalwahlrecht
+        elif prod.ist_lebensversicherung or prod.typ == "ETF" or prod.max_monatsrente <= 0:
+            anteile = [1.0]                              # LV/ETF: immer Einmal
+        else:
+            anteile = [0.0, 0.5, 1.0]
         return [(j, a) for j in jahre for a in anteile]
 
     alle_optionen = [optionen(p) for p in produkte]

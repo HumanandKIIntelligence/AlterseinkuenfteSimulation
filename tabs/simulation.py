@@ -19,9 +19,17 @@ _PARAMS = {
 }
 
 
-def render(T: dict, profil: Profil, ergebnis: RentenErgebnis) -> None:
+def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
+           profil2: Profil | None = None,
+           ergebnis2: RentenErgebnis | None = None) -> None:
     with T["Simulation"]:
         st.header("🔮 Szenarien-Simulation")
+
+        if profil2 is not None and ergebnis2 is not None:
+            wahl = st.radio("Person", ["Person 1", "Person 2"],
+                            horizontal=True, key="sim_person")
+            if wahl == "Person 2":
+                profil, ergebnis = profil2, ergebnis2
 
         szenarien = simuliere_szenarien(profil)
 

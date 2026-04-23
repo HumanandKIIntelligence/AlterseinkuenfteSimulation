@@ -17,9 +17,12 @@ from engine import (
     SONDERAUSGABEN_PAUSCHBETRAG,
     BAV_FREIBETRAG_MONATLICH,
     BBG_KV_MONATLICH,
+    SPARERPAUSCHBETRAG,
     einkommensteuer,
     einkommensteuer_splitting,
     besteuerungsanteil,
+    ertragsanteil,
+    versorgungsfreibetrag,
     kapitalwachstum,
     berechne_rente,
     berechne_haushalt,
@@ -190,6 +193,34 @@ class TestBesteuerungsanteil:
         anteile = [besteuerungsanteil(j) for j in jahre]
         for i in range(1, len(anteile)):
             assert anteile[i] >= anteile[i - 1]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ertragsanteil – § 22 Nr. 1 S. 3a bb EStG
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestErtragsanteil:
+    def test_gesetzliche_kerenwerte(self):
+        assert ertragsanteil(60) == pytest.approx(0.22)
+        assert ertragsanteil(62) == pytest.approx(0.21)
+        assert ertragsanteil(65) == pytest.approx(0.18)
+        assert ertragsanteil(67) == pytest.approx(0.17)
+
+    def test_monoton_fallend_mit_steigendem_alter(self):
+        werte = [ertragsanteil(a) for a in range(0, 97)]
+        for i in range(1, len(werte)):
+            assert werte[i] <= werte[i - 1], f"Nicht monoton bei Alter {i}"
+
+    def test_junges_alter_hoch(self):
+        assert ertragsanteil(0) == pytest.approx(0.59)
+
+    def test_hohes_alter_niedrig(self):
+        assert ertragsanteil(80) == pytest.approx(0.08)
+        assert ertragsanteil(96) == pytest.approx(0.02)
+
+    def test_rueckgabe_als_dezimalzahl(self):
+        assert ertragsanteil(67) < 1.0
+        assert ertragsanteil(67) > 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -635,6 +666,135 @@ class TestNettoUeberHorizont:
         total, jd = _netto_ueber_horizont(p, e, [], 10)
         assert abs(total - sum(r["Netto"] for r in jd)) < len(jd) * 1.0
 
+    def test_privat_rv_monatsrente_nur_ertragsanteil_versteuert(self):
+        """PrivateRente monatlich → nur Ertragsanteil im zvE; Netto höher als bAV."""
+        p = self._profil_gkv()   # eintritt_jahr = 1958 + 67 = 2025
+        e = self._ergebnis_gkv()
+        sj = p.eintritt_jahr
+        priv_prod = VorsorgeProdukt(
+            id="priv", typ="PrivateRente", name="PRV", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=1_000.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        bav_prod = VorsorgeProdukt(
+            id="bav", typ="bAV", name="BAV", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=1_000.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        total_priv, _ = _netto_ueber_horizont(p, e, [(priv_prod, sj, 0.0)], 5)
+        total_bav, _  = _netto_ueber_horizont(p, e, [(bav_prod,  sj, 0.0)], 5)
+        assert total_priv > total_bav
+
+    def test_lv_altvertrag_steuerfrei(self):
+        """LV-Altvertrag (Vertragsbeginn vor 2005) → Einmalauszahlung steuerfrei."""
+        p = self._profil_gkv()
+        e = self._ergebnis_gkv()
+        sj = p.eintritt_jahr
+        lv_alt = VorsorgeProdukt(
+            id="lv_alt", typ="LV", name="LV-Alt", person="Person 1",
+            max_einmalzahlung=50_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, vertragsbeginn=1995, einzahlungen_gesamt=30_000.0,
+        )
+        lv_neu = VorsorgeProdukt(
+            id="lv_neu", typ="LV", name="LV-Neu", person="Person 1",
+            max_einmalzahlung=50_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, vertragsbeginn=2010, einzahlungen_gesamt=30_000.0,
+        )
+        total_alt, _ = _netto_ueber_horizont(p, e, [(lv_alt, sj, 1.0)], 5)
+        total_neu, _ = _netto_ueber_horizont(p, e, [(lv_neu, sj, 1.0)], 5)
+        assert total_alt > total_neu
+
+    def test_lv_halbeinkunfte_bei_langer_laufzeit(self):
+        """LV ab 2012, Laufzeit ≥ 12 J. und Alter ≥ 62 → Halbeinkünfte günstiger als
+        Abgeltungsteuer (kurze Laufzeit)."""
+        p = self._profil_gkv()   # geb. 1958, Eintritt 67 = 2025
+        e = self._ergebnis_gkv()
+        sj = p.eintritt_jahr     # 2025; Alter = 67 ≥ 62
+        # lang: Laufzeit 2012 → 2025 = 13 J. ≥ 12 → Halbeinkünfte
+        lv_lang = VorsorgeProdukt(
+            id="lv_l", typ="LV", name="LV-Lang", person="Person 1",
+            max_einmalzahlung=50_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, vertragsbeginn=2012, einzahlungen_gesamt=30_000.0,
+        )
+        # kurz: Laufzeit 2020 → 2025 = 5 J. < 12 → Abgeltungsteuer
+        lv_kurz = VorsorgeProdukt(
+            id="lv_k", typ="LV", name="LV-Kurz", person="Person 1",
+            max_einmalzahlung=50_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, vertragsbeginn=2020, einzahlungen_gesamt=30_000.0,
+        )
+        total_lang, _ = _netto_ueber_horizont(p, e, [(lv_lang, sj, 1.0)], 5)
+        total_kurz, _ = _netto_ueber_horizont(p, e, [(lv_kurz, sj, 1.0)], 5)
+        assert total_lang > total_kurz
+
+    def test_ruerup_besteuerungsanteil_nicht_100prozent(self):
+        """Rürup-Rente wird mit Besteuerungsanteil, nicht 100 % versteuert."""
+        p = self._profil_gkv()
+        e = self._ergebnis_gkv()
+        sj = p.eintritt_jahr
+        ba = besteuerungsanteil(sj)
+        assert ba < 1.0, "Test-Voraussetzung: Besteuerungsanteil < 100 %"
+
+        ruerup = VorsorgeProdukt(
+            id="r1", typ="Rürup", name="Rürup-Test", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=1_000.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        riester = VorsorgeProdukt(
+            id="ri1", typ="Riester", name="Riester-Test", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=1_000.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        total_ruerup,  _ = _netto_ueber_horizont(p, e, [(ruerup,  sj, 0.0)], 5)
+        total_riester, _ = _netto_ueber_horizont(p, e, [(riester, sj, 0.0)], 5)
+        # Rürup: weniger steuerpflichtig → höheres Netto
+        assert total_ruerup > total_riester
+
+    def test_etf_teilfreistellung_und_sparerpauschbetrag(self):
+        """ETF-Entnahme: nur (1 – TF) × Gewinn steuerpflichtig; Sparerpauschbetrag greift."""
+        p = self._profil_gkv()
+        e = self._ergebnis_gkv()
+        sj = p.eintritt_jahr
+        # ETF mit kleinem Ertrag unter Sparerpauschbetrag → keine Abgeltungsteuer
+        etf_klein = VorsorgeProdukt(
+            id="etf1", typ="ETF", name="ETF-klein", person="Person 1",
+            max_einmalzahlung=10_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, einzahlungen_gesamt=9_500.0, teilfreistellung=0.30,
+        )
+        # Ertrag = 10.000 × (1 - 9.500/10.000) = 500 €; TF 30 % → steuerpfl. 350 € < 1.000 €
+        _, jd = _netto_ueber_horizont(p, e, [(etf_klein, sj, 1.0)], 5)
+        assert jd[0]["Steuer_Abgeltung"] == 0  # unter Sparerpauschbetrag
+
+        # ETF mit großem Ertrag über Sparerpauschbetrag
+        etf_gross = VorsorgeProdukt(
+            id="etf2", typ="ETF", name="ETF-groß", person="Person 1",
+            max_einmalzahlung=100_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, einzahlungen_gesamt=50_000.0, teilfreistellung=0.30,
+        )
+        # Ertrag = 50.000 €; TF 30 % → steuerpfl. 35.000 € >> 1.000 €
+        _, jd2 = _netto_ueber_horizont(p, e, [(etf_gross, sj, 1.0)], 5)
+        expected = (35_000.0 - SPARERPAUSCHBETRAG) * 0.25
+        assert jd2[0]["Steuer_Abgeltung"] == pytest.approx(expected, abs=1.0)
+
+    def test_jahresdaten_quellenschluessel_vorhanden(self):
+        """Erweiterte Schlüssel in jahresdaten (Src_*, zvE, Steuer_*) sind vorhanden."""
+        p = self._profil_gkv()
+        e = self._ergebnis_gkv()
+        _, jd = _netto_ueber_horizont(p, e, [], 5)
+        expected_keys = {"Src_GesRente", "Src_Versorgung", "Src_Einmal",
+                         "Src_Miete", "zvE", "Steuer_Progressiv", "Steuer_Abgeltung"}
+        for row in jd:
+            assert expected_keys.issubset(row.keys())
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # simuliere_szenarien
@@ -675,3 +835,228 @@ class TestKonstanten:
 
     def test_bbg_kv_plausibel(self):
         assert 4_000 < BBG_KV_MONATLICH < 7_000
+
+    def test_sparerpauschbetrag_plausibel(self):
+        assert SPARERPAUSCHBETRAG == 1_000
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# versorgungsfreibetrag – § 19 Abs. 2 EStG (M1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVersorgungsfreibetrag:
+    def test_2005_maximaler_freibetrag(self):
+        # 2005: 40 % × Pension, max. 3.000 €, Zuschlag 900 €
+        pension_j = 100_000.0
+        vfb = versorgungsfreibetrag(2005, pension_j)
+        assert vfb == pytest.approx(3_000.0 + 900.0)
+
+    def test_2005_klein_anteil_greift(self):
+        # Pension so klein, dass 40 % unter 3.000 €
+        pension_j = 5_000.0
+        vfb = versorgungsfreibetrag(2005, pension_j)
+        assert vfb == pytest.approx(5_000.0 * 0.40 + 900.0)
+
+    def test_2024_werte(self):
+        # 2024: 19 Schritte nach 2005 – aber ab 2021 nur noch halber Schritt
+        # Wert für 2020: anteil = 0.40 - 15*0.016 = 0.16; max = 3000-15*120 = 1200; zuschlag = 900-15*36 = 360
+        # 2024: n = 4 Schritte von 2020; anteil = 0.16 - 4*0.008 = 0.128; max = 1200-4*60 = 960; zuschlag = 360-4*18 = 288
+        pension_j = 100_000.0
+        vfb = versorgungsfreibetrag(2024, pension_j)
+        # anteil × pension > max → max + zuschlag = 960 + 288 = 1248
+        assert vfb == pytest.approx(960.0 + 288.0)
+
+    def test_2040_kein_freibetrag(self):
+        assert versorgungsfreibetrag(2040, 50_000.0) == 0.0
+        assert versorgungsfreibetrag(2050, 50_000.0) == 0.0
+
+    def test_monoton_sinkend_mit_spatem_ruhestand(self):
+        pension_j = 50_000.0
+        vfb_2005 = versorgungsfreibetrag(2005, pension_j)
+        vfb_2015 = versorgungsfreibetrag(2015, pension_j)
+        vfb_2025 = versorgungsfreibetrag(2025, pension_j)
+        assert vfb_2005 > vfb_2015 > vfb_2025
+
+    def test_kein_negativer_freibetrag(self):
+        for j in range(2000, 2045):
+            assert versorgungsfreibetrag(j, 0.0) >= 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# berechne_rente Pensionär – § 19 EStG, KV § 229 (M1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPensionaerBerechne:
+    def _pensionaer(self, **kwargs):
+        defaults = dict(
+            geburtsjahr=1965,
+            renteneintritt_alter=65,
+            aktuelle_punkte=0.0,
+            punkte_pro_jahr=0.0,
+            zusatz_monatlich=0.0,
+            sparkapital=0.0,
+            sparrate=0.0,
+            rendite_pa=0.0,
+            rentenanpassung_pa=0.0,
+            krankenversicherung="GKV",
+            pkv_beitrag=0.0,
+            gkv_zusatzbeitrag=0.017,
+            kinder=True,
+            ist_pensionaer=True,
+            aktuelles_brutto_monatlich=4_000.0,
+        )
+        defaults.update(kwargs)
+        return Profil(**defaults)
+
+    def test_brutto_gleich_eingabe(self):
+        p = self._pensionaer(aktuelles_brutto_monatlich=3_500.0)
+        e = berechne_rente(p)
+        assert e.brutto_gesetzlich == pytest.approx(3_500.0)
+
+    def test_versorgungsfreibetrag_senkt_steuer(self):
+        """Pensionär zahlt weniger Steuer als bei voller Besteuerung (ohne VFB)."""
+        p = self._pensionaer(aktuelles_brutto_monatlich=3_000.0)
+        e = berechne_rente(p)
+        # Steuer mit VFB < Steuer ohne VFB
+        pension_j = 3_000.0 * 12
+        zvE_ohne_vfb = max(0.0, pension_j - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG)
+        steuer_ohne_vfb = einkommensteuer(zvE_ohne_vfb)
+        assert e.jahressteuer < steuer_ohne_vfb
+
+    def test_kv_keine_bav_freibetrag(self):
+        """Bei Pensionären gilt kein bAV-Freibetrag (§ 229 Abs. 1 Nr. 1 SGB V)."""
+        p_pensionaer = self._pensionaer(aktuelles_brutto_monatlich=500.0, kinder=True)
+        e = berechne_rente(p_pensionaer)
+        # GRV-Rentner mit 500 € bAV würde Freibetrag von 187,25 € bekommen,
+        # Pensionär hat keinen Freibetrag → volle KV-Basis
+        kv_satz = 0.073 + 0.017 / 2 + 0.034
+        expected_kv = 500.0 * kv_satz
+        assert e.kv_monatlich == pytest.approx(expected_kv, rel=1e-4)
+
+    def test_netto_konsistent(self):
+        p = self._pensionaer()
+        e = berechne_rente(p)
+        assert e.netto_monatlich == pytest.approx(
+            e.brutto_monatlich - e.steuer_monatlich - e.kv_monatlich, rel=1e-9
+        )
+
+    def test_pkv_beihilfe_pensionaer(self):
+        p = self._pensionaer(krankenversicherung="PKV", pkv_beitrag=250.0)
+        e = berechne_rente(p)
+        assert e.kv_monatlich == pytest.approx(250.0)
+
+    def test_rentenpunkte_null_fuer_pensionaer(self):
+        p = self._pensionaer()
+        e = berechne_rente(p)
+        assert e.gesamtpunkte == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DUV/BUV – Ertragsanteil und KV-Behandlung (M1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDuvBuv:
+    def _pensionaer_mit_duv(self, duv_mon=500.0, duv_end=2060):
+        return _profil(
+            geburtsjahr=1985,
+            renteneintritt_alter=65,
+            aktuelle_punkte=0.0,
+            punkte_pro_jahr=0.0,
+            ist_pensionaer=True,
+            aktuelles_brutto_monatlich=3_000.0,
+            krankenversicherung="GKV",
+            duv_monatlich=duv_mon,
+            duv_endjahr=duv_end,
+        )
+
+    def _grv_mit_buv(self, buv_mon=500.0, buv_end=2060):
+        return _profil(
+            geburtsjahr=1985,
+            renteneintritt_alter=67,
+            aktuelle_punkte=30.0,
+            punkte_pro_jahr=0.0,
+            ist_pensionaer=False,
+            buv_monatlich=buv_mon,
+            buv_endjahr=buv_end,
+        )
+
+    def test_duv_erhoetht_brutto(self):
+        p_ohne = self._pensionaer_mit_duv(duv_mon=0.0)
+        p_mit  = self._pensionaer_mit_duv(duv_mon=500.0)
+        e_ohne = berechne_rente(p_ohne)
+        e_mit  = berechne_rente(p_mit)
+        assert e_mit.brutto_monatlich == pytest.approx(e_ohne.brutto_monatlich + 500.0)
+
+    def test_duv_nicht_kvdr_pflichtig(self):
+        """DUV erhöht KV-Beitrag NICHT (nur Pensionsbezug ist KV-pflichtig)."""
+        p_ohne = self._pensionaer_mit_duv(duv_mon=0.0)
+        p_mit  = self._pensionaer_mit_duv(duv_mon=1_000.0)
+        e_ohne = berechne_rente(p_ohne)
+        e_mit  = berechne_rente(p_mit)
+        assert e_mit.kv_monatlich == pytest.approx(e_ohne.kv_monatlich, rel=1e-4)
+
+    def test_duv_ertragsanteil_senkt_steuer_vs_voll(self):
+        """DUV wird mit Ertragsanteil versteuert – weniger als 100 % Besteuerung."""
+        p = self._pensionaer_mit_duv(duv_mon=1_000.0)
+        e = berechne_rente(p)
+        # Ertragsanteil bei Alter 40 = ertragsanteil(40) = 38 %
+        ea = ertragsanteil(2025 - 1985)  # aktuelles Alter bei DU
+        assert ea < 1.0  # Ertragsanteil ist deutlich unter 100 %
+        # Jahres-zvE enthält nur ea × duv_monatl × 12 (nicht voll)
+        duv_voll_j  = 1_000.0 * 12
+        duv_ea_j    = duv_voll_j * ea
+        assert duv_ea_j < duv_voll_j
+
+    def test_duv_abgelaufen_kein_einfluss(self):
+        """DUV nach Endjahr hat keinen Einfluss auf Berechnung."""
+        p_aktiv    = self._pensionaer_mit_duv(duv_mon=500.0, duv_end=2060)
+        p_abgelauf = self._pensionaer_mit_duv(duv_mon=500.0, duv_end=2000)
+        e_aktiv    = berechne_rente(p_aktiv)
+        e_abgelauf = berechne_rente(p_abgelauf)
+        # Abgelaufene DUV soll keinen Beitrag liefern (rentenbeginn > duv_endjahr)
+        assert e_abgelauf.brutto_monatlich < e_aktiv.brutto_monatlich
+
+    def test_buv_erhoetht_brutto(self):
+        p_ohne = self._grv_mit_buv(buv_mon=0.0)
+        p_mit  = self._grv_mit_buv(buv_mon=600.0)
+        e_ohne = berechne_rente(p_ohne)
+        e_mit  = berechne_rente(p_mit)
+        assert e_mit.brutto_monatlich == pytest.approx(e_ohne.brutto_monatlich + 600.0)
+
+    def test_buv_nicht_kvdr_pflichtig(self):
+        """BUV erhöht KV-Beitrag NICHT."""
+        p_ohne = self._grv_mit_buv(buv_mon=0.0)
+        p_mit  = self._grv_mit_buv(buv_mon=2_000.0)
+        e_ohne = berechne_rente(p_ohne)
+        e_mit  = berechne_rente(p_mit)
+        # KV-Basis ist nur die GRV-Rente, nicht die BUV
+        assert e_mit.kv_monatlich == pytest.approx(e_ohne.kv_monatlich, rel=1e-4)
+
+    def test_buv_ertragsanteil_im_zvE(self):
+        """BUV ist mit Ertragsanteil steuerpflichtig – zvE steigt, aber weniger als voll."""
+        p_ohne = self._grv_mit_buv(buv_mon=0.0)
+        p_mit  = self._grv_mit_buv(buv_mon=1_000.0)
+        e_ohne = berechne_rente(p_ohne)
+        e_mit  = berechne_rente(p_mit)
+        # zvE steigt um Ertragsanteil × 12.000, nicht 12.000
+        zvE_diff = e_mit.zvE_jahres - e_ohne.zvE_jahres
+        ea = ertragsanteil(2025 - 1985)
+        assert zvE_diff == pytest.approx(1_000.0 * 12 * ea, abs=1.0)
+
+    def test_buv_nicht_fuer_pensionaer(self):
+        """BUV greift nicht, wenn ist_pensionaer=True (DUV stattdessen)."""
+        p = _profil(
+            geburtsjahr=1985, renteneintritt_alter=65, aktuelle_punkte=0.0,
+            punkte_pro_jahr=0.0, ist_pensionaer=True,
+            aktuelles_brutto_monatlich=3_000.0,
+            buv_monatlich=1_000.0, buv_endjahr=2060,
+        )
+        e = berechne_rente(p)
+        # BUV-Betrag darf bei Pensionär nicht ins Brutto eingehen
+        p_ohne_buv = _profil(
+            geburtsjahr=1985, renteneintritt_alter=65, aktuelle_punkte=0.0,
+            punkte_pro_jahr=0.0, ist_pensionaer=True,
+            aktuelles_brutto_monatlich=3_000.0,
+        )
+        e_ohne = berechne_rente(p_ohne_buv)
+        assert e.brutto_monatlich == pytest.approx(e_ohne.brutto_monatlich)

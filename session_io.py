@@ -38,12 +38,31 @@ def save_session(
     return path
 
 
+# Defaults für Felder, die in älteren Speicherständen fehlen können
+_PROFIL_LADE_DEFAULTS: dict = {
+    "zusatz_typ":                "bAV",
+    "ist_pensionaer":            False,
+    "bereits_rentner":           False,
+    "rentenbeginn_jahr":         2025,
+    "aktuelles_brutto_monatlich": 0.0,
+    "duv_monatlich":             0.0,
+    "duv_endjahr":               2040,
+    "buv_monatlich":             0.0,
+    "buv_endjahr":               2040,
+}
+
+
+def _load_profil(d: dict) -> Profil:
+    """Erstellt ein Profil aus gespeicherten Daten; ergänzt fehlende Felder mit Defaults."""
+    return Profil(**{**_PROFIL_LADE_DEFAULTS, **d})
+
+
 def load_session(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    data["profil1"] = Profil(**data["profil1"])
+    data["profil1"] = _load_profil(data["profil1"])
     if data.get("profil2"):
-        data["profil2"] = Profil(**data["profil2"])
+        data["profil2"] = _load_profil(data["profil2"])
     return data
 
 

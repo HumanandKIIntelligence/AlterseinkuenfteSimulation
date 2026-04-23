@@ -9,211 +9,449 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from engine import Profil, berechne_rente, berechne_haushalt
+from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR
 from session_io import save_session, load_session, list_saves
-from tabs import dashboard, simulation, auszahlung, steuern, vorsorge, haushalt, dokumentation
+from tabs import dashboard, simulation, vorsorge, haushalt, dokumentation, entnahme_opt
+
+# Reset-Counter: erzwingt neue Widget-Keys nach "Neu anfangen"
+_RC = st.session_state.get("_rc", 0)
 
 
-# ── Sidebar-Hilfsfunktion je Person ──────────────────────────────────────────
+# ── Gemeinsame Helpers ────────────────────────────────────────────────────────
 
-def _profil_inputs(label: str, pfx: str, geb_default: int) -> Profil:
-    """Rendert Eingaben für eine Person und gibt ein Profil zurück."""
-    st.sidebar.markdown(f"**{label}**")
+def _gkey(key: str) -> str:
+    """Globaler Widget-Key mit Reset-Counter."""
+    return f"rc{_RC}_{key}"
 
-    geburtsjahr = st.sidebar.number_input(
-        "Geburtsjahr", 1945, 1995, st.session_state.get(f"{pfx}_geb", geb_default),
-        step=1, key=f"{pfx}_geb",
-    )
-    renteneintritt_alter = st.sidebar.slider(
-        "Renteneintrittsalter", 60, 70,
-        st.session_state.get(f"{pfx}_re_alter", 67),
-        key=f"{pfx}_re_alter",
-        help="Regelaltersgrenze 2025: 67 Jahre.",
-    )
 
-    st.sidebar.markdown("*Gesetzliche Rente (BFA / DRV)*")
-    aktuelle_punkte = st.sidebar.number_input(
-        "Aktuelle Rentenpunkte", 0.0, 80.0,
-        st.session_state.get(f"{pfx}_punkte", 25.0 if pfx == "p1" else 15.0),
-        step=0.5, key=f"{pfx}_punkte",
-        help="Entgeltpunkte lt. letzter Renteninformation der DRV.",
-    )
-    punkte_pro_jahr = st.sidebar.number_input(
-        "Rentenpunkte pro Jahr (Ø)", 0.0, 3.0,
-        st.session_state.get(f"{pfx}_ppj", 1.2),
-        step=0.05, key=f"{pfx}_ppj",
-        help="1,0 = Durchschnittsverdienst (~45.358 € brutto in 2024).",
-    )
-    rentenanpassung = st.sidebar.slider(
-        "Rentenanpassung p.a. (%)", 0.0, 5.0,
-        st.session_state.get(f"{pfx}_ren_anp", 2.0),
-        step=0.1, key=f"{pfx}_ren_anp",
-    ) / 100
+def _get(pfx: str, key: str, default):
+    """Liest einen Wert aus session_state; einheitlicher Zugriffspunkt für beide Funktionen."""
+    return st.session_state.get(f"rc{_RC}_{pfx}_{key}", default)
 
-    st.sidebar.markdown("*Sparkapital*")
-    sparkapital = st.sidebar.number_input(
-        "Sparkapital heute (€)", 0.0, 5_000_000.0,
-        st.session_state.get(f"{pfx}_spkap", 50_000.0),
-        step=1_000.0, key=f"{pfx}_spkap",
-    )
-    sparrate = st.sidebar.number_input(
-        "Monatliche Sparrate (€)", 0.0, 10_000.0,
-        st.session_state.get(f"{pfx}_sprate", 500.0),
-        step=50.0, key=f"{pfx}_sprate",
-    )
-    rendite = st.sidebar.slider(
-        "Rendite p.a. (%)", 0.0, 12.0,
-        st.session_state.get(f"{pfx}_rendite", 5.0),
-        step=0.5, key=f"{pfx}_rendite",
-    ) / 100
-    zusatz = st.sidebar.number_input(
-        "Zusatzrente bAV/Riester/Rürup (€/Mon.)", 0.0, 5_000.0,
-        st.session_state.get(f"{pfx}_zusatz", 200.0),
-        step=50.0, key=f"{pfx}_zusatz",
-        help="Monatliche Auszahlung aus Zusatzvorsorge (falls nicht im Vorsorge-Tab erfasst).",
-    )
 
-    st.sidebar.markdown("*Krankenversicherung in der Rente*")
-    kv_idx = 0 if st.session_state.get(f"{pfx}_kv", "GKV") == "GKV" else 1
-    kv_wahl = st.sidebar.radio(
-        "Versicherungsart", ["Gesetzlich (GKV)", "Privat (PKV)"],
-        index=kv_idx, horizontal=True, key=f"{pfx}_kv_radio",
-    )
-    pkv_beitrag = 0.0
-    gkv_zusatz = 0.017
-    kinder = True
-    if kv_wahl.startswith("Privat"):
-        pkv_beitrag = st.sidebar.number_input(
-            "PKV-Beitrag (€/Mon.)", 200.0, 3_000.0,
-            st.session_state.get(f"{pfx}_pkv", 600.0),
-            step=10.0, key=f"{pfx}_pkv",
-        )
+# ── Profil aus session_state lesen (kein Rendering) ──────────────────────────
+
+def _profil_from_session(pfx: str, geb_default: int) -> Profil:
+    """Baut ein Profil aus session_state (keine Widgets)."""
+    bereits_rentner  = bool(_get(pfx, "rentner", False))
+    ist_pensionaer   = bool(_get(pfx, "pensionaer", False))
+    geburtsjahr      = int(_get(pfx, "geb", geb_default))
+
+    if bereits_rentner:
+        rentenbeginn_jahr    = int(_get(pfx, "rbj", AKTUELLES_JAHR - 3))
+        aktuelles_brutto     = float(_get(pfx, "akt_brutto", 2_000.0))
+        renteneintritt_alter = max(60, rentenbeginn_jahr - geburtsjahr)
+        aktuelle_punkte      = 0.0
+        punkte_pro_jahr      = 0.0
+        rentenanpassung      = 0.02
+        sparrate             = 0.0
+        sparkapital          = float(_get(pfx, "spkap", 50_000.0))
+        rendite              = float(_get(pfx, "rendite", 3.0)) / 100
     else:
-        gkv_zusatz = st.sidebar.slider(
-            "GKV Zusatzbeitrag (%)", 0.5, 4.0,
-            st.session_state.get(f"{pfx}_gkv_zus", 1.7),
-            step=0.1, key=f"{pfx}_gkv_zus",
-        ) / 100
-        kinder = st.sidebar.checkbox(
-            "Hat Kinder", value=st.session_state.get(f"{pfx}_kinder", True),
-            key=f"{pfx}_kinder",
-        )
+        rentenbeginn_jahr    = AKTUELLES_JAHR
+        aktuelles_brutto     = float(_get(pfx, "akt_brutto", 3_000.0)) if ist_pensionaer else 0.0
+        renteneintritt_alter = int(_get(pfx, "re_alter", 67))
+        sparkapital          = float(_get(pfx, "spkap", 50_000.0))
+        sparrate             = float(_get(pfx, "sprate", 500.0))
+        rendite              = float(_get(pfx, "rendite", 5.0)) / 100
+        if ist_pensionaer:
+            aktuelle_punkte  = 0.0
+            punkte_pro_jahr  = 0.0
+            rentenanpassung  = 0.0
+        else:
+            aktuelle_punkte  = float(_get(pfx, "punkte", 25.0 if pfx == "p1" else 15.0))
+            punkte_pro_jahr  = float(_get(pfx, "ppj", 1.2))
+            rentenanpassung  = float(_get(pfx, "ren_anp", 2.0)) / 100
+
+    kv_raw      = str(_get(pfx, "kv_radio", "Gesetzlich (GKV)"))
+    kv_typ      = "PKV" if "PKV" in kv_raw else "GKV"
+    pkv_beitrag = float(_get(pfx, "pkv", 250.0 if ist_pensionaer else 600.0))
+    gkv_zusatz  = float(_get(pfx, "gkv_zus", 1.7)) / 100
+    kinder      = bool(_get(pfx, "kinder", True))
+
+    duv_monatlich = float(_get(pfx, "duv", 0.0))
+    duv_endjahr   = int(_get(pfx, "duv_end", AKTUELLES_JAHR + 10))
+    buv_monatlich = float(_get(pfx, "buv", 0.0))
+    buv_endjahr   = int(_get(pfx, "buv_end", AKTUELLES_JAHR + 10))
 
     return Profil(
         geburtsjahr=geburtsjahr,
         renteneintritt_alter=renteneintritt_alter,
         aktuelle_punkte=aktuelle_punkte,
         punkte_pro_jahr=punkte_pro_jahr,
-        zusatz_monatlich=zusatz,
+        zusatz_monatlich=0.0,   # O2: Zusatzrente nur noch via Vorsorge-Bausteine
+        zusatz_typ="bAV",
         sparkapital=sparkapital,
         sparrate=sparrate,
         rendite_pa=rendite,
         rentenanpassung_pa=rentenanpassung,
-        krankenversicherung="PKV" if kv_wahl.startswith("Privat") else "GKV",
+        krankenversicherung=kv_typ,
         pkv_beitrag=pkv_beitrag,
         gkv_zusatzbeitrag=gkv_zusatz,
         kinder=kinder,
+        ist_pensionaer=ist_pensionaer,
+        bereits_rentner=bereits_rentner,
+        rentenbeginn_jahr=rentenbeginn_jahr,
+        aktuelles_brutto_monatlich=aktuelles_brutto,
+        duv_monatlich=duv_monatlich,
+        duv_endjahr=duv_endjahr,
+        buv_monatlich=buv_monatlich,
+        buv_endjahr=buv_endjahr,
     )
 
 
-# ── Hauptsidebar ──────────────────────────────────────────────────────────────
+# ── Profilwerte in session_state schreiben ────────────────────────────────────
 
-def _sidebar():
+def _write_profil_to_state(p: Profil, pfx: str) -> None:
+    """Schreibt ein Profil-Objekt in session_state (für Laden)."""
+    if p.krankenversicherung == "PKV" and p.ist_pensionaer:
+        kv_label = "Beihilfe + PKV (70 % / 30 %)"
+    elif p.krankenversicherung == "PKV":
+        kv_label = "Privat (PKV)"
+    elif p.ist_pensionaer:
+        kv_label = "GKV (freiwillig versichert)"
+    else:
+        kv_label = "Gesetzlich (GKV)"
+
+    updates = {
+        f"rc{_RC}_{pfx}_geb":        p.geburtsjahr,
+        f"rc{_RC}_{pfx}_re_alter":   p.renteneintritt_alter,
+        f"rc{_RC}_{pfx}_punkte":     p.aktuelle_punkte,
+        f"rc{_RC}_{pfx}_ppj":        p.punkte_pro_jahr,
+        f"rc{_RC}_{pfx}_ren_anp":    p.rentenanpassung_pa * 100,
+        f"rc{_RC}_{pfx}_spkap":      p.sparkapital,
+        f"rc{_RC}_{pfx}_sprate":     p.sparrate,
+        f"rc{_RC}_{pfx}_rendite":    p.rendite_pa * 100,
+        f"rc{_RC}_{pfx}_zusatz":     p.zusatz_monatlich,
+        f"rc{_RC}_{pfx}_pkv":        p.pkv_beitrag,
+        f"rc{_RC}_{pfx}_gkv_zus":    p.gkv_zusatzbeitrag * 100,
+        f"rc{_RC}_{pfx}_kinder":     p.kinder,
+        f"rc{_RC}_{pfx}_kv_radio":   kv_label,
+        f"rc{_RC}_{pfx}_rentner":    p.bereits_rentner,
+        f"rc{_RC}_{pfx}_pensionaer": p.ist_pensionaer,
+        f"rc{_RC}_{pfx}_rbj":        p.rentenbeginn_jahr,
+        f"rc{_RC}_{pfx}_akt_brutto": p.aktuelles_brutto_monatlich,
+        f"rc{_RC}_{pfx}_duv":        p.duv_monatlich,
+        f"rc{_RC}_{pfx}_duv_end":    p.duv_endjahr,
+        f"rc{_RC}_{pfx}_buv":        p.buv_monatlich,
+        f"rc{_RC}_{pfx}_buv_end":    p.buv_endjahr,
+    }
+    st.session_state.update(updates)
+
+
+# ── Profil-Widgets rendern (im Profil-Tab) ────────────────────────────────────
+
+def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
+    """Rendert Eingabe-Widgets für eine Person in den aktuellen Container."""
+    st.subheader(label)
+
+    bereits_rentner = st.checkbox(
+        "Bereits in Rente / Pension",
+        value=_get(pfx, "rentner", False),
+        key=f"rc{_RC}_{pfx}_rentner",
+    )
+    ist_pensionaer = st.checkbox(
+        "Beamter / Pensionär",
+        value=_get(pfx, "pensionaer", False),
+        key=f"rc{_RC}_{pfx}_pensionaer",
+        help="Beamtenpension: Versorgungsfreibetrag § 19 Abs. 2 EStG; KV § 229 Abs. 1 Nr. 1 SGB V.",
+    )
+
+    st.number_input(
+        "Geburtsjahr", 1945, 1995,
+        value=int(_get(pfx, "geb", geb_default)),
+        step=1, key=f"rc{_RC}_{pfx}_geb",
+    )
+
+    if bereits_rentner:
+        ca, cb = st.columns(2)
+        with ca:
+            st.number_input(
+                "Rentenbeginn (Jahr)", 1980, AKTUELLES_JAHR,
+                value=int(_get(pfx, "rbj", AKTUELLES_JAHR - 3)),
+                step=1, key=f"rc{_RC}_{pfx}_rbj",
+                help="Entscheidend für Besteuerungsanteil (GRV) bzw. Versorgungsfreibetrag (Pension).",
+            )
+        with cb:
+            st.number_input(
+                "Bruttorente / -pension (€/Mon.)", 0.0, 20_000.0,
+                value=float(_get(pfx, "akt_brutto", 2_000.0)),
+                step=50.0, key=f"rc{_RC}_{pfx}_akt_brutto",
+            )
+        ca2, cb2 = st.columns(2)
+        with ca2:
+            st.number_input(
+                "Sparkapital / Vermögen (€)", 0.0, 5_000_000.0,
+                value=float(_get(pfx, "spkap", 50_000.0)),
+                step=1_000.0, key=f"rc{_RC}_{pfx}_spkap",
+            )
+        with cb2:
+            st.slider(
+                "Rendite p.a. (%)", 0.0, 12.0,
+                value=float(_get(pfx, "rendite", 3.0)),
+                step=0.5, key=f"rc{_RC}_{pfx}_rendite",
+            )
+    else:
+        st.slider(
+            "Pensionierungsalter" if ist_pensionaer else "Renteneintrittsalter",
+            60, 70,
+            value=int(_get(pfx, "re_alter", 67)),
+            key=f"rc{_RC}_{pfx}_re_alter",
+            help="Regelaltersgrenze 2025: 67 Jahre." if not ist_pensionaer
+                 else "Pensionierungsalter Bund/Länder: i.d.R. 65–67 J.",
+        )
+        if ist_pensionaer:
+            st.markdown("**Beamtenversorgung**")
+            st.number_input(
+                "Erwartete Bruttopension (€/Mon.)", 0.0, 20_000.0,
+                value=float(_get(pfx, "akt_brutto", 3_000.0)),
+                step=50.0, key=f"rc{_RC}_{pfx}_akt_brutto",
+                help="Besteuerung nach § 19 Abs. 2 EStG (Versorgungsfreibetrag).",
+            )
+        else:
+            st.markdown("**Gesetzliche Rente (DRV)**")
+            ca, cb = st.columns(2)
+            with ca:
+                st.number_input(
+                    "Aktuelle Rentenpunkte", 0.0, 80.0,
+                    value=float(_get(pfx, "punkte", 25.0 if pfx == "p1" else 15.0)),
+                    step=0.5, key=f"rc{_RC}_{pfx}_punkte",
+                    help="Entgeltpunkte lt. letzter Renteninformation der DRV.",
+                )
+            with cb:
+                st.number_input(
+                    "Rentenpunkte pro Jahr (Ø)", 0.0, 3.0,
+                    value=float(_get(pfx, "ppj", 1.2)),
+                    step=0.05, key=f"rc{_RC}_{pfx}_ppj",
+                    help="1,0 = Durchschnittsverdienst (~45.358 € brutto in 2024).",
+                )
+            st.slider(
+                "Rentenanpassung p.a. (%)", 0.0, 5.0,
+                value=float(_get(pfx, "ren_anp", 2.0)),
+                step=0.1, key=f"rc{_RC}_{pfx}_ren_anp",
+            )
+
+        st.markdown("**Sparkapital**")
+        ca, cb, cc = st.columns(3)
+        with ca:
+            st.number_input(
+                "Sparkapital heute (€)", 0.0, 5_000_000.0,
+                value=float(_get(pfx, "spkap", 50_000.0)),
+                step=1_000.0, key=f"rc{_RC}_{pfx}_spkap",
+            )
+        with cb:
+            st.number_input(
+                "Monatliche Sparrate (€)", 0.0, 10_000.0,
+                value=float(_get(pfx, "sprate", 500.0)),
+                step=50.0, key=f"rc{_RC}_{pfx}_sprate",
+            )
+        with cc:
+            st.slider(
+                "Rendite p.a. (%)", 0.0, 12.0,
+                value=float(_get(pfx, "rendite", 5.0)),
+                step=0.5, key=f"rc{_RC}_{pfx}_rendite",
+            )
+        # O2: Kein Zusatzrente-Feld mehr – bitte Verträge im Tab Vorsorge-Bausteine erfassen
+        st.caption("💡 Zusatzrenten (bAV, Riester, Rürup …) bitte im Tab **Vorsorge-Bausteine** erfassen.")
+
+    st.markdown("**Krankenversicherung**")
+    if ist_pensionaer:
+        kv_opts = ["Beihilfe + PKV (70 % / 30 %)", "GKV (freiwillig versichert)"]
+        kv_def  = 0 if "PKV" in str(_get(pfx, "kv_radio", "Beihilfe + PKV (70 % / 30 %)")) else 1
+        kv_raw  = st.radio("Versicherungsart", kv_opts,
+                           index=kv_def, horizontal=True, key=f"rc{_RC}_{pfx}_kv_radio")
+        if "PKV" in kv_raw:
+            st.number_input(
+                "PKV-Eigenanteil nach Beihilfe (€/Mon.)", 50.0, 2_000.0,
+                value=float(_get(pfx, "pkv", 250.0)),
+                step=10.0, key=f"rc{_RC}_{pfx}_pkv",
+                help="Beihilfe übernimmt 70 % der beihilfefähigen Krankheitskosten.",
+            )
+        else:
+            ca, cb = st.columns(2)
+            with ca:
+                st.slider("GKV Zusatzbeitrag (%)", 0.5, 4.0,
+                          value=float(_get(pfx, "gkv_zus", 1.7)),
+                          step=0.1, key=f"rc{_RC}_{pfx}_gkv_zus")
+            with cb:
+                st.checkbox("Hat Kinder",
+                            value=bool(_get(pfx, "kinder", True)),
+                            key=f"rc{_RC}_{pfx}_kinder")
+    else:
+        kv_idx = 0 if "PKV" not in str(_get(pfx, "kv_radio", "Gesetzlich (GKV)")) else 1
+        kv_raw = st.radio("Versicherungsart", ["Gesetzlich (GKV)", "Privat (PKV)"],
+                          index=kv_idx, horizontal=True, key=f"rc{_RC}_{pfx}_kv_radio")
+        if "PKV" in kv_raw:
+            st.number_input(
+                "PKV-Beitrag (€/Mon.)", 200.0, 3_000.0,
+                value=float(_get(pfx, "pkv", 600.0)),
+                step=10.0, key=f"rc{_RC}_{pfx}_pkv",
+            )
+        else:
+            ca, cb = st.columns(2)
+            with ca:
+                st.slider("GKV Zusatzbeitrag (%)", 0.5, 4.0,
+                          value=float(_get(pfx, "gkv_zus", 1.7)),
+                          step=0.1, key=f"rc{_RC}_{pfx}_gkv_zus")
+            with cb:
+                st.checkbox("Hat Kinder",
+                            value=bool(_get(pfx, "kinder", True)),
+                            key=f"rc{_RC}_{pfx}_kinder")
+
+    if ist_pensionaer:
+        with st.expander("🛡 Dienstunfähigkeitsversicherung (DUV)"):
+            ca, cb = st.columns(2)
+            with ca:
+                st.number_input(
+                    "DUV-Monatsrente (€/Mon.)", 0.0, 5_000.0,
+                    value=float(_get(pfx, "duv", 0.0)),
+                    step=50.0, key=f"rc{_RC}_{pfx}_duv",
+                    help="Ertragsanteil § 22 Nr. 1 S. 3a bb EStG; nicht KVdR-pflichtig.",
+                )
+            with cb:
+                st.number_input(
+                    "DUV endet (Jahr)", AKTUELLES_JAHR, AKTUELLES_JAHR + 45,
+                    value=int(_get(pfx, "duv_end", AKTUELLES_JAHR + 10)),
+                    step=1, key=f"rc{_RC}_{pfx}_duv_end",
+                    help="Laufzeitende der DUV, z.B. das reguläre Pensionierungsalter.",
+                )
+    else:
+        with st.expander("🛡 Berufsunfähigkeitsversicherung (BUV)"):
+            ca, cb = st.columns(2)
+            with ca:
+                st.number_input(
+                    "BUV-Monatsrente (€/Mon.)", 0.0, 5_000.0,
+                    value=float(_get(pfx, "buv", 0.0)),
+                    step=50.0, key=f"rc{_RC}_{pfx}_buv",
+                    help="Ertragsanteil § 22 Nr. 1 S. 3a bb EStG; nicht KVdR-pflichtig. "
+                         "Gesetzliche Erwerbsminderungsrente stattdessen als 'Bereits in Rente' erfassen.",
+                )
+            with cb:
+                st.number_input(
+                    "BUV endet (Jahr)", AKTUELLES_JAHR, AKTUELLES_JAHR + 45,
+                    value=int(_get(pfx, "buv_end", AKTUELLES_JAHR + 10)),
+                    step=1, key=f"rc{_RC}_{pfx}_buv_end",
+                    help="Laufzeitende der BUV, z.B. das reguläre Renteneintrittsalter.",
+                )
+
+
+# ── Profil-Tab rendern ────────────────────────────────────────────────────────
+
+def render_profil_tab(T: dict) -> None:
+    with T["Profil"]:
+        st.header("⚙️ Profil")
+        st.caption(
+            "Persönliche Angaben für alle Berechnungen. "
+            "Alle anderen Tabs aktualisieren sich automatisch nach jeder Änderung."
+        )
+
+        # Partner-Toggle und Veranlagung
+        pc1, pc2 = st.columns([1, 2])
+        with pc1:
+            st.checkbox(
+                "👥 Ehepartner / Partnerin",
+                value=st.session_state.get(_gkey("hat_partner"), False),
+                key=_gkey("hat_partner"),
+            )
+        hat_partner = bool(st.session_state.get(_gkey("hat_partner"), False))
+        if hat_partner:
+            with pc2:
+                ver_saved = str(st.session_state.get(_gkey("veranlagung_radio"),
+                                                      "Zusammenveranlagung (Splitting)"))
+                ver_idx = 0 if "Splitting" in ver_saved else 1
+                st.radio(
+                    "Steuerliche Veranlagung",
+                    ["Zusammenveranlagung (Splitting)", "Getrennte Veranlagung"],
+                    index=ver_idx, horizontal=True, key=_gkey("veranlagung_radio"),
+                    help="Splitting: Einkommen wird halbiert, Steuer berechnet und verdoppelt → "
+                         "Vorteil bei ungleichen Einkommen.",
+                )
+
+        st.divider()
+
+        # Personen-Eingaben
+        if hat_partner:
+            col1, col2 = st.columns(2)
+            with col1:
+                _render_profil_inputs("👤 Person 1", "p1", 1970)
+            with col2:
+                _render_profil_inputs("👤 Person 2", "p2", 1972)
+        else:
+            _render_profil_inputs("👤 Person 1", "p1", 1970)
+
+        st.divider()
+
+        # Mieteinnahmen
+        st.subheader("🏠 Mieteinnahmen")
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            st.number_input(
+                "Netto-Mieteinnahmen (€/Mon.)", 0.0, 50_000.0,
+                value=float(st.session_state.get(_gkey("hh_miet"), 0.0)),
+                step=50.0, key=_gkey("hh_miet"),
+                help="Nettomieteinnahmen nach abzugsfähigen Werbungskosten (§ 21 EStG). "
+                     "Voll steuerpflichtig, keine KV-Pflicht.",
+            )
+        with mc2:
+            st.slider(
+                "Jährl. Mietsteigerung (%)", 0.0, 5.0,
+                value=float(st.session_state.get(_gkey("hh_miet_stg"), 1.5)),
+                step=0.1, key=_gkey("hh_miet_stg"),
+            )
+
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+
+def _sidebar_top() -> None:
+    """Titel, Reset und Laden – muss vor den Berechnungen laufen."""
     st.sidebar.title("🏦 Alterseinkünfte")
     st.sidebar.caption("Simulation | Keine Anlageberatung")
 
-    # ── Laden (ganz oben für schnellen Zugriff) ───────────────────────────────
+    if st.sidebar.button("🔄 Neu anfangen",
+                         help="Alle Eingaben zurücksetzen und für eine neue Person von vorne beginnen.",
+                         use_container_width=True):
+        new_rc = st.session_state.get("_rc", 0) + 1
+        st.session_state.clear()
+        st.session_state["_rc"] = new_rc
+        st.rerun()
+
+    st.sidebar.markdown("---")
+
     saves = list_saves()
     if saves:
         with st.sidebar.expander("📂 Gespeicherte Profile", expanded=False):
             namen = [n for n, _ in saves]
             auswahl = st.selectbox("Profil wählen", namen, key="load_select")
-            if st.button("📥 Laden", key="load_btn"):
-                pfad = dict(saves)[auswahl]
-                data = load_session(pfad)
-                p1 = data["profil1"]
-                # Profil 1 in session state schreiben
-                for k, v in [
-                    ("p1_geb", p1.geburtsjahr), ("p1_re_alter", p1.renteneintritt_alter),
-                    ("p1_punkte", p1.aktuelle_punkte), ("p1_ppj", p1.punkte_pro_jahr),
-                    ("p1_ren_anp", p1.rentenanpassung_pa * 100),
-                    ("p1_spkap", p1.sparkapital), ("p1_sprate", p1.sparrate),
-                    ("p1_rendite", p1.rendite_pa * 100), ("p1_zusatz", p1.zusatz_monatlich),
-                    ("p1_pkv", p1.pkv_beitrag), ("p1_gkv_zus", p1.gkv_zusatzbeitrag * 100),
-                    ("p1_kinder", p1.kinder), ("p1_kv", p1.krankenversicherung),
-                ]:
-                    st.session_state[k] = v
-                if data.get("profil2"):
-                    p2 = data["profil2"]
-                    st.session_state["hat_partner"] = True
-                    for k, v in [
-                        ("p2_geb", p2.geburtsjahr), ("p2_re_alter", p2.renteneintritt_alter),
-                        ("p2_punkte", p2.aktuelle_punkte), ("p2_ppj", p2.punkte_pro_jahr),
-                        ("p2_ren_anp", p2.rentenanpassung_pa * 100),
-                        ("p2_spkap", p2.sparkapital), ("p2_sprate", p2.sparrate),
-                        ("p2_rendite", p2.rendite_pa * 100), ("p2_zusatz", p2.zusatz_monatlich),
-                        ("p2_pkv", p2.pkv_beitrag), ("p2_gkv_zus", p2.gkv_zusatzbeitrag * 100),
-                        ("p2_kinder", p2.kinder), ("p2_kv", p2.krankenversicherung),
-                    ]:
-                        st.session_state[k] = v
-                else:
-                    st.session_state["hat_partner"] = False
-                st.session_state["veranlagung"] = data.get("veranlagung", "Getrennt")
-                st.session_state["vp_produkte"] = data.get("produkte", [])
-                st.session_state["hh_miet"] = data.get("mieteinnahmen", 0.0)
-                st.session_state["hh_miet_stg"] = data.get("mietsteigerung", 0.015) * 100
+            if st.button("📥 Laden", key="load_btn", use_container_width=True):
+                data = load_session(dict(saves)[auswahl])
+                _apply_loaded_session(data)
                 st.rerun()
 
-    st.sidebar.markdown("---")
 
-    # ── Person 1 ──────────────────────────────────────────────────────────────
-    with st.sidebar.expander("👤 Person 1", expanded=True):
-        profil1 = _profil_inputs("Person 1", "p1", geb_default=1970)
+def _apply_loaded_session(data: dict) -> None:
+    _write_profil_to_state(data["profil1"], "p1")
+    if data.get("profil2"):
+        st.session_state[_gkey("hat_partner")] = True
+        _write_profil_to_state(data["profil2"], "p2")
+    else:
+        st.session_state[_gkey("hat_partner")] = False
 
-    # ── Ehepartner ────────────────────────────────────────────────────────────
-    hat_partner = st.sidebar.checkbox(
-        "👥 Ehepartner / Partnerin hinzufügen",
-        value=st.session_state.get("hat_partner", False),
-        key="hat_partner",
+    veranlagung = data.get("veranlagung", "Zusammen")
+    st.session_state[_gkey("veranlagung_radio")] = (
+        "Zusammenveranlagung (Splitting)" if veranlagung == "Zusammen"
+        else "Getrennte Veranlagung"
     )
-    profil2 = None
-    veranlagung = "Getrennt"
-    if hat_partner:
-        with st.sidebar.expander("👤 Person 2", expanded=True):
-            profil2 = _profil_inputs("Person 2", "p2", geb_default=1972)
-        veranlagung = st.sidebar.radio(
-            "Steuerliche Veranlagung in der Rente",
-            ["Zusammenveranlagung (Splitting)", "Getrennte Veranlagung"],
-            index=0 if st.session_state.get("veranlagung", "Zusammen") == "Zusammen" else 1,
-            key="veranlagung_radio",
-            help="Splitting: Einkommen wird halbiert, Steuer berechnet und verdoppelt → "
-                 "Vorteil bei ungleichen Einkommen.",
-        )
-        veranlagung = "Zusammen" if "Splitting" in veranlagung else "Getrennt"
-        st.session_state["veranlagung"] = veranlagung
+    st.session_state["vp_produkte"] = data.get("produkte", [])
+    st.session_state[_gkey("hh_miet")]     = data.get("mieteinnahmen", 0.0)
+    st.session_state[_gkey("hh_miet_stg")] = data.get("mietsteigerung", 0.015) * 100
 
-    st.sidebar.markdown("---")
 
-    # ── Mieteinnahmen (Haushalt gesamt) ───────────────────────────────────────
-    with st.sidebar.expander("🏠 Mieteinnahmen", expanded=False):
-        mieteinnahmen = st.sidebar.number_input(
-            "Netto-Mieteinnahmen (€/Mon.)",
-            min_value=0.0, max_value=50_000.0,
-            value=st.session_state.get("hh_miet", 0.0),
-            step=50.0, key="hh_miet",
-            help="Gemeinsame Nettomieteinnahmen nach abzugsfähigen Werbungskosten (§ 21 EStG). "
-                 "Voll steuerpflichtig, keine KV-Pflicht.",
-        )
-        mietsteigerung = st.sidebar.slider(
-            "Jährl. Mietsteigerung (%)", 0.0, 5.0,
-            value=st.session_state.get("hh_miet_stg", 1.5),
-            step=0.1, key="hh_miet_stg",
-        ) / 100
-
-    # ── Speichern ─────────────────────────────────────────────────────────────
+def _sidebar_save(profil1: Profil, profil2, veranlagung: str,
+                  mieteinnahmen: float, mietsteigerung: float) -> None:
+    """Speichern-Bereich – läuft nach den Berechnungen, da Profil-Objekte benötigt werden."""
     with st.sidebar.expander("💾 Profil speichern", expanded=False):
         save_name = st.text_input("Name der Sicherung", value="MeinProfil", key="save_name")
-        if st.button("💾 Jetzt speichern", key="save_btn"):
+        if st.button("💾 Jetzt speichern", key="save_btn", use_container_width=True):
             pfad = save_session(
                 name=save_name,
                 profil1=profil1,
@@ -223,43 +461,68 @@ def _sidebar():
                 mieteinnahmen=mieteinnahmen,
                 mietsteigerung=mietsteigerung,
             )
-            st.success(f"Gespeichert: {pfad}")
-
-    return profil1, profil2, veranlagung, mieteinnahmen, mietsteigerung
+            st.sidebar.success(f"Gespeichert: {pfad}")
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-profil1, profil2, veranlagung, mieteinnahmen, mietsteigerung = _sidebar()
-ergebnis1 = berechne_rente(profil1)
-ergebnis2 = berechne_rente(profil2) if profil2 else None
+# Sidebar oben: Reset + Laden (können rerun auslösen)
+_sidebar_top()
+
+# Profile aus session_state aufbauen
+hat_partner   = bool(st.session_state.get(_gkey("hat_partner"), False))
+_ver_raw      = str(st.session_state.get(_gkey("veranlagung_radio"), "Zusammenveranlagung (Splitting)"))
+veranlagung   = "Zusammen" if "Splitting" in _ver_raw else "Getrennt"
+mieteinnahmen  = float(st.session_state.get(_gkey("hh_miet"), 0.0))
+mietsteigerung = float(st.session_state.get(_gkey("hh_miet_stg"), 1.5)) / 100
+
+profil1 = _profil_from_session("p1", 1970)
+profil2 = _profil_from_session("p2", 1972) if hat_partner else None
+
+ergebnis1      = berechne_rente(profil1)
+ergebnis2      = berechne_rente(profil2) if profil2 else None
 haushalt_daten = berechne_haushalt(ergebnis1, ergebnis2, veranlagung, mieteinnahmen)
 
-tab_labels = ["📊 Dashboard", "🔮 Simulation", "🏦 Vorsorge-Bausteine",
-              "💰 Kapital vs. Rente", "🧾 Steuern & KV", "📖 Dokumentation"]
+# Sidebar unten: Speichern (braucht Profil-Objekte)
+_sidebar_save(profil1, profil2, veranlagung, mieteinnahmen, mietsteigerung)
+
+# M4: Schnell-Übersicht Nettorente in Sidebar
+st.sidebar.divider()
+st.sidebar.metric("Nettorente P1", f"{ergebnis1.netto_monatlich:,.0f} €/Mon.",
+                  help="Nettorente Person 1 nach Steuer und KV.")
+if ergebnis2:
+    st.sidebar.metric("Nettorente P2", f"{ergebnis2.netto_monatlich:,.0f} €/Mon.",
+                      help="Nettorente Person 2 nach Steuer und KV.")
+
+# O3d: 6 Tabs (Steuern → Dashboard-Expander; Auszahlung → Entnahme-Expander)
+tab_labels = ["⚙️ Profil", "📊 Dashboard", "🔮 Simulation",
+              "🏦 Vorsorge-Bausteine", "💡 Entnahme-Optimierung",
+              "📖 Dokumentation"]
 if profil2:
-    tab_labels.insert(1, "👥 Haushalt")
+    tab_labels.insert(2, "👥 Haushalt")
 
 tabs = st.tabs(tab_labels)
 
 idx = 0
 T: dict = {}
-T["Dashboard"] = tabs[idx]; idx += 1
+T["Profil"]        = tabs[idx]; idx += 1
+T["Dashboard"]     = tabs[idx]; idx += 1
 if profil2:
-    T["Haushalt"] = tabs[idx]; idx += 1
-T["Simulation"] = tabs[idx]; idx += 1
-T["Vorsorge"]   = tabs[idx]; idx += 1
-T["Auszahlung"] = tabs[idx]; idx += 1
-T["Steuern"]    = tabs[idx]; idx += 1
+    T["Haushalt"]  = tabs[idx]; idx += 1
+T["Simulation"]    = tabs[idx]; idx += 1
+T["Vorsorge"]      = tabs[idx]; idx += 1
+T["Entnahme"]      = tabs[idx]; idx += 1
 T["Dokumentation"] = tabs[idx]; idx += 1
 
-dashboard.render(T, profil1, ergebnis1, mieteinnahmen=mieteinnahmen)
+render_profil_tab(T)
+dashboard.render(T, profil1, ergebnis1, mieteinnahmen=mieteinnahmen,
+                 profil2=profil2, ergebnis2=ergebnis2)
 if profil2:
     haushalt.render(T, profil1, profil2, ergebnis1, ergebnis2, veranlagung, haushalt_daten,
                     mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
-simulation.render(T, profil1, ergebnis1)
+simulation.render(T, profil1, ergebnis1, profil2=profil2, ergebnis2=ergebnis2)
 vorsorge.render(T, profil1, ergebnis1, profil2=profil2,
                 mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
-auszahlung.render(T, profil1, ergebnis1)
-steuern.render(T, profil1, ergebnis1, mieteinnahmen=mieteinnahmen)
+entnahme_opt.render(T, profil1, ergebnis1, profil2=profil2,
+                    mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
 dokumentation.render(T)
