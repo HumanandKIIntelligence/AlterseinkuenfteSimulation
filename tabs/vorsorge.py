@@ -297,17 +297,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None) -> N
         df_jd = pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
         fig_jv = go.Figure()
         fig_jv.add_trace(go.Bar(
-            name="Netto (€)", x=df_jd.index, y=df_jd["Netto (€)"],
+            name="Netto (€)", x=df_jd.index, y=df_jd["Netto"],
             marker_color="#4CAF50",
             hovertemplate="%{x}: %{y:,.0f} €<extra>Netto</extra>",
         ))
         fig_jv.add_trace(go.Bar(
-            name="Steuer (€)", x=df_jd.index, y=df_jd["Steuer (€)"],
+            name="Steuer (€)", x=df_jd.index, y=df_jd["Steuer"],
             marker_color="#EF9A9A",
             hovertemplate="%{x}: %{y:,.0f} €<extra>Steuer</extra>",
         ))
         fig_jv.add_trace(go.Bar(
-            name="KV/PV (€)", x=df_jd.index, y=df_jd["KV/PV (€)"],
+            name="KV/PV (€)", x=df_jd.index, y=df_jd["KV_PV"],
             marker_color="#FFF176",
             hovertemplate="%{x}: %{y:,.0f} €<extra>KV/PV</extra>",
         ))

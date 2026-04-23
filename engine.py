@@ -345,10 +345,10 @@ def _netto_ueber_horizont(
         total_netto += netto
         jahresdaten.append({
             "Jahr": jahr,
-            "Brutto (€)": round(brutto),
-            "Steuer (€)": round(steuer),
-            "KV/PV (€)": round(kv),
-            "Netto (€)": round(netto),
+            "Brutto": round(brutto),
+            "Steuer": round(steuer),
+            "KV_PV": round(kv),
+            "Netto": round(netto),
         })
 
     return total_netto, jahresdaten
