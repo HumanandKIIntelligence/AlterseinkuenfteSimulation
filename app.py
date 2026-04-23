@@ -11,7 +11,7 @@ st.set_page_config(
 
 from engine import Profil, berechne_rente, berechne_haushalt
 from session_io import save_session, load_session, list_saves
-from tabs import dashboard, simulation, auszahlung, steuern, vorsorge, haushalt
+from tabs import dashboard, simulation, auszahlung, steuern, vorsorge, haushalt, dokumentation
 
 
 # ── Sidebar-Hilfsfunktion je Person ──────────────────────────────────────────
@@ -236,7 +236,7 @@ ergebnis2 = berechne_rente(profil2) if profil2 else None
 haushalt_daten = berechne_haushalt(ergebnis1, ergebnis2, veranlagung, mieteinnahmen)
 
 tab_labels = ["📊 Dashboard", "🔮 Simulation", "🏦 Vorsorge-Bausteine",
-              "💰 Kapital vs. Rente", "🧾 Steuern & KV"]
+              "💰 Kapital vs. Rente", "🧾 Steuern & KV", "📖 Dokumentation"]
 if profil2:
     tab_labels.insert(1, "👥 Haushalt")
 
@@ -251,6 +251,7 @@ T["Simulation"] = tabs[idx]; idx += 1
 T["Vorsorge"]   = tabs[idx]; idx += 1
 T["Auszahlung"] = tabs[idx]; idx += 1
 T["Steuern"]    = tabs[idx]; idx += 1
+T["Dokumentation"] = tabs[idx]; idx += 1
 
 dashboard.render(T, profil1, ergebnis1, mieteinnahmen=mieteinnahmen)
 if profil2:
@@ -261,3 +262,4 @@ vorsorge.render(T, profil1, ergebnis1, profil2=profil2,
                 mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
 auszahlung.render(T, profil1, ergebnis1)
 steuern.render(T, profil1, ergebnis1, mieteinnahmen=mieteinnahmen)
+dokumentation.render(T)
