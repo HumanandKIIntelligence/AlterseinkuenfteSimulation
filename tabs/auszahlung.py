@@ -7,6 +7,11 @@ import streamlit as st
 from engine import Profil, RentenErgebnis, kapital_vs_rente
 
 
+def _de(v: float, dec: int = 0) -> str:
+    s = f"{v:,.{dec}f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def render_section(profil: Profil, ergebnis: RentenErgebnis) -> None:
     """Kapitalverzehr-Kalkulator ohne Tab-Wrapper – aufrufbar aus Entnahme-Expander."""
     st.info(
@@ -61,25 +66,26 @@ def render_section(profil: Profil, ergebnis: RentenErgebnis) -> None:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(
         "Monatliche Rate (Annuität)",
-        f"{monatsrente_verzehr:,.0f} €",
+        f"{_de(monatsrente_verzehr)} €",
         help="Monatliche Entnahme, die das Kapital inklusive Zinsen über die gewählte "
              "Laufzeit exakt aufbraucht.",
     )
     breakeven = kapital / monatsrente if monatsrente > 0 else 0.0
     c2.metric(
         "Break-Even-Punkt",
-        f"{breakeven / 12:.1f} Jahre",
+        f"{_de(breakeven / 12, dec=1)} Jahre",
         help="Nach dieser Zeit hast du das eingezahlte Kapital durch Rentenzahlungen "
              "vollständig zurückerhalten.",
     )
     c3.metric(
         "Gesamtauszahlung (Annuität)",
-        f"{result['gesamtauszahlung']:,.0f} €",
+        f"{_de(result['gesamtauszahlung'])} €",
     )
     gewinn = result["gesamtauszahlung"] - kapital
+    _sign = "+" if gewinn >= 0 else ""
     c4.metric(
         "Gewinn über Kapital",
-        f"{gewinn:+,.0f} €",
+        f"{_sign}{_de(gewinn)} €",
         delta_color="normal",
     )
 
@@ -116,6 +122,7 @@ def render_section(profil: Profil, ergebnis: RentenErgebnis) -> None:
         xaxis=dict(title="Alter"),
         yaxis=dict(title="Restkapital (€)", tickformat=",.0f"),
         margin=dict(l=10, r=10, t=10, b=10),
+        separators=",.",
     )
     st.plotly_chart(fig_vl, use_container_width=True)
 
@@ -126,12 +133,14 @@ def render_section(profil: Profil, ergebnis: RentenErgebnis) -> None:
     daten = []
     for lz in [15, 20, 25, 30, 35]:
         r = kapital_vs_rente(kapital, rendite_entnahme, lz)
+        _g = r["gesamtauszahlung"] - kapital
+        _gs = "+" if _g >= 0 else ""
         daten.append({
             "Laufzeit ab Rente (J.)": lz,
-            "Monatliche Rate (€)": f"{r['monatsrate']:,.0f}",
-            "Gesamtauszahlung (€)": f"{r['gesamtauszahlung']:,.0f}",
-            "Gewinn vs. Kapital (€)": f"{r['gesamtauszahlung'] - kapital:+,.0f}",
-            "Break-Even (Jahre)": f"{kapital / r['monatsrate'] / 12:.1f}" if r["monatsrate"] > 0 else "–",
+            "Monatliche Rate (€)": _de(r["monatsrate"]),
+            "Gesamtauszahlung (€)": _de(r["gesamtauszahlung"]),
+            "Gewinn vs. Kapital (€)": f"{_gs}{_de(_g)}",
+            "Break-Even (Jahre)": _de(kapital / r["monatsrate"] / 12, dec=1) if r["monatsrate"] > 0 else "–",
         })
     st.dataframe(
         pd.DataFrame(daten).set_index("Laufzeit ab Rente (J.)"),
@@ -167,6 +176,7 @@ def render_section(profil: Profil, ergebnis: RentenErgebnis) -> None:
             yaxis=dict(title="Kumulierte Auszahlung (€)", tickformat=",.0f"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=10, r=10, t=40, b=10),
+            separators=",.",
         )
         st.plotly_chart(fig_kum, use_container_width=True)
     else:

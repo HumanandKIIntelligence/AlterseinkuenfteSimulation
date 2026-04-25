@@ -18,6 +18,8 @@ from engine import (
     BAV_FREIBETRAG_MONATLICH,
     BBG_KV_MONATLICH,
     SPARERPAUSCHBETRAG,
+    MINDEST_BMG_FREIWILLIG_MONO,
+    AKTUELLES_JAHR,
     einkommensteuer,
     einkommensteuer_splitting,
     besteuerungsanteil,
@@ -277,10 +279,11 @@ class TestBerechneRente:
         assert e.kv_monatlich == pytest.approx(pkv)
 
     def test_gkv_beitrag_berechnet(self):
-        p = _profil(krankenversicherung="GKV", gkv_zusatzbeitrag=0.017, kinder=True)
+        p = _profil(krankenversicherung="GKV", gkv_zusatzbeitrag=0.017, kinder=True, kvdr_pflicht=True)
         e = berechne_rente(p)
-        # KV-Satz = 7,3 % + 0,85 % + 3,4 % = 11,55 %
-        expected_rate = 0.073 + 0.0085 + 0.034
+        # KVdR: halber GKV-Satz (DRV trägt andere Hälfte) + halber PV-Satz
+        # KV = 7,3 % + 0,85 % + 1,7 % = 9,85 %
+        expected_rate = 0.073 + 0.0085 + 0.017
         assert e.kv_monatlich == pytest.approx(e.brutto_monatlich * expected_rate, rel=1e-4)
 
     def test_pv_ohne_kinder_hoeher(self):
@@ -656,7 +659,8 @@ class TestNettoUeberHorizont:
             assert "Steuer" in row
             assert "KV_PV" in row
             assert "Netto" in row
-            assert row["Netto"] == row["Brutto"] - row["Steuer"] - row["KV_PV"]
+            # Jede Komponente wird unabhängig gerundet → max. ±2 Rundungsdifferenz
+            assert abs(row["Netto"] - (row["Brutto"] - row["Steuer"] - row["KV_PV"])) <= 2
 
     def test_total_nahe_summe_jahresdaten(self):
         # total_netto verwendet ungerundete Werte; jahresdaten speichert round()-Werte
@@ -790,7 +794,7 @@ class TestNettoUeberHorizont:
         p = self._profil_gkv()
         e = self._ergebnis_gkv()
         _, jd = _netto_ueber_horizont(p, e, [], 5)
-        expected_keys = {"Src_GesRente", "Src_Versorgung", "Src_Einmal",
+        expected_keys = {"Src_Gehalt", "Src_GesRente", "Src_Versorgung", "Src_Einmal",
                          "Src_Miete", "zvE", "Steuer_Progressiv", "Steuer_Abgeltung"}
         for row in jd:
             assert expected_keys.issubset(row.keys())
@@ -927,9 +931,9 @@ class TestPensionaerBerechne:
         """Bei Pensionären gilt kein bAV-Freibetrag (§ 229 Abs. 1 Nr. 1 SGB V)."""
         p_pensionaer = self._pensionaer(aktuelles_brutto_monatlich=500.0, kinder=True)
         e = berechne_rente(p_pensionaer)
-        # GRV-Rentner mit 500 € bAV würde Freibetrag von 187,25 € bekommen,
-        # Pensionär hat keinen Freibetrag → volle KV-Basis
-        kv_satz = 0.073 + 0.017 / 2 + 0.034
+        # Pensionär ist immer freiwillig GKV-versichert → voller GKV- + PV-Satz (kein DRV-Trägeranteil)
+        # Kein bAV-Freibetrag (§ 229 Abs. 1 Nr. 1 SGB V gilt nur für GRV-Rentner)
+        kv_satz = 0.146 + 0.017 + 0.034   # 14,6 % + Zusatz 1,7 % + PV 3,4 %
         expected_kv = 500.0 * kv_satz
         assert e.kv_monatlich == pytest.approx(expected_kv, rel=1e-4)
 
@@ -1060,3 +1064,274 @@ class TestDuvBuv:
         )
         e_ohne = berechne_rente(p_ohne_buv)
         assert e.brutto_monatlich == pytest.approx(e_ohne.brutto_monatlich)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KVdR vs. freiwillig GKV (§ 5 Abs. 1 Nr. 11 SGB V vs. § 240 SGB V)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestKVdRVsFreiwillig:
+    """KV-Beitragspflicht: KVdR (§229 SGB V) vs. freiwillig GKV (§240 SGB V)."""
+
+    def _profil_gkv(self, kvdr: bool) -> Profil:
+        return _profil(
+            geburtsjahr=1958, renteneintritt_alter=67,
+            aktuelle_punkte=35.0, punkte_pro_jahr=0.0,
+            kvdr_pflicht=kvdr,
+        )
+
+    def test_kvdr_mieteinnahmen_kein_kv(self):
+        """KVdR: Mieteinnahmen nicht §229-Einkommen → KV unverändert."""
+        p = self._profil_gkv(kvdr=True)
+        e = berechne_rente(p)
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 5, 0.0, 0.0)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [], 5, 1_000.0, 0.0)
+        assert jd_mit[0]["KV_PV"] == jd_ohne[0]["KV_PV"]
+
+    def test_freiwillig_mieteinnahmen_erhoetht_kv(self):
+        """Freiwillig GKV: Mieteinnahmen beitragspflichtig → KV steigt."""
+        p = self._profil_gkv(kvdr=False)
+        e = berechne_rente(p)
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 5, 0.0, 0.0)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [], 5, 500.0, 0.0)
+        assert jd_mit[0]["KV_PV"] > jd_ohne[0]["KV_PV"]
+
+    def test_kvdr_privatrv_kein_kv(self):
+        """KVdR: Private RV-Monatsrente nicht §229-Einkommen → KV unverändert."""
+        p = self._profil_gkv(kvdr=True)
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        prod = VorsorgeProdukt(
+            id="priv", typ="PrivateRente", name="PRV", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=800.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 5)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [(prod, sj, 0.0)], 5)
+        assert jd_mit[0]["KV_PV"] == jd_ohne[0]["KV_PV"]
+
+    def test_freiwillig_privatrv_erhoetht_kv(self):
+        """Freiwillig GKV: Private RV-Monatsrente beitragspflichtig → KV steigt."""
+        p = self._profil_gkv(kvdr=False)
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        prod = VorsorgeProdukt(
+            id="priv", typ="PrivateRente", name="PRV", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=800.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 5)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [(prod, sj, 0.0)], 5)
+        assert jd_mit[0]["KV_PV"] > jd_ohne[0]["KV_PV"]
+
+    def test_freiwillig_bav_kein_freibetrag(self):
+        """Freiwillig GKV: bAV-Freibetrag gilt NICHT → auch kleine bAV erhöht KV."""
+        # Under KVdR, bAV of 100 €/Mon. < 187.25 € Freibetrag → no KV change
+        # Under freiwillig GKV, 100 €/Mon. counts fully
+        p_kvdr      = self._profil_gkv(kvdr=True)
+        p_freiwillig = self._profil_gkv(kvdr=False)
+        e_k = berechne_rente(p_kvdr)
+        e_f = berechne_rente(p_freiwillig)
+        sj  = p_kvdr.eintritt_jahr
+        bav_klein = VorsorgeProdukt(
+            id="bav_k", typ="bAV", name="bAV-klein", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=100.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        _, jd_kvdr_ohne = _netto_ueber_horizont(p_kvdr,      e_k, [], 5)
+        _, jd_kvdr_mit  = _netto_ueber_horizont(p_kvdr,      e_k, [(bav_klein, sj, 0.0)], 5)
+        _, jd_frei_ohne = _netto_ueber_horizont(p_freiwillig, e_f, [], 5)
+        _, jd_frei_mit  = _netto_ueber_horizont(p_freiwillig, e_f, [(bav_klein, sj, 0.0)], 5)
+        # KVdR: 100 € < Freibetrag → KV unverändert
+        assert jd_kvdr_mit[0]["KV_PV"] == jd_kvdr_ohne[0]["KV_PV"]
+        # Freiwillig: auch 100 € bAV trägt zur KV-Basis bei
+        assert jd_frei_mit[0]["KV_PV"] > jd_frei_ohne[0]["KV_PV"]
+
+    def test_freiwillig_mindestbemessungsgrundlage(self):
+        """Freiwillig GKV: sehr kleine Rente → Mindest-BMG (≈1.097 €/Mon.) greift."""
+        p_f = _profil(
+            geburtsjahr=1958, renteneintritt_alter=67,
+            aktuelle_punkte=5.0, punkte_pro_jahr=0.0,
+            kvdr_pflicht=False,
+        )
+        p_k = _profil(
+            geburtsjahr=1958, renteneintritt_alter=67,
+            aktuelle_punkte=5.0, punkte_pro_jahr=0.0,
+            kvdr_pflicht=True,
+        )
+        e_f = berechne_rente(p_f)
+        e_k = berechne_rente(p_k)
+        _, jd_f = _netto_ueber_horizont(p_f, e_f, [], 5)
+        _, jd_k = _netto_ueber_horizont(p_k, e_k, [], 5)
+        # Freiwillig: Mindest-BMG > actual income → KV auf Mindest-BMG
+        # KVdR: KV nur auf tatsächliche Rente (kein Mindest-BMG-Prinzip)
+        assert jd_f[0]["KV_PV"] > jd_k[0]["KV_PV"]
+
+    def test_freiwillig_bav_einmal_kein_spreading(self):
+        """Freiwillig GKV: bAV-Einmalauszahlung darf NICHT auf 10 Jahre gespreizt werden.
+
+        §229 Abs. 1 S. 3 SGB V (10-Jahres-Spreading) gilt nur für KVdR.
+        Für freiwillig Versicherte zählt die Einmalauszahlung nur im Auszahlungsjahr
+        (via einmal_brutto_j), nicht in den Folgejahren.
+        """
+        p = self._profil_gkv(kvdr=False)
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        bav_einmal = VorsorgeProdukt(
+            id="bav_e", typ="bAV", name="bAV-Einmal", person="Person 1",
+            max_einmalzahlung=120_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 5)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [(bav_einmal, sj, 1.0)], 5)
+        # Im Auszahlungsjahr (Jahr 0) muss KV steigen (einmal_brutto_j trägt bei)
+        assert jd_mit[0]["KV_PV"] > jd_ohne[0]["KV_PV"]
+        # Im Folgejahr (Jahr 1) darf das bAV-Einmal KEINE KV mehr erzeugen
+        # (kein §229-Spreading für freiwillig Versicherte)
+        assert jd_mit[1]["KV_PV"] == jd_ohne[1]["KV_PV"]
+
+    def test_kvdr_bav_einmal_spreading_10_jahre(self):
+        """KVdR: bAV-Einmalauszahlung wird gemäß §229 Abs. 1 S. 3 SGB V auf 10 Jahre verteilt."""
+        p = self._profil_gkv(kvdr=True)
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        bav_einmal = VorsorgeProdukt(
+            id="bav_e", typ="bAV", name="bAV-Einmal", person="Person 1",
+            max_einmalzahlung=120_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 12)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [(bav_einmal, sj, 1.0)], 12)
+        # Jahre 0–9: KV erhöht (bav_einmal_kv_j = betrag/10 je Jahr)
+        for i in range(10):
+            assert jd_mit[i]["KV_PV"] > jd_ohne[i]["KV_PV"], f"Jahr {i}: KV sollte erhöht sein"
+        # Jahr 10: kein Spreading mehr → KV wie ohne bAV-Einmal
+        assert jd_mit[10]["KV_PV"] == jd_ohne[10]["KV_PV"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Laufende Kapitalerträge (Zinsen, Dividenden, Ausschüttungen)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLaufendeKapitalertraege:
+    """Laufende Kapitalerträge in VorsorgeProdukt.laufende_kapitalertraege_mono."""
+
+    def _profil_rente(self, kvdr: bool = True) -> Profil:
+        return _profil(
+            geburtsjahr=1958, renteneintritt_alter=67,
+            aktuelle_punkte=35.0, punkte_pro_jahr=0.0,
+            kvdr_pflicht=kvdr,
+        )
+
+    def _prod_mit_lfd_kap(self, lfd_kap: float) -> VorsorgeProdukt:
+        return VorsorgeProdukt(
+            id="lfd", typ="ETF", name="ETF-lfd", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=2025, spaetestes_startjahr=2025,
+            aufschub_rendite=0.0, einzahlungen_gesamt=0.0, teilfreistellung=0.30,
+            laufende_kapitalertraege_mono=lfd_kap,
+        )
+
+    def test_unter_pauschbetrag_kein_abgelt(self):
+        """Laufende Kapitalerträge < 1.000 €/J. (Sparerpauschbetrag) → keine Abgeltungsteuer."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        prod = self._prod_mit_lfd_kap(70.0)  # 70 × 12 = 840 € < 1.000 €
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 5)
+        assert jd[0]["Steuer_Abgeltung"] == 0
+
+    def test_ueber_pauschbetrag_abgeltungsteuer(self):
+        """Laufende Kapitalerträge > 1.000 €/J. → 25 % Abgeltungsteuer auf Überschuss."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        prod = self._prod_mit_lfd_kap(200.0)  # 200 × 12 = 2.400 € > 1.000 €
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 5)
+        expected = (200.0 * 12 - SPARERPAUSCHBETRAG) * 0.25
+        assert jd[0]["Steuer_Abgeltung"] == pytest.approx(expected, abs=1.0)
+
+    def test_kvdr_laufende_kap_kein_kv(self):
+        """KVdR: laufende Kapitalerträge erhöhen KV-Basis NICHT."""
+        p = self._profil_rente(kvdr=True)
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        _, jd_ohne = _netto_ueber_horizont(p, e, [(self._prod_mit_lfd_kap(0.0),   sj, 1.0)], 5)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [(self._prod_mit_lfd_kap(500.0), sj, 1.0)], 5)
+        assert jd_mit[0]["KV_PV"] == jd_ohne[0]["KV_PV"]
+
+    def test_freiwillig_laufende_kap_erhoetht_kv(self):
+        """Freiwillig GKV: laufende Kapitalerträge erhöhen KV-Basis."""
+        p = self._profil_rente(kvdr=False)
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        _, jd_ohne = _netto_ueber_horizont(p, e, [(self._prod_mit_lfd_kap(0.0),   sj, 1.0)], 5)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [(self._prod_mit_lfd_kap(500.0), sj, 1.0)], 5)
+        assert jd_mit[0]["KV_PV"] > jd_ohne[0]["KV_PV"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Berufsjahre – Pre-retirement Simulation mit Gehalt als Steuerbasis
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBerufsjahre:
+    """Simulation ab AKTUELLES_JAHR mit Bruttogehalt für Steuerprogression."""
+
+    def _profil_noch_aktiv(self) -> Profil:
+        """Renteneintritt in 2 Jahren (eintritt_jahr = AKTUELLES_JAHR + 2)."""
+        return _profil(
+            geburtsjahr=AKTUELLES_JAHR - 65,
+            renteneintritt_alter=67,
+            aktuelle_punkte=35.0, punkte_pro_jahr=0.0,
+        )
+
+    def test_mit_gehalt_mehr_simulationsjahre(self):
+        """Gehalt > 0 und zukünftiger Renteneintritt → mehr als horizon Jahre simuliert."""
+        p = self._profil_noch_aktiv()
+        e = berechne_rente(p)
+        horizon = 10
+        _, jd = _netto_ueber_horizont(p, e, [], horizon, gehalt_monatlich=5_000.0)
+        _pre = max(0, p.eintritt_jahr - AKTUELLES_JAHR)
+        assert _pre > 0, "Test-Voraussetzung: Renteneintritt muss in der Zukunft liegen"
+        assert len(jd) == horizon + _pre
+
+    def test_ohne_gehalt_nur_rentenjahre(self):
+        """Ohne Gehalt startet Simulation erst ab Renteneintritt → genau horizon Jahre."""
+        p = self._profil_noch_aktiv()
+        e = berechne_rente(p)
+        horizon = 10
+        _, jd = _netto_ueber_horizont(p, e, [], horizon, gehalt_monatlich=0.0)
+        assert len(jd) == horizon
+
+    def test_src_gehalt_positiv_vor_renteneintritt(self):
+        """Src_Gehalt ist in Arbeitsjahren > 0."""
+        p = self._profil_noch_aktiv()
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 5, gehalt_monatlich=5_000.0)
+        _pre = max(0, p.eintritt_jahr - AKTUELLES_JAHR)
+        for i in range(_pre):
+            assert jd[i]["Src_Gehalt"] > 0, f"Arbeitsjahr {i}: Src_Gehalt sollte > 0 sein"
+
+    def test_src_gehalt_null_ab_renteneintritt(self):
+        """Src_Gehalt ist ab Renteneintritt 0."""
+        p = self._profil_noch_aktiv()
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 5, gehalt_monatlich=5_000.0)
+        _pre = max(0, p.eintritt_jahr - AKTUELLES_JAHR)
+        for i in range(_pre, len(jd)):
+            assert jd[i]["Src_Gehalt"] == 0, f"Rentenjahr {i}: Src_Gehalt sollte 0 sein"
+
+    def test_hoehereres_gehalt_mehr_steuer(self):
+        """Höheres Gehalt → höhere Steuer in Arbeitsjahren."""
+        p = self._profil_noch_aktiv()
+        e = berechne_rente(p)
+        _, jd_niedrig = _netto_ueber_horizont(p, e, [], 5, gehalt_monatlich=3_000.0)
+        _, jd_hoch    = _netto_ueber_horizont(p, e, [], 5, gehalt_monatlich=8_000.0)
+        _pre = max(0, p.eintritt_jahr - AKTUELLES_JAHR)
+        if _pre > 0:
+            assert jd_hoch[0]["Steuer"] >= jd_niedrig[0]["Steuer"]

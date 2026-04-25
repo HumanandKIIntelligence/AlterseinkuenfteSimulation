@@ -9,6 +9,7 @@ from engine import (
     SONDERAUSGABEN_PAUSCHBETRAG,
     BAV_FREIBETRAG_MONATLICH,
     BBG_KV_MONATLICH,
+    MINDEST_BMG_FREIWILLIG_MONO,
     AKTUELLES_JAHR,
 )
 
@@ -186,9 +187,9 @@ def render(T: dict) -> None:
             """)
 
         # ── GKV/PKV ────────────────────────────────────────────────────────────
-        with st.expander("🏥 Kranken- und Pflegeversicherung in der Rente (KVdR)"):
+        with st.expander("🏥 Kranken- und Pflegeversicherung in der Rente"):
             st.markdown(f"""
-            **Gesetzlich versichert (GKV / KVdR):**
+            **Gesetzlich versichert (GKV) – Beitragssätze:**
 
             | Beitragsart | Satz | Träger |
             |---|---|---|
@@ -197,24 +198,54 @@ def render(T: dict) -> None:
             | PV mit Kindern | 3,4 % | Rentner trägt voll |
             | PV ohne Kinder | 4,0 % | Rentner trägt voll |
 
-            **Beitragsbemessungsgrundlage (§ 229 SGB V):**
+            ---
 
-            | Einkommensquelle | KVdR-pflichtig? | Besonderheit |
+            ### KVdR-Pflichtmitglied (§ 5 Abs. 1 Nr. 11 SGB V)
+
+            Nur §229-Einkünfte sind beitragspflichtig:
+
+            | Einkommensquelle | Beitragspflichtig? | Besonderheit |
             |---|---|---|
-            | Gesetzliche Rente | Ja | Volle Basis |
-            | Beamtenpension | Ja | Volle Basis, kein Freibetrag |
-            | bAV (Versorgungsbezüge) | Ja | Freibetrag {BAV_FREIBETRAG_MONATLICH:.2f} €/Mon. (§ 226 Abs. 2 SGB V) |
-            | bAV-Einmalauszahlung | Ja | 1/120 pro Monat über 10 Jahre |
-            | Private RV, Riester, LV | Nein | – |
-            | DUV, BUV (private Vers.) | Nein | Nicht unter § 229 SGB V |
-            | Mieteinnahmen | Nein | – |
+            | Gesetzliche Rente | ✅ Ja | Volle Basis |
+            | Beamtenpension | ✅ Ja | Volle Basis, kein Freibetrag |
+            | bAV (Versorgungsbezüge) | ✅ Ja | Freibetrag {BAV_FREIBETRAG_MONATLICH:.2f} €/Mon. (§ 226 Abs. 2 SGB V) |
+            | bAV-Einmalauszahlung | ✅ Ja | 1/120 pro Monat über 10 Jahre |
+            | Private RV, Riester, LV | ❌ Nein | – |
+            | DUV, BUV (private Vers.) | ❌ Nein | Nicht unter § 229 SGB V |
+            | Mieteinnahmen | ❌ Nein | – |
+            | Kapitalerträge (Zinsen, Dividenden) | ❌ Nein | – |
 
-            **BBG-Deckelung:** KV-Beitragsbemessungsgrundlage max. **{BBG_KV_MONATLICH:,.0f} €/Mon.**
+            **BBG-Deckelung:** max. **{BBG_KV_MONATLICH:,.0f} €/Mon.**
+
+            ---
+
+            ### Freiwillig GKV-Versicherter (§ 240 SGB V)
+
+            **ALLE** Einnahmen sind beitragspflichtig – ohne den bAV-Freibetrag:
+
+            | Einkommensquelle | Beitragspflichtig? |
+            |---|---|
+            | Gesetzliche Rente | ✅ Ja |
+            | bAV | ✅ Ja (kein Freibetrag!) |
+            | Private RV, Riester, LV | ✅ Ja |
+            | Mieteinnahmen | ✅ Ja |
+            | Kapitalerträge (Zinsen, Dividenden, ETF-Ausschüttungen) | ✅ Ja |
+
+            **Mindestbemessungsgrundlage:** Beiträge werden mindestens auf
+            **{MINDEST_BMG_FREIWILLIG_MONO:,.2f} €/Mon.** berechnet (§ 240 Abs. 4 SGB V),
+            auch wenn das Einkommen darunter liegt.
+
+            Die laufenden Kapitalerträge je Vorsorgebaustein werden im
+            **Bearbeitungsdialog der Vorsorge-Bausteine** erfasst.
+
+            **Profil-Einstellung:** Im Tab „Profil" erscheint bei GKV-Wahl eine Checkbox
+            „KVdR-Pflichtmitglied". Default: aktiviert (Pflichtmitglied).
+
+            ---
 
             **Privat versichert (PKV):**
-            Der PKV-Beitrag wird als fixer Monatsbetrag eingegeben. Die Deutsche Rentenversicherung
-            gewährt einen pauschalen Beitragszuschuss (halber GKV-Satz auf die Renteneinnahmen) –
-            dieser ist in der Simulation vereinfacht nicht gesondert ausgewiesen.
+            Der PKV-Beitrag wird als fixer Monatsbetrag eingegeben. Der DRV-Beitragszuschuss
+            ist vereinfacht nicht gesondert ausgewiesen.
             """)
 
         # ── Vorsorge-Bausteine ─────────────────────────────────────────────────
@@ -239,6 +270,13 @@ def render(T: dict) -> None:
             Auszahlungsbetrag mit der eingegebenen Aufschubrendite (% p.a.) an:
             > Wert bei Startjahr = Maximalwert × (1 + Aufschubrendite)^(Aufschubjahre)
 
+            **Laufende Kapitalerträge je Baustein:**
+            Zinsen, Dividenden und ETF-Ausschüttungen können je Vertrag als monatlicher
+            Betrag erfasst werden. Wirkung:
+            - Fließen in den gemeinsamen **Abgeltungsteuer-Pool** (Sparerpauschbetrag 1.000 €/P.)
+            - Bei **freiwillig GKV-Versicherten** zusätzlich KV-pflichtig (§ 240 SGB V)
+            - Bei **KVdR-Mitgliedern** nur steuerlich relevant (nicht KV-pflichtig)
+
             **Steueroptimierung – Brute-Force-Verfahren:**
             Das System prüft alle Kombinationen aus:
             - **Startjahr** je Vertrag: bis zu 4 Stützstellen im erlaubten Bereich
@@ -247,6 +285,12 @@ def render(T: dict) -> None:
             Für jede Kombination wird das **Netto-Gesamteinkommen über den Zeithorizont**
             (Steuer + KV berücksichtigt, Jahr für Jahr) berechnet. Die Kombination mit dem
             höchsten Gesamtnetto wird als optimal ausgegeben.
+
+            **Berufsjahre-Simulation:** Bei Angabe eines aktuellen Bruttogehalts
+            (in den Optimierungs-Parametern) startet die Simulation ab {AKTUELLES_JAHR}
+            und verwendet das Gehalt als zvE-Basis in den Arbeitsjahren (§ 19 EStG, 100 % progressiv).
+            Die Charts zeigen Arbeits- und Rentenphasen getrennt mit vertikaler Trennlinie am
+            Renteneintritts-Jahr.
             """)
 
         # ── Mieteinnahmen ──────────────────────────────────────────────────────
@@ -361,6 +405,7 @@ def render(T: dict) -> None:
             f"Gesetzesstand: 2024 · Rentenwert West: {RENTENWERT_2024:.2f} € · "
             f"Grundfreibetrag: {GRUNDFREIBETRAG_2024:,} € · "
             f"bAV-Freibetrag KVdR: {BAV_FREIBETRAG_MONATLICH:.2f} €/Mon. · "
+            f"Mindest-BMG freiwillig: {MINDEST_BMG_FREIWILLIG_MONO:,.2f} €/Mon. · "
             f"BBG KV: {BBG_KV_MONATLICH:,.0f} €/Mon. · "
             f"Simulationsjahr: {AKTUELLES_JAHR}"
         )

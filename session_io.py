@@ -49,6 +49,7 @@ _PROFIL_LADE_DEFAULTS: dict = {
     "duv_endjahr":               2040,
     "buv_monatlich":             0.0,
     "buv_endjahr":               2040,
+    "kvdr_pflicht":              True,
 }
 
 

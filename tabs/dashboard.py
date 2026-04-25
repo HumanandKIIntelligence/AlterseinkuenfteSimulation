@@ -3,12 +3,17 @@
 import plotly.graph_objects as go
 import streamlit as st
 
-from engine import Profil, RentenErgebnis, einkommensteuer, GRUNDFREIBETRAG_2024
+from engine import Profil, RentenErgebnis, GRUNDFREIBETRAG_2024
 from tabs import steuern
 
 
+def _de(v: float, dec: int = 0) -> str:
+    """Zahl im deutschen Format: 1.234,56"""
+    s = f"{v:,.{dec}f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def _grenzsteuersatz(zvE: float) -> float:
-    """Analytischer Grenzsteuersatz (§ 32a EStG 2024) als Dezimalzahl."""
     if zvE <= 11_604:
         return 0.0
     if zvE <= 17_005:
@@ -22,8 +27,27 @@ def _grenzsteuersatz(zvE: float) -> float:
     return 0.45
 
 
+def _kv_pv_split(profil: Profil, kv_gesamt: float,
+                  ergebnis: RentenErgebnis | None = None) -> tuple[float, float]:
+    """Gibt (GKV-Anteil, PV-Anteil) des monatlichen KV-Beitrags zurück."""
+    if ergebnis is not None and (ergebnis.kv_gkv_monatlich + ergebnis.kv_pv_monatlich) > 0:
+        return ergebnis.kv_gkv_monatlich, ergebnis.kv_pv_monatlich
+    if profil.krankenversicherung == "PKV":
+        return kv_gesamt, 0.0
+    _freiwillig = profil.ist_pensionaer or not profil.kvdr_pflicht
+    if _freiwillig:
+        _kv_rate = 0.146 + profil.gkv_zusatzbeitrag
+        _pv_rate = 0.034 if profil.kinder else 0.040
+    else:
+        _kv_rate = 0.073 + profil.gkv_zusatzbeitrag / 2
+        _pv_rate = 0.017 if profil.kinder else 0.023
+    _total = _kv_rate + _pv_rate
+    if _total == 0:
+        return 0.0, 0.0
+    return kv_gesamt * _kv_rate / _total, kv_gesamt * _pv_rate / _total
+
+
 def _steuerampel(zvE: float) -> None:
-    """Progressionszone-Ampel: Zone, Grenzsteuersatz, Freiraum bis nächste Zone, Tipp."""
     if zvE <= 0:
         zvE = 0.0
 
@@ -32,7 +56,7 @@ def _steuerampel(zvE: float) -> None:
         farbe = "✅"
         gst = 0.0
         freiraum = GRUNDFREIBETRAG_2024 - zvE
-        naechste = f"Grundfreibetrag ({GRUNDFREIBETRAG_2024:,} €)"
+        naechste = f"Grundfreibetrag ({_de(GRUNDFREIBETRAG_2024)} €)"
         tipp = "Optimale Zone – Einkommen vollständig unter Grundfreibetrag."
     elif zvE <= 17_005:
         zone = "Progressionszone 1 (14–24 %)"
@@ -65,11 +89,11 @@ def _steuerampel(zvE: float) -> None:
 
     st.subheader(f"{farbe} Steuerzone: {zone}")
     zc1, zc2, zc3 = st.columns(3)
-    zc1.metric("Grenzsteuersatz", f"{gst:.1%}",
+    zc1.metric("Grenzsteuersatz", f"{gst:.1%}".replace(".", ","),
                help="Steuersatz auf jeden zusätzlichen Euro Einkommen.")
-    zc2.metric("zvE aktuell", f"{zvE:,.0f} €/Jahr")
+    zc2.metric("zvE aktuell", f"{_de(zvE)} €/Jahr")
     if freiraum > 0:
-        zc3.metric(f"Freiraum bis {naechste}", f"{freiraum:,.0f} €",
+        zc3.metric(f"Freiraum bis {naechste}", f"{_de(freiraum)} €",
                    help="Um diesen Betrag kann das zvE noch steigen, bevor der nächste Steuersatz greift.")
     else:
         zc3.metric("Nächste Zone", "–")
@@ -89,10 +113,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             if wahl == "Person 2":
                 profil, ergebnis = profil2, ergebnis2
 
-        # Infozeile
         abschlag_info = (
-            f"  |  **Rentenabschlag:** {ergebnis.rentenabschlag:.1%} "
-            f"({(67 - profil.renteneintritt_alter) * 12} Monate × 0,3 % § 77 SGB VI)"
+            f"  |  **Rentenabschlag:** {ergebnis.rentenabschlag:.1%}".replace(".", ",") +
+            f" ({(67 - profil.renteneintritt_alter) * 12} Monate × 0,3 % § 77 SGB VI)"
             if ergebnis.rentenabschlag > 0 else ""
         )
         st.info(
@@ -105,39 +128,60 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         # ── Kennzahlen ────────────────────────────────────────────────────────
         c1, c2, c3, c4 = st.columns(4)
         c1.metric(
-            "Bruttorente / Monat", f"{ergebnis.brutto_monatlich:,.0f} €",
+            "Bruttorente / Monat", f"{_de(ergebnis.brutto_monatlich)} €",
             help="Gesetzliche Rente + Zusatzrente vor Steuer und KV-Abzügen.",
         )
         c2.metric(
-            "Nettorente / Monat", f"{ergebnis.netto_monatlich:,.0f} €",
+            "Nettorente / Monat", f"{_de(ergebnis.netto_monatlich)} €",
             help="Nach Einkommensteuer und Kranken-/Pflegeversicherungsbeitrag.",
         )
         c3.metric(
-            "Kapital bei Renteneintritt", f"{ergebnis.kapital_bei_renteneintritt:,.0f} €",
+            "Kapital bei Renteneintritt", f"{_de(ergebnis.kapital_bei_renteneintritt)} €",
             help="Angewachsenes Spar- und Depotkapital zum Renteneintritt.",
         )
         c4.metric(
-            "Rentenpunkte gesamt", f"{ergebnis.gesamtpunkte:.1f}",
-            help=f"Aktuell {profil.aktuelle_punkte:.1f} + "
-                 f"{profil.punkte_pro_jahr:.2f} Punkte/Jahr × {profil.jahre_bis_rente} Jahre.",
+            "Rentenpunkte gesamt", f"{ergebnis.gesamtpunkte:.1f}".replace(".", ","),
+            help=f"Aktuell {ergebnis.gesamtpunkte - profil.punkte_pro_jahr * profil.jahre_bis_rente:.1f} "
+                 f"+ {profil.punkte_pro_jahr:.2f} Punkte/Jahr × {profil.jahre_bis_rente} Jahre.".replace(".", ","),
         )
 
-        c5, c6, c7, c8 = st.columns(4)
+        # KV/PV-Split berechnen
+        gkv_mono, pv_mono = _kv_pv_split(profil, ergebnis.kv_monatlich, ergebnis)
+        _kv_label = "PKV / Monat" if profil.krankenversicherung == "PKV" else "KV / Monat"
+        _pv_label = "–" if profil.krankenversicherung == "PKV" else "PV / Monat"
+
+        c5, c6, c7, c8, c9 = st.columns(5)
         c5.metric(
-            "Gesetzl. Rente (brutto)", f"{ergebnis.brutto_gesetzlich:,.0f} €/Monat",
-            help=f"Rentenabschlag: {ergebnis.rentenabschlag:.1%} (§ 77 SGB VI)"
+            "Gesetzl. Rente (brutto)", f"{_de(ergebnis.brutto_gesetzlich)} €/Mon.",
+            help=f"Rentenabschlag: {ergebnis.rentenabschlag:.1%}".replace(".", ",") + " (§ 77 SGB VI)"
                  if ergebnis.rentenabschlag > 0 else None,
         )
-        c6.metric("Steuerabzug / Monat", f"{ergebnis.steuer_monatlich:,.0f} €")
-        c7.metric("KV-Abzug / Monat", f"{ergebnis.kv_monatlich:,.0f} €")
-        c8.metric(
-            "Mieteinnahmen (Haushalt)", f"{mieteinnahmen:,.0f} €/Monat",
-            help="Gemeinsame Nettomieteinnahmen (§ 21 EStG). Steuerlich wirksam, keine KV-Pflicht."
-        ) if mieteinnahmen > 0 else c8.metric(
-            "Eff. Steuersatz", f"{ergebnis.effektiver_steuersatz:.1%}",
-            help=f"Besteuerungsanteil: {ergebnis.besteuerungsanteil:.1%} "
-                 f"(Renteneintritt {profil.eintritt_jahr})",
+        c6.metric("Steuerabzug / Monat", f"{_de(ergebnis.steuer_monatlich)} €")
+        c7.metric(
+            _kv_label, f"{_de(gkv_mono)} €",
+            help="Krankenversicherungsbeitrag (eigener Anteil).",
         )
+        if profil.krankenversicherung == "GKV":
+            _freiwillig = profil.ist_pensionaer or not profil.kvdr_pflicht
+            _pv_info = (
+                "Freiwillig GKV: voller PV-Satz (kein DRV-Trägeranteil)"
+                if _freiwillig else
+                "KVdR: DRV trägt die Hälfte des PV-Beitrags"
+            )
+            c8.metric("PV / Monat", f"{_de(pv_mono)} €", help=_pv_info)
+        else:
+            c8.metric("PV / Monat", "–")
+        if mieteinnahmen > 0:
+            c9.metric(
+                "Mieteinnahmen (Haushalt)", f"{_de(mieteinnahmen)} €/Mon.",
+                help="Gemeinsame Nettomieteinnahmen (§ 21 EStG). Steuerlich wirksam, keine KV-Pflicht."
+            )
+        else:
+            c9.metric(
+                "Eff. Steuersatz", f"{ergebnis.effektiver_steuersatz:.1%}".replace(".", ","),
+                help=f"Besteuerungsanteil: {ergebnis.besteuerungsanteil:.1%}".replace(".", ",") +
+                     f" (Renteneintritt {profil.eintritt_jahr})",
+            )
 
         st.divider()
 
@@ -145,19 +189,21 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         st.subheader("Brutto → Netto (monatlich)")
         fig_wf = go.Figure(go.Waterfall(
             orientation="v",
-            measure=["absolute", "relative", "relative", "total"],
-            x=["Bruttorente", "− Einkommensteuer", "− KV / PV", "Nettorente"],
+            measure=["absolute", "relative", "relative", "relative", "total"],
+            x=["Bruttorente", "− Einkommensteuer", "− KV", "− PV", "Nettorente"],
             y=[
                 ergebnis.brutto_monatlich,
                 -ergebnis.steuer_monatlich,
-                -ergebnis.kv_monatlich,
+                -gkv_mono,
+                -pv_mono,
                 ergebnis.netto_monatlich,
             ],
             text=[
-                f"{ergebnis.brutto_monatlich:,.0f} €",
-                f"−{ergebnis.steuer_monatlich:,.0f} €",
-                f"−{ergebnis.kv_monatlich:,.0f} €",
-                f"{ergebnis.netto_monatlich:,.0f} €",
+                f"{_de(ergebnis.brutto_monatlich)} €",
+                f"−{_de(ergebnis.steuer_monatlich)} €",
+                f"−{_de(gkv_mono)} €",
+                f"−{_de(pv_mono)} €",
+                f"{_de(ergebnis.netto_monatlich)} €",
             ],
             textposition="outside",
             connector=dict(line=dict(color="#888")),
@@ -170,6 +216,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             height=360,
             yaxis=dict(title="€ / Monat", ticksuffix=" €"),
             margin=dict(l=10, r=10, t=10, b=10),
+            separators=",.",
         )
         st.plotly_chart(fig_wf, use_container_width=True)
 
@@ -194,6 +241,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     height=300,
                     margin=dict(l=0, r=0, t=10, b=0),
                     showlegend=False,
+                    separators=",.",
                 )
                 st.plotly_chart(fig_pie, use_container_width=True)
 
@@ -204,26 +252,25 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             verlust = ergebnis.netto_monatlich - kaufkraft
             st.metric(
                 "Nettorente in heutiger Kaufkraft (2 % Inflation)",
-                f"{kaufkraft:,.0f} €",
-                delta=f"−{verlust:,.0f} € Kaufkraftverlust",
+                f"{_de(kaufkraft)} €",
+                delta=f"−{_de(verlust)} € Kaufkraftverlust",
                 delta_color="inverse",
             )
             st.caption(
-                f"Die Nettorente von **{ergebnis.netto_monatlich:,.0f} €** in {profil.eintritt_jahr} "
-                f"entspricht bei 2 % Inflation der heutigen Kaufkraft von nur **{kaufkraft:,.0f} €**. "
-                f"Die eigene Rentenanpassungs-Annahme von {profil.rentenanpassung_pa:.0%} p.a. "
+                f"Die Nettorente von **{_de(ergebnis.netto_monatlich)} €** in {profil.eintritt_jahr} "
+                f"entspricht bei 2 % Inflation der heutigen Kaufkraft von nur **{_de(kaufkraft)} €**. "
+                f"Die eigene Rentenanpassungs-Annahme von "
+                f"{profil.rentenanpassung_pa:.0%}".replace(".", ",") + " p.a. "
                 f"{'federt dies ab' if profil.rentenanpassung_pa >= inflation else 'deckt dies nicht vollständig ab'}."
             )
 
         st.divider()
 
-        # ── O1: Progressionszone-Ampel ────────────────────────────────────────
         zvE_mit_miete = ergebnis.zvE_jahres + mieteinnahmen * 12
         _steuerampel(zvE_mit_miete)
 
         st.divider()
 
-        # ── O3b: Steuer & KV Details ──────────────────────────────────────────
         with st.expander("🧾 Steuer- & KV-Details", expanded=False):
             steuern.render_section(profil, ergebnis, mieteinnahmen)
 

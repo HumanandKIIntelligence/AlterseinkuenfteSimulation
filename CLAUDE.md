@@ -50,6 +50,9 @@ docker exec altereinkuenfte-app pip install pytest -q
 | `TestVersorgungsfreibetrag` | §19 Abs. 2 EStG: 2005/2024-Tabellenwerte, Monotonie, Null ab 2040 |
 | `TestPensionaerBerechne` | Beamtenpension: VFB-Wirkung, KV ohne bAV-Freibetrag, PKV/Beihilfe |
 | `TestDuvBuv` | DUV/BUV: Ertragsanteil im zvE, kein KVdR-Beitrag, Laufzeitende |
+| `TestKVdRVsFreiwillig` | KVdR §229 vs. freiwillig §240: Miete/PrivateRV/bAV-Freibetrag/Mindest-BMG |
+| `TestLaufendeKapitalertraege` | Laufende Kapitalerträge: Sparerpauschbetrag, Abgeltungsteuer, freiwillig-KV |
+| `TestBerufsjahre` | Pre-retirement Simulation: Gehalt, Jahresanzahl, Src_Gehalt-Verlauf |
 
 ---
 
@@ -108,8 +111,8 @@ Profil-Tab (app.py) + Mieteinnahmen
 | `kapitalwachstum(kapital, sparrate, rendite_pa, jahre)` | Zinseszins mit monatlicher Sparrate |
 | `berechne_rente(profil)` | Vollberechnung → `RentenErgebnis` |
 | `berechne_haushalt(erg1, erg2, veranlagung, mieteinnahmen_monatlich)` | Haushaltseinkommen mit Splitting und Mieteinnahmen |
-| `_netto_ueber_horizont(...)` | Jahressimulation für Steueroptimierung; Rentenanpassung p.a. eingebaut; bereits_rentner nutzt rentenbeginn_jahr als Startpunkt |
-| `optimiere_auszahlungen(profil, ergebnis, produkte, horizont, mieteinnahmen, mietsteigerung)` | Brute-Force über alle Startjahr × Auszahlungsart-Kombinationen |
+| `_netto_ueber_horizont(..., gehalt_monatlich)` | Jahressimulation; startet ab AKTUELLES_JAHR wenn gehalt_monatlich>0; Rentenanpassung p.a. eingebaut; KVdR vs. freiwillig GKV |
+| `optimiere_auszahlungen(..., gehalt_monatlich)` | Brute-Force über alle Startjahr × Auszahlungsart-Kombinationen |
 
 ### Wichtige Konstanten (engine.py)
 
@@ -119,6 +122,7 @@ Profil-Tab (app.py) + Mieteinnahmen
 | `GRUNDFREIBETRAG_2024` | 11.604 € | §32a EStG 2024 |
 | `BAV_FREIBETRAG_MONATLICH` | 187,25 € | §226 Abs. 2 SGB V 2024 |
 | `BBG_KV_MONATLICH` | 5.175 € | BBG KV/PV 2024 |
+| `MINDEST_BMG_FREIWILLIG_MONO` | 1.096,67 € | §240 Abs. 4 SGB V 2024 (1/90 Bezugsgröße) |
 | `AKTUELLES_JAHR` | 2025 | **Manuell aktualisieren bei Jahreswechsel** |
 
 ---
@@ -145,13 +149,29 @@ Beide Versicherungen sind **nicht KVdR-pflichtig** (private Versicherungsleistun
 
 ## KV/PV-Behandlung in der Vorsorge-Optimierung
 
-Die `_netto_ueber_horizont`-Funktion implementiert die KVdR-Regeln korrekt:
+`_netto_ueber_horizont` implementiert drei KV-Pfade je nach Versicherungsstatus:
 
-- **bAV-Monatsrente**: KVdR-pflichtig. Freibetrag 187,25 €/Mon. (§226 Abs. 2 SGB V). Basis = `max(0, bAV_mono - Freibetrag)`.
+### PKV
+Fixer Monatsbeitrag `profil.pkv_beitrag × 12`, unabhängig vom Einkommen.
+
+### KVdR-Pflichtmitglied (`kvdr_pflicht=True`, §5 Abs. 1 Nr. 11 SGB V)
+Nur §229-Einkünfte beitragspflichtig:
+- **bAV-Monatsrente**: Freibetrag 187,25 €/Mon. (§226 Abs. 2 SGB V). Basis = `max(0, bAV_mono - Freibetrag)`.
 - **bAV-Einmalauszahlung**: KV-Basis wird auf 10 Jahre verteilt (§229 Abs. 1 S. 3 SGB V: 1/120 pro Monat).
-- **Private RV, Riester, LV, BUV, DUV**: Nicht KVdR-pflichtig. KV bleibt unverändert.
-- **Mieteinnahmen**: Nicht KVdR-pflichtig. Nur steuerlich wirksam (§21 EStG, voll steuerpflichtig).
+- **Gesetzliche Rente**: Vollständig beitragspflichtig.
+- **Private RV, Riester, LV, Mieteinnahmen, Kapitalerträge**: NICHT beitragspflichtig.
 - **BBG**: KV-Basis gedeckelt bei `BBG_KV_MONATLICH` (5.175 €/Mon.).
+
+### Freiwillig GKV (`kvdr_pflicht=False`, §240 SGB V)
+ALLE Einnahmen beitragspflichtig (ohne bAV-Freibetrag):
+- Gesetzliche Rente + bAV (ohne Freibetrag) + Private RV + LV/ETF + Mieteinnahmen + laufende Kapitalerträge
+- Mindestbemessungsgrundlage: `MINDEST_BMG_FREIWILLIG_MONO` = 1.096,67 €/Mon. (§240 Abs. 4 SGB V)
+- BBG-Deckel: 5.175 €/Mon.
+- UI: Checkbox „KVdR-Pflichtmitglied" im Profil-Tab bei GKV-Wahl.
+
+### Arbeitsjahre (Simulation ab AKTUELLES_JAHR)
+Wenn `gehalt_monatlich > 0` und `bereits_rentner=False`: Simulation startet ab `AKTUELLES_JAHR`.
+KV in Arbeitsjahren = AN-Anteil auf Gehalt (begrenzt auf BBG).
 
 ## Steuerbehandlung Mieteinnahmen
 
@@ -164,9 +184,27 @@ Die `_netto_ueber_horizont`-Funktion implementiert die KVdR-Regeln korrekt:
 
 Die gesetzliche Rente wächst im Simulationshorizont mit `rentenanpassung_pa`:
 ```python
-gesetzl_j = gesetzl_mono * 12 * (1 + profil.rentenanpassung_pa) ** y
+gesetzl_j = gesetzl_mono * 12 * (1 + profil.rentenanpassung_pa) ** _r_y
+# _r_y = max(0, jahr - profil.eintritt_jahr)  ← immer relativ zum Renteneintritt
 ```
 Für Pensionäre gilt `rentenanpassung_pa = 0.0` → konstante Pension. Für `bereits_rentner` startet die Simulation bei `rentenbeginn_jahr` (nicht `eintritt_jahr`).
+
+## Berufsjahre-Simulation (`_netto_ueber_horizont`)
+
+Wenn `gehalt_monatlich > 0` und nicht `bereits_rentner`:
+- Simulation startet bei `AKTUELLES_JAHR` statt `eintritt_jahr`
+- Arbeitsjahre (`jahr < eintritt_jahr`): Gehalt als zvE-Basis (100 % progressiv §19 EStG), AN-KV auf Gehalt
+- Ab `eintritt_jahr`: gesetzliche Rente als zvE-Basis (mit `besteuerungsanteil`)
+- `Src_Gehalt` in jahresdaten = Bruttogehalt in Arbeitsjahren, 0 in Rentenjahren
+- Gesamtlänge jahresdaten = `max(0, eintritt_jahr - AKTUELLES_JAHR) + horizont_jahre`
+
+## VorsorgeProdukt – neue Felder
+
+- **`laufende_kapitalertraege_mono`** (float, default 0.0): Monatliche laufende Kapitalerträge (Zinsen, Dividenden, ETF-Ausschüttungen). Fließen in Abgeltungsteuer-Pool ein; bei freiwillig GKV zusätzlich KV-pflichtig. Eingabe im Vorsorge-Baustein Bearbeitungsdialog.
+
+## Profil – neue Felder
+
+- **`kvdr_pflicht`** (bool, default True): Ob Person KVdR-Pflichtmitglied ist. Steuert KV-Berechnungslogik in Rente. UI: Checkbox im Profil-Tab bei GKV.
 
 ## Progressionszone-Ampel (dashboard.py)
 

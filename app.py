@@ -49,7 +49,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         rendite              = float(_get(pfx, "rendite", 3.0)) / 100
     else:
         rentenbeginn_jahr    = AKTUELLES_JAHR
-        aktuelles_brutto     = float(_get(pfx, "akt_brutto", 3_000.0)) if ist_pensionaer else 0.0
+        aktuelles_brutto     = float(_get(pfx, "akt_brutto", 3_000.0)) if ist_pensionaer else float(_get(pfx, "gehalt", 0.0))
         renteneintritt_alter = int(_get(pfx, "re_alter", 67))
         sparkapital          = float(_get(pfx, "spkap", 50_000.0))
         sparrate             = float(_get(pfx, "sprate", 500.0))
@@ -68,6 +68,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
     pkv_beitrag = float(_get(pfx, "pkv", 250.0 if ist_pensionaer else 600.0))
     gkv_zusatz  = float(_get(pfx, "gkv_zus", 1.7)) / 100
     kinder      = bool(_get(pfx, "kinder", True))
+    kvdr_pflicht = bool(_get(pfx, "kvdr", True))
 
     duv_monatlich = float(_get(pfx, "duv", 0.0))
     duv_endjahr   = int(_get(pfx, "duv_end", AKTUELLES_JAHR + 10))
@@ -97,6 +98,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         duv_endjahr=duv_endjahr,
         buv_monatlich=buv_monatlich,
         buv_endjahr=buv_endjahr,
+        kvdr_pflicht=kvdr_pflicht,
     )
 
 
@@ -131,10 +133,12 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
         f"rc{_RC}_{pfx}_pensionaer": p.ist_pensionaer,
         f"rc{_RC}_{pfx}_rbj":        p.rentenbeginn_jahr,
         f"rc{_RC}_{pfx}_akt_brutto": p.aktuelles_brutto_monatlich,
+        f"rc{_RC}_{pfx}_gehalt":     (0.0 if p.ist_pensionaer else p.aktuelles_brutto_monatlich),
         f"rc{_RC}_{pfx}_duv":        p.duv_monatlich,
         f"rc{_RC}_{pfx}_duv_end":    p.duv_endjahr,
         f"rc{_RC}_{pfx}_buv":        p.buv_monatlich,
         f"rc{_RC}_{pfx}_buv_end":    p.buv_endjahr,
+        f"rc{_RC}_{pfx}_kvdr":       p.kvdr_pflicht,
     }
     st.session_state.update(updates)
 
@@ -254,6 +258,15 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
         # O2: Kein Zusatzrente-Feld mehr – bitte Verträge im Tab Vorsorge-Bausteine erfassen
         st.caption("💡 Zusatzrenten (bAV, Riester, Rürup …) bitte im Tab **Vorsorge-Bausteine** erfassen.")
 
+        st.markdown("**Aktuelles Bruttogehalt**")
+        st.number_input(
+            "Bruttogehalt heute (€/Mon.)", 0.0, 30_000.0,
+            value=float(_get(pfx, "gehalt", 0.0)),
+            step=100.0, key=f"rc{_RC}_{pfx}_gehalt",
+            help="Aktuelles Bruttogehalt für die Steuer- und KV-Simulation in den Arbeitsjahren. "
+                 "0 = Simulation startet erst ab Renteneintritt (kein Arbeitsphasen-Verlauf).",
+        )
+
     st.markdown("**Krankenversicherung**")
     if ist_pensionaer:
         kv_opts = ["Beihilfe + PKV (70 % / 30 %)", "GKV (freiwillig versichert)"]
@@ -277,6 +290,24 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                 st.checkbox("Hat Kinder",
                             value=bool(_get(pfx, "kinder", True)),
                             key=f"rc{_RC}_{pfx}_kinder")
+            st.checkbox(
+                "KVdR-Pflichtmitglied (§ 5 Abs. 1 Nr. 11 SGB V)",
+                value=bool(_get(pfx, "kvdr", True)),
+                key=f"rc{_RC}_{pfx}_kvdr",
+                help=(
+                    "✅ Angehakt = KVdR-Pflichtmitglied (§ 5 Abs. 1 Nr. 11 SGB V): "
+                    "Nur §229-Einkünfte (gesetzliche Rente + bAV) beitragspflichtig. "
+                    "Kapitalerträge, Mieteinnahmen und private Renten bleiben beitragsfrei.\n\n"
+                    "☐ Nicht angehakt = Freiwillig versichert (§ 240 SGB V): "
+                    "ALLE Einnahmen beitragspflichtig (inkl. Kapitalerträge, Mieten, private Renten).\n\n"
+                    "📋 9/10-Regel (Voraussetzung für KVdR): "
+                    "In der zweiten Hälfte des Erwerbslebens müssen mindestens 9/10 der Zeit "
+                    "eine GKV-Mitgliedschaft (Pflicht oder freiwillig) bestanden haben. "
+                    "Wer längere Zeit in der PKV oder als Beamter tätig war, erfüllt diese "
+                    "Bedingung meist nicht → dann freiwillig versichert. "
+                    "Im Zweifel bei der eigenen Krankenkasse oder der DRV nachfragen."
+                ),
+            )
     else:
         kv_idx = 0 if "PKV" not in str(_get(pfx, "kv_radio", "Gesetzlich (GKV)")) else 1
         kv_raw = st.radio("Versicherungsart", ["Gesetzlich (GKV)", "Privat (PKV)"],
@@ -297,6 +328,24 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                 st.checkbox("Hat Kinder",
                             value=bool(_get(pfx, "kinder", True)),
                             key=f"rc{_RC}_{pfx}_kinder")
+            st.checkbox(
+                "KVdR-Pflichtmitglied (§ 5 Abs. 1 Nr. 11 SGB V)",
+                value=bool(_get(pfx, "kvdr", True)),
+                key=f"rc{_RC}_{pfx}_kvdr",
+                help=(
+                    "✅ Angehakt = KVdR-Pflichtmitglied (§ 5 Abs. 1 Nr. 11 SGB V): "
+                    "Nur §229-Einkünfte (gesetzliche Rente + bAV) beitragspflichtig. "
+                    "Kapitalerträge, Mieteinnahmen und private Renten bleiben beitragsfrei.\n\n"
+                    "☐ Nicht angehakt = Freiwillig versichert (§ 240 SGB V): "
+                    "ALLE Einnahmen beitragspflichtig (inkl. Kapitalerträge, Mieten, private Renten).\n\n"
+                    "📋 9/10-Regel (Voraussetzung für KVdR): "
+                    "In der zweiten Hälfte des Erwerbslebens müssen mindestens 9/10 der Zeit "
+                    "eine GKV-Mitgliedschaft (Pflicht oder freiwillig) bestanden haben. "
+                    "Wer längere Zeit in der PKV oder als Beamter tätig war, erfüllt diese "
+                    "Bedingung meist nicht → dann freiwillig versichert. "
+                    "Im Zweifel bei der eigenen Krankenkasse oder der DRV nachfragen."
+                ),
+            )
 
     if ist_pensionaer:
         with st.expander("🛡 Dienstunfähigkeitsversicherung (DUV)"):
@@ -479,6 +528,10 @@ mietsteigerung = float(st.session_state.get(_gkey("hh_miet_stg"), 1.5)) / 100
 profil1 = _profil_from_session("p1", 1970)
 profil2 = _profil_from_session("p2", 1972) if hat_partner else None
 
+# Bruttogehalt P1 → globaler Key für Vorsorge-/Entnahme-Optimierung
+# aktuelles_brutto_monatlich hält bei Nicht-Pensionären das Gehalt (bei Pensionären die erwartete Pension)
+st.session_state["opt_gehalt_mono"] = 0.0 if profil1.ist_pensionaer else profil1.aktuelles_brutto_monatlich
+
 ergebnis1      = berechne_rente(profil1)
 ergebnis2      = berechne_rente(profil2) if profil2 else None
 haushalt_daten = berechne_haushalt(ergebnis1, ergebnis2, veranlagung, mieteinnahmen)
@@ -488,10 +541,14 @@ _sidebar_save(profil1, profil2, veranlagung, mieteinnahmen, mietsteigerung)
 
 # M4: Schnell-Übersicht Nettorente in Sidebar
 st.sidebar.divider()
-st.sidebar.metric("Nettorente P1", f"{ergebnis1.netto_monatlich:,.0f} €/Mon.",
+def _de_sidebar(v: float) -> str:
+    s = f"{v:,.0f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+st.sidebar.metric("Nettorente P1", f"{_de_sidebar(ergebnis1.netto_monatlich)} €/Mon.",
                   help="Nettorente Person 1 nach Steuer und KV.")
 if ergebnis2:
-    st.sidebar.metric("Nettorente P2", f"{ergebnis2.netto_monatlich:,.0f} €/Mon.",
+    st.sidebar.metric("Nettorente P2", f"{_de_sidebar(ergebnis2.netto_monatlich)} €/Mon.",
                       help="Nettorente Person 2 nach Steuer und KV.")
 
 # O3d: 6 Tabs (Steuern → Dashboard-Expander; Auszahlung → Entnahme-Expander)
@@ -520,9 +577,12 @@ dashboard.render(T, profil1, ergebnis1, mieteinnahmen=mieteinnahmen,
 if profil2:
     haushalt.render(T, profil1, profil2, ergebnis1, ergebnis2, veranlagung, haushalt_daten,
                     mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
-simulation.render(T, profil1, ergebnis1, profil2=profil2, ergebnis2=ergebnis2)
+simulation.render(T, profil1, ergebnis1, profil2=profil2, ergebnis2=ergebnis2,
+                  veranlagung=veranlagung, mieteinnahmen=mieteinnahmen)
 vorsorge.render(T, profil1, ergebnis1, profil2=profil2,
-                mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
+                mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung,
+                ergebnis2=ergebnis2, veranlagung=veranlagung)
 entnahme_opt.render(T, profil1, ergebnis1, profil2=profil2,
-                    mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
+                    mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung,
+                    ergebnis2=ergebnis2, veranlagung=veranlagung)
 dokumentation.render(T)

@@ -18,9 +18,12 @@ REGELALTERSGRENZE = 67         # Jahrgänge ab 1964 (§ 35 SGB VI)
 ABSCHLAG_PRO_MONAT = 0.003     # 0,3 % je Monat Frühverrentung (§ 77 SGB VI)
 
 # KV/PV-Konstanten 2024 (§ 226 Abs. 2 SGB V, § 223 Abs. 3 SGB V)
-BAV_FREIBETRAG_MONATLICH = 187.25   # Freibetrag für Versorgungsbezüge (bAV) 2024
-BBG_KV_MONATLICH = 5_175.0          # Beitragsbemessungsgrenze KV/PV 2024
-SPARERPAUSCHBETRAG = 1_000          # € pro Person (§ 20 Abs. 9 EStG 2024)
+BAV_FREIBETRAG_MONATLICH   = 187.25    # Freibetrag Versorgungsbezüge (nur KVdR-Pflichtmitglieder)
+BBG_KV_MONATLICH           = 5_175.0   # Beitragsbemessungsgrenze KV/PV 2024
+SPARERPAUSCHBETRAG         = 1_000     # € pro Person (§ 20 Abs. 9 EStG 2024)
+# Mindestbemessungsgrundlage freiwillig Versicherte §240 Abs. 4 SGB V (2024)
+# = 1/90 der monatlichen Bezugsgröße West (3.535 €) × 27,85 ≈ 1.096,67 €
+MINDEST_BMG_FREIWILLIG_MONO = 1_096.67
 
 # Versorgungsfreibetrag § 19 Abs. 2 EStG – für Beamtenpensionen
 # Format: Versorgungsbeginn-Jahr → (Anteil, MaxBetrag_€, Zuschlag_€)
@@ -150,6 +153,11 @@ class Profil:
     buv_monatlich: float = 0.0    # Monatsrente aus privater BUV
     buv_endjahr:   int   = 2040   # BUV läuft bis einschließlich dieses Jahres
 
+    # KV-Status im Rentenalter (§ 5 Abs. 1 Nr. 11 SGB V vs. §240 SGB V)
+    # True  = KVdR-Pflichtmitglied: nur §229-Einkünfte beitragspflichtig
+    # False = freiwillig GKV: ALLE Einnahmen inkl. Kapitalerträge/Mieten beitragspflichtig
+    kvdr_pflicht: bool = True
+
     @property
     def aktuelles_alter(self) -> int:
         return AKTUELLES_JAHR - self.geburtsjahr
@@ -180,6 +188,8 @@ class RentenErgebnis:
     zvE_jahres: float
     jahressteuer: float
     rentenabschlag: float = 0.0   # Kürzungsfaktor gesetzl. Rente (0 = kein Abschlag)
+    kv_gkv_monatlich: float = 0.0  # GKV-Anteil (Krankenkasse, ohne PV)
+    kv_pv_monatlich: float = 0.0   # PV-Anteil (Pflegekasse)
 
 
 # ── Kernberechnungen ──────────────────────────────────────────────────────────
@@ -284,18 +294,37 @@ def berechne_rente(p: Profil) -> RentenErgebnis:  # noqa: C901
 
     # ── Krankenversicherung ────────────────────────────────────────────────────
     if p.krankenversicherung == "PKV":
-        kv = p.pkv_beitrag
+        kv     = p.pkv_beitrag
+        kv_gkv = p.pkv_beitrag
+        kv_pv  = 0.0
     else:
-        kv_satz = 0.073 + p.gkv_zusatzbeitrag / 2
-        pv_satz = 0.034 if p.kinder else 0.040
+        _pv_halb = 0.017 if p.kinder else 0.023   # KVdR/AN-Anteil PV
+        _pv_voll = 0.034 if p.kinder else 0.040   # Freiwillig: voller PV-Satz
         if p.ist_pensionaer:
-            # § 229 Abs. 1 Nr. 1 SGB V: Beamtenversorgung → volle KV-Basis,
-            # kein Freibetrag (der gilt nur für bAV nach § 226 Abs. 2 SGB V)
-            kv_basis = min(brutto_gesetzlich, BBG_KV_MONATLICH)
+            # Beamtenversorgung freiwillig GKV: kein DRV-Trägeranteil, kein bAV-Freibetrag
+            # §229 Abs. 1 Nr. 1 SGB V: volle Pensionsbasis (kein GRV-Beitragszuschuss)
+            _kv_basis = min(brutto_gesetzlich, BBG_KV_MONATLICH)
+            kv_gkv = _kv_basis * (0.146 + p.gkv_zusatzbeitrag)
+            kv_pv  = _kv_basis * _pv_voll
+        elif not p.kvdr_pflicht:
+            # Freiwillig GKV, GRV-Rentner: DRV zahlt halben GKV-Beitrag auf GRV-Anteil (§ 106 SGB VI)
+            # GRV-Portion: halber GKV-Satz (DRV zahlt die andere Hälfte)
+            # Andere Einnahmen (Zusatzrente etc.): voller GKV-Satz
+            # PV: voller Satz auf alles (kein DRV-Trägeranteil für PV)
+            _kv_total  = min(brutto_total - buv_monatl, BBG_KV_MONATLICH)
+            _grv_basis = min(brutto_gesetzlich, BBG_KV_MONATLICH)
+            _non_grv   = max(0.0, _kv_total - _grv_basis)
+            kv_gkv = (_grv_basis * (0.073 + p.gkv_zusatzbeitrag / 2)
+                      + _non_grv * (0.146 + p.gkv_zusatzbeitrag))
+            kv_pv  = _kv_total * _pv_voll
         else:
-            # Private BUV ist kein Versorgungsbezug i.S.v. § 229 SGB V → nicht KVdR-pflichtig
-            kv_basis = brutto_total - buv_monatl
-        kv = kv_basis * (kv_satz + pv_satz)
+            # KVdR §249a SGB V: DRV trägt halben GKV- und PV-Beitrag
+            # Kinderlosenzuschlag (0,6 %) trägt Rentner allein (in _pv_halb eingerechnet)
+            # BUV ist kein Versorgungsbezug i.S.v. §229 SGB V → nicht KVdR-pflichtig
+            _kv_basis = brutto_total - buv_monatl
+            kv_gkv = _kv_basis * (0.073 + p.gkv_zusatzbeitrag / 2)
+            kv_pv  = _kv_basis * _pv_halb
+        kv = kv_gkv + kv_pv
 
     netto  = brutto_total - steuer_monatlich - kv
     eff_st = steuer_monatlich / brutto_total if brutto_total > 0 else 0.0
@@ -314,6 +343,8 @@ def berechne_rente(p: Profil) -> RentenErgebnis:  # noqa: C901
         zvE_jahres=zvE,
         jahressteuer=jahressteuer,
         rentenabschlag=abschlag,
+        kv_gkv_monatlich=kv_gkv,
+        kv_pv_monatlich=kv_pv,
     )
 
 
@@ -404,6 +435,12 @@ class VorsorgeProdukt:
     vertragsbeginn: int = 2010        # Jahr des Vertragsabschlusses (§ 20 Abs. 1 Nr. 6 EStG)
     einzahlungen_gesamt: float = 0.0  # Summe eingezahlter Beiträge (für Ertragsberechnung)
     teilfreistellung: float = 0.30    # ETF: 30 % Teilfreistellung (§ 20 InvStG 2018)
+    # None = Optimizer wählt; 0.0 = nur monatlich; 0.5 = 50/50; 1.0 = nur einmal
+    erzwungener_anteil: float | None = None
+    # Laufende monatliche Kapitalerträge aus dem Produkt (Zinsen, Dividenden, ETF-Ausschüttungen)
+    # Relevant für freiwillig GKV-Versicherte: zählen zur beitragspflichtigen Bemessungsgrundlage
+    # Abgeltungsteuer wird darauf berechnet (Sparerpauschbetrag berücksichtigt)
+    laufende_kapitalertraege_mono: float = 0.0
 
     @property
     def ist_lebensversicherung(self) -> bool:
@@ -488,6 +525,10 @@ def _netto_ueber_horizont(
     horizont_jahre: int,
     mieteinnahmen_monatlich: float = 0.0,
     mietsteigerung_pa: float = 0.0,
+    profil2: "Profil | None" = None,
+    ergebnis2: "RentenErgebnis | None" = None,
+    veranlagung: str = "Getrennt",
+    gehalt_monatlich: float = 0.0,
 ) -> tuple[float, list[dict]]:
     """
     Simuliert das Netto-Einkommen Jahr für Jahr über `horizont_jahre` ab Renteneintritt.
@@ -510,8 +551,22 @@ def _netto_ueber_horizont(
     """
     ba = ergebnis.besteuerungsanteil
     gesetzl_mono = ergebnis.brutto_gesetzlich
-    ist_pkv = profil.krankenversicherung == "PKV"
-    kv_rate = (0.073 + profil.gkv_zusatzbeitrag / 2) + (0.034 if profil.kinder else 0.040)
+    ist_pkv      = profil.krankenversicherung == "PKV"
+    ist_freiwillig = (profil.krankenversicherung == "GKV" and not profil.kvdr_pflicht)
+    # Beitragssätze je Mitgliedsstatus (eigener Anteil):
+    # KVdR/AN: DRV/AG trägt halben GKV- und PV-Beitrag; Kinderlosenzuschlag (0,6 %) trägt Versicherter allein
+    # Freiwillig: kein Trägeranteil → voller GKV- und PV-Satz
+    _pv_halb     = 0.017 if profil.kinder else 0.023   # KVdR/AN-Anteil PV
+    _pv_voll     = 0.034 if profil.kinder else 0.040   # Freiwillig GKV: voller PV-Satz
+    kv_rate_halb = (0.073 + profil.gkv_zusatzbeitrag / 2) + _pv_halb   # AN + KVdR
+
+    # Person 2: feste Basiswerte für die Haushaltssimulation
+    zusammen      = veranlagung == "Zusammen" and profil2 is not None and ergebnis2 is not None
+    hat_partner   = profil2 is not None and ergebnis2 is not None
+    p2_zvE_0      = ergebnis2.zvE_jahres      if hat_partner else 0.0
+    p2_brutto_mo0 = ergebnis2.brutto_monatlich if hat_partner else 0.0
+    p2_kv_mo0     = ergebnis2.kv_monatlich     if hat_partner else 0.0
+    p2_anp        = profil2.rentenanpassung_pa  if hat_partner else 0.0
 
     # Sidebar-Zusatzrente: Initialwerte je nach Typ (einmalig vor dem Loop berechnen)
     _z = profil.zusatz_monatlich * 12
@@ -542,17 +597,43 @@ def _netto_ueber_horizont(
     _buv_ea = (ertragsanteil(AKTUELLES_JAHR - profil.geburtsjahr)
                if not profil.ist_pensionaer and profil.buv_monatlich > 0 else 0.0)
 
-    # M6: für bereits_rentner gilt rentenbeginn_jahr als Simulationsstartpunkt
-    _sim_start = profil.rentenbeginn_jahr if profil.bereits_rentner else profil.eintritt_jahr
+    # Simulationszeitraum: ab heute wenn Gehalt angegeben, sonst ab Renteneintritt (M6)
+    _noch_aktiv = gehalt_monatlich > 0 and not profil.bereits_rentner
+    if _noch_aktiv:
+        _sim_start  = AKTUELLES_JAHR
+        _pre_jahre  = max(0, profil.eintritt_jahr - AKTUELLES_JAHR)
+    else:
+        _sim_start  = profil.rentenbeginn_jahr if profil.bereits_rentner else profil.eintritt_jahr
+        _pre_jahre  = 0
+    _gesamt_jahre = _pre_jahre + horizont_jahre
 
     total_netto = 0.0
     jahresdaten: list[dict] = []
 
-    for y in range(horizont_jahre):
+    for y in range(_gesamt_jahre):
         jahr = _sim_start + y
-        # M5: gesetzliche Rente wächst mit Rentenanpassung (0 % für Pensionäre)
-        gesetzl_j = gesetzl_mono * 12 * (1 + profil.rentenanpassung_pa) ** y
+        in_rente = profil.bereits_rentner or (jahr >= profil.eintritt_jahr)
+        _r_y = max(0, jahr - profil.eintritt_jahr)   # Jahre seit Renteneintritt
+
+        # M5: Einkommensbasis je Phase
+        if in_rente:
+            gesetzl_j  = gesetzl_mono * 12 * (1 + profil.rentenanpassung_pa) ** _r_y
+            ba_aktuell = ba
+        else:
+            gesetzl_j  = gehalt_monatlich * 12   # Bruttogehalt § 19 EStG voll steuerpflichtig
+            ba_aktuell = 1.0
+
         miet_j = mieteinnahmen_monatlich * 12 * (1 + mietsteigerung_pa) ** y
+
+        # Person 2: wächst ab Renteneintritt
+        p2_fak      = (1 + p2_anp) ** _r_y
+        p2_zvE_j    = p2_zvE_0      * p2_fak
+        p2_brutto_j = p2_brutto_mo0 * 12 * p2_fak
+        p2_kv_j     = p2_kv_mo0     * 12         # KV konstant (vereinfacht)
+
+        # Mieteinnahmen-Anteil für P1-Steuer:
+        # Getrenntveranlagung mit Partner → 50/50; sonst voller Betrag
+        miet_tax_j = miet_j / 2 if (hat_partner and not zusammen) else miet_j
 
         # DUV: aktiv solange Jahr ≤ duv_endjahr (nicht KVdR, Ertragsanteil)
         duv_j     = 0.0
@@ -583,6 +664,8 @@ def _netto_ueber_horizont(
         einmal_abgelt_j = 0.0    # LV/PrivRV → Abgeltungsteuer (voller Ertrag)
         etf_brutto_j    = 0.0    # ETF-Entnahme brutto
         etf_abgelt_j    = 0.0    # ETF → Abgeltungsteuer (Ertrag × (1 – TF))
+        # Laufende Kapitalerträge aus allen Produkten (Zinsen, Dividenden, Ausschüttungen)
+        lfd_kap_j = sum(p.laufende_kapitalertraege_mono * 12 for p, _, _ in entscheidungen)
 
         for prod, startjahr, anteil in entscheidungen:
             if jahr < startjahr:
@@ -652,53 +735,92 @@ def _netto_ueber_horizont(
         priv_zvE_j    += duv_zvE_j + buv_zvE_j
 
         # ── Einkommensteuer ───────────────────────────────────────────────────
-        zvE = max(
+        zvE_p1 = max(
             0.0,
-            gesetzl_j * ba
+            gesetzl_j * ba_aktuell   # Gehalt (1.0) oder Rente (Besteuerungsanteil)
             + bav_lfd_j + riester_lfd_j
             + ruerup_zvE_j
             + priv_zvE_j
             + einmal_progr_j
-            + miet_j
+            + miet_tax_j
             - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG,
         )
-        abgelt_pool  = einmal_abgelt_j + etf_abgelt_j
+        # Laufende Kapitalerträge: Abgeltungsteuer (zusätzlich zu Einmal/ETF)
+        abgelt_pool   = einmal_abgelt_j + etf_abgelt_j + lfd_kap_j
         steuer_abgelt = max(0.0, abgelt_pool - SPARERPAUSCHBETRAG) * 0.25
-        steuer_progr  = einkommensteuer(zvE)
+        if zusammen:
+            steuer_progr = einkommensteuer_splitting(zvE_p1 + p2_zvE_j)
+        else:
+            steuer_progr = einkommensteuer(zvE_p1)
         steuer = steuer_progr + steuer_abgelt
 
         # ── KV / PV ───────────────────────────────────────────────────────────
         if ist_pkv:
-            kv = profil.pkv_beitrag * 12
+            kv_p1 = profil.pkv_beitrag * 12
+        elif not in_rente:
+            # Arbeitnehmerjahre: AN-Anteil auf Gehalt (AG zahlt die andere Hälfte)
+            kv_p1 = min(gehalt_monatlich, BBG_KV_MONATLICH) * 12 * kv_rate_halb
+        elif ist_freiwillig:
+            # Freiwillig GKV §240 SGB V + §106 SGB VI (Beitragszuschuss):
+            # GRV-Rente: DRV zahlt halben GKV-Beitrag → Person zahlt nur 7,3 % + Zusatz/2
+            # Andere Einnahmen (bAV, Miete etc.): voller GKV-Beitrag (14,6 % + Zusatz)
+            # PV: voller Satz auf alles – §106 SGB VI gilt nicht für PV
+            _grv_mono     = gesetzl_j / 12
+            _non_grv_mono = (
+                bav_lfd_j / 12                          # bAV laufend (kein Freibetrag)
+                + (riester_lfd_j + ruerup_brutto_j + priv_brutto_j) / 12
+                + einmal_brutto_j / 12                  # alle Einmalauszahlungen im Auszahlungsjahr
+                + etf_brutto_j / 12
+                + miet_j / 12
+                + lfd_kap_j / 12
+            )
+            _grv_kv_basis = min(_grv_mono, BBG_KV_MONATLICH)
+            _non_grv_kv   = min(_non_grv_mono, max(0.0, BBG_KV_MONATLICH - _grv_kv_basis))
+            _total_kv     = _grv_kv_basis + _non_grv_kv
+            # Mindest-BMG §240 Abs. 4 SGB V: Lücke wird dem Nicht-GRV-Anteil zugerechnet
+            if _total_kv < MINDEST_BMG_FREIWILLIG_MONO:
+                _non_grv_kv += MINDEST_BMG_FREIWILLIG_MONO - _total_kv
+                _total_kv    = MINDEST_BMG_FREIWILLIG_MONO
+            _kv_gkv = (_grv_kv_basis * (0.073 + profil.gkv_zusatzbeitrag / 2)
+                       + _non_grv_kv * (0.146 + profil.gkv_zusatzbeitrag))
+            kv_p1 = (_kv_gkv + _total_kv * _pv_voll) * 12
         else:
-            bav_kv_mono = (bav_lfd_j + bav_einmal_kv_j) / 12
+            # KVdR §229 SGB V: nur gesetzl. Rente + bAV (abzgl. Freibetrag); DRV zahlt halben Satz
+            bav_kv_mono  = (bav_lfd_j + bav_einmal_kv_j) / 12
             bav_kv_basis = max(0.0, bav_kv_mono - BAV_FREIBETRAG_MONATLICH)
             kv_basis_mono = min(gesetzl_mono + bav_kv_basis, BBG_KV_MONATLICH)
-            kv = kv_basis_mono * 12 * kv_rate
+            kv_p1 = kv_basis_mono * 12 * kv_rate_halb
+        kv = kv_p1 + p2_kv_j   # Haushalt: P1 + P2
 
         brutto = (
             gesetzl_j + bav_lfd_j + riester_lfd_j
             + ruerup_brutto_j + priv_brutto_j
             + einmal_brutto_j + etf_brutto_j + miet_j
+            + p2_brutto_j   # P2-Rente/Pension im Haushaltsbrutto
         )
         netto = brutto - steuer - kv
         total_netto += netto
+        zvE_display = zvE_p1 + (p2_zvE_j if zusammen else 0.0)
         jahresdaten.append({
             "Jahr": jahr,
             "Brutto": round(brutto),
             "Steuer": round(steuer),
             "KV_PV": round(kv),
             "Netto": round(netto),
-            "Src_GesRente":   round(gesetzl_j),
+            "Src_Gehalt":     round(gesetzl_j if not in_rente else 0.0),
+            "Src_GesRente":   round((gesetzl_j + p2_brutto_j) if in_rente else 0.0),
             "Src_Versorgung": round(bav_lfd_j + riester_lfd_j + ruerup_brutto_j + priv_brutto_j),
             "Src_Einmal":     round(einmal_brutto_j + etf_brutto_j),
             "Src_Miete":      round(miet_j),
-            "zvE":            round(zvE),
+            "zvE":            round(zvE_display),
             "Steuer_Progressiv": round(steuer_progr),
             "Steuer_Abgeltung":  round(steuer_abgelt),
         })
 
     return total_netto, jahresdaten
+
+
+_EXHAUSTIVE_LIMIT = 50_000  # Kombinationen; darüber → Koordinaten-Abstieg
 
 
 def optimiere_auszahlungen(
@@ -708,15 +830,21 @@ def optimiere_auszahlungen(
     horizont_jahre: int,
     mieteinnahmen_monatlich: float = 0.0,
     mietsteigerung_pa: float = 0.0,
+    profil2: "Profil | None" = None,
+    ergebnis2: "RentenErgebnis | None" = None,
+    veranlagung: str = "Getrennt",
+    gehalt_monatlich: float = 0.0,
 ) -> dict:
     """
-    Durchsucht alle Kombinationen aus Startjahr × Auszahlungsart je Vertrag
-    und gibt die steuerlich optimale Kombination zurück.
+    Sucht die steuerlich optimale Kombination aus Startjahr × Auszahlungsart.
 
+    Bis _EXHAUSTIVE_LIMIT Kombinationen: vollständige Suche.
+    Darüber: Koordinaten-Abstieg (je Produkt beste Option, fixierte andere).
     Startjahre: bis zu 4 gleichmäßig verteilte Punkte im erlaubten Bereich.
     Auszahlungsarten: Einmal (100%), Kombiniert (50/50), Monatlich (0%).
     """
     from itertools import product as iterproduct
+    from math import prod as math_prod
 
     if not produkte:
         return {}
@@ -726,44 +854,89 @@ def optimiere_auszahlungen(
         if len(jahre) > 4:
             idx = [0, len(jahre) // 3, 2 * len(jahre) // 3, len(jahre) - 1]
             jahre = [jahre[i] for i in idx]
-        if prod.ist_nur_monatsrente:
-            anteile = [0.0]                              # Rürup: kein Kapitalwahlrecht
+        if prod.ist_nur_monatsrente or prod.max_einmalzahlung <= 0:
+            anteile = [0.0]
         elif prod.ist_lebensversicherung or prod.typ == "ETF" or prod.max_monatsrente <= 0:
-            anteile = [1.0]                              # LV/ETF: immer Einmal
+            anteile = [1.0]
+        elif prod.erzwungener_anteil is not None:
+            anteile = [prod.erzwungener_anteil]
         else:
             anteile = [0.0, 0.5, 1.0]
         return [(j, a) for j in jahre for a in anteile]
 
-    alle_optionen = [optionen(p) for p in produkte]
-    bestes_netto = float("-inf")
-    beste_entscheidungen: list = []
-    alle_ergebnisse: list[dict] = []
-
-    for kombi in iterproduct(*alle_optionen):
-        ents = [(produkte[i], kombi[i][0], kombi[i][1]) for i in range(len(produkte))]
-        netto, _ = _netto_ueber_horizont(profil, ergebnis, ents, horizont_jahre,
-                                          mieteinnahmen_monatlich, mietsteigerung_pa)
-        label = " | ".join(
+    def _label(kombi: list[tuple[int, float]]) -> str:
+        return " | ".join(
             f"{produkte[i].name}: "
             f"{'Einmal' if kombi[i][1] == 1.0 else 'Monatlich' if kombi[i][1] == 0.0 else '50/50'} "
             f"ab {kombi[i][0]}"
             for i in range(len(produkte))
         )
-        alle_ergebnisse.append({"Kombination": label, "Netto gesamt (€)": round(netto)})
-        if netto > bestes_netto:
-            bestes_netto = netto
-            beste_entscheidungen = ents
+
+    def _eval(kombi: list[tuple[int, float]]) -> float:
+        ents = [(produkte[i], kombi[i][0], kombi[i][1]) for i in range(len(produkte))]
+        netto, _ = _netto_ueber_horizont(profil, ergebnis, ents, horizont_jahre,
+                                          mieteinnahmen_monatlich, mietsteigerung_pa,
+                                          profil2, ergebnis2, veranlagung, gehalt_monatlich)
+        return netto
+
+    alle_optionen = [optionen(p) for p in produkte]
+    anzahl_kombinationen = math_prod(len(o) for o in alle_optionen)
+    alle_ergebnisse: list[dict] = []
+
+    if anzahl_kombinationen <= _EXHAUSTIVE_LIMIT:
+        # ── Vollständige Suche ────────────────────────────────────────────────
+        bestes_netto = float("-inf")
+        beste_kombi: list[tuple[int, float]] = []
+        for kombi in iterproduct(*alle_optionen):
+            kombi = list(kombi)
+            netto = _eval(kombi)
+            alle_ergebnisse.append({"Kombination": _label(kombi), "Netto gesamt (€)": round(netto)})
+            if netto > bestes_netto:
+                bestes_netto = netto
+                beste_kombi = kombi
+    else:
+        # ── Koordinaten-Abstieg ───────────────────────────────────────────────
+        # Start: für jedes Produkt erste Option (frühest, monatlich/einmal je Typ)
+        beste_kombi = [opts[0] for opts in alle_optionen]
+        bestes_netto = _eval(beste_kombi)
+        alle_ergebnisse.append({"Kombination": _label(beste_kombi), "Netto gesamt (€)": round(bestes_netto)})
+
+        for _ in range(6):  # max. 6 Runden bis Konvergenz
+            verbessert = False
+            for i, opts in enumerate(alle_optionen):
+                for opt in opts:
+                    kombi = list(beste_kombi)
+                    kombi[i] = opt
+                    netto = _eval(kombi)
+                    alle_ergebnisse.append({"Kombination": _label(kombi), "Netto gesamt (€)": round(netto)})
+                    if netto > bestes_netto:
+                        bestes_netto = netto
+                        beste_kombi = list(kombi)
+                        verbessert = True
+            if not verbessert:
+                break
 
     alle_ergebnisse.sort(key=lambda x: x["Netto gesamt (€)"], reverse=True)
+    # Duplikate entfernen (Koordinaten-Abstieg bewertet manche Kombis mehrfach)
+    seen: set[str] = set()
+    alle_ergebnisse = [
+        e for e in alle_ergebnisse
+        if e["Kombination"] not in seen and not seen.add(e["Kombination"])  # type: ignore[func-returns-value]
+    ]
+
+    beste_entscheidungen = [(produkte[i], beste_kombi[i][0], beste_kombi[i][1])
+                             for i in range(len(produkte))]
+    _kw = dict(profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
+               gehalt_monatlich=gehalt_monatlich)
     _, jahresdaten = _netto_ueber_horizont(profil, ergebnis, beste_entscheidungen, horizont_jahre,
-                                           mieteinnahmen_monatlich, mietsteigerung_pa)
+                                           mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
 
     ref_mono   = [(p, p.fruehestes_startjahr, 0.0) for p in produkte]
     ref_einmal = [(p, p.fruehestes_startjahr, 1.0) for p in produkte]
     netto_mono,   _ = _netto_ueber_horizont(profil, ergebnis, ref_mono,   horizont_jahre,
-                                            mieteinnahmen_monatlich, mietsteigerung_pa)
+                                            mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
     netto_einmal, _ = _netto_ueber_horizont(profil, ergebnis, ref_einmal, horizont_jahre,
-                                            mieteinnahmen_monatlich, mietsteigerung_pa)
+                                            mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
 
     return {
         "bestes_netto":          bestes_netto,

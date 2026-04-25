@@ -6,6 +6,9 @@ Startdatum und Aufschubverzinsung. Steueroptimierung über alle Kombinationen.
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 import uuid
 import pandas as pd
 import plotly.graph_objects as go
@@ -15,6 +18,52 @@ from engine import (
     Profil, RentenErgebnis, VorsorgeProdukt,
     vergleiche_produkt, optimiere_auszahlungen, _annuitaet,
 )
+
+
+def _de(v: float, dec: int = 0) -> str:
+    s = f"{v:,.{dec}f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _opt_hash(produkte_dicts: list, horizon: int, mieteinnahmen: float,
+              mietsteigerung: float, profil: Profil, profil2=None,
+              ergebnis2=None, veranlagung: str = "Getrennt",
+              gehalt: float = 0.0) -> str:
+    data = {
+        "profil": dataclasses.asdict(profil),
+        "prods": sorted(produkte_dicts, key=lambda p: p["id"]),
+        "h": horizon,
+        "m": round(mieteinnahmen * 100),
+        "s": round(mietsteigerung * 10000),
+        "v": veranlagung,
+        "g": round(gehalt),
+        "p2": dataclasses.asdict(profil2) if profil2 else None,
+        "e2": dataclasses.asdict(ergebnis2) if ergebnis2 else None,
+    }
+    return hashlib.md5(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _clear_opt_caches() -> None:
+    st.session_state.pop("_vp_opt_cache", None)
+    st.session_state.pop("_eo_opt_cache", None)
+
+
+def _run_optimierung(cache_ns: str, profil: Profil, ergebnis: RentenErgebnis,
+                     produkte_obj: list, produkte_dicts: list,
+                     horizon: int, miet: float, miet_stg: float,
+                     profil2=None, ergebnis2=None,
+                     veranlagung: str = "Getrennt",
+                     gehalt: float = 0.0) -> dict:
+    h = _opt_hash(produkte_dicts, horizon, miet, miet_stg, profil,
+                  profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung, gehalt=gehalt)
+    cached = st.session_state.get(f"_{cache_ns}_opt_cache")
+    if cached and cached.get("k") == h:
+        return cached["r"]
+    result = optimiere_auszahlungen(profil, ergebnis, produkte_obj, horizon, miet, miet_stg,
+                                     profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
+                                     gehalt_monatlich=gehalt)
+    st.session_state[f"_{cache_ns}_opt_cache"] = {"k": h, "r": result}
+    return result
 
 _TYPEN = ["bAV", "Private Rentenversicherung", "Riester-Rente", "Rürup-Rente",
           "ETF-Depot", "Lebensversicherung"]
@@ -60,6 +109,12 @@ def _migriere(p: dict) -> dict:
                "Riester": "Riester-Rente", "Rürup": "Rürup-Rente",
                "ETF": "ETF-Depot", "LV": "Lebensversicherung"}
         p["typ_label"] = _tl.get(p.get("typ", "bAV"), p.get("typ", "bAV"))
+    if "erzwungener_anteil" not in p:
+        p["erzwungener_anteil"] = None
+    if "startjahr_fix" not in p:
+        p["startjahr_fix"] = False
+    if "laufende_kapitalertraege_mono" not in p:
+        p["laufende_kapitalertraege_mono"] = 0.0
     return p
 
 
@@ -76,6 +131,8 @@ def _aus_dict(d: dict) -> VorsorgeProdukt:
         vertragsbeginn=d["vertragsbeginn"],
         einzahlungen_gesamt=d["einzahlungen_gesamt"],
         teilfreistellung=d["teilfreistellung"],
+        erzwungener_anteil=d.get("erzwungener_anteil"),
+        laufende_kapitalertraege_mono=d.get("laufende_kapitalertraege_mono", 0.0),
     )
 
 
@@ -85,11 +142,11 @@ def _steuer_hinweis(p: dict) -> str:
         einz = p.get("einzahlungen_gesamt", 0.0)
         if vbeg < 2005:
             return " · Steuerfrei (Altvertrag vor 2005)"
-        return f" · Vertrag {vbeg}, Einz. {einz:,.0f} €"
+        return f" · Vertrag {vbeg}, Einz. {_de(einz)} €"
     if p["typ"] == "ETF":
         tf = p.get("teilfreistellung", 0.30)
         einz = p.get("einzahlungen_gesamt", 0.0)
-        return f" · TF {tf:.0%}, Einz. {einz:,.0f} €"
+        return f" · TF {tf:.0%}, Einz. {_de(einz)} €"
     if p["typ"] == "Rürup":
         return " · Nur Monatsrente (Basisrente)"
     return ""
@@ -184,21 +241,68 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
             new_tf = float(p.get("teilfreistellung", 0.30))
 
     with ec3:
-        new_frueh = int(st.number_input(
-            "Frühestes Startjahr", _AJ, _AJ + 30,
-            value=max(_AJ, int(p["fruehestes_startjahr"])), step=1,
-            key=f"ve_frueh_{pid}",
-        ))
-        new_spaet = int(st.number_input(
-            "Spätestes Startjahr", _AJ, _AJ + 35,
-            value=max(_AJ, int(p["spaetestes_startjahr"])), step=1,
-            key=f"ve_spaet_{pid}",
-        ))
+        fix_jahr = st.checkbox(
+            "Startjahr fixieren", value=bool(p.get("startjahr_fix", False)),
+            key=f"ve_fix_{pid}",
+            help="Nur ein Startjahr prüfen → weniger Kombinationen, schneller.",
+        )
+        if fix_jahr:
+            new_frueh = int(st.number_input(
+                "Startjahr (fix)", _AJ, _AJ + 30,
+                value=max(_AJ, int(p["fruehestes_startjahr"])), step=1,
+                key=f"ve_frueh_{pid}",
+            ))
+            new_spaet = new_frueh
+        else:
+            new_frueh = int(st.number_input(
+                "Frühestes Startjahr", _AJ, _AJ + 30,
+                value=max(_AJ, int(p["fruehestes_startjahr"])), step=1,
+                key=f"ve_frueh_{pid}",
+            ))
+            new_spaet = int(st.number_input(
+                "Spätestes Startjahr", _AJ, _AJ + 35,
+                value=max(new_frueh, int(p["spaetestes_startjahr"])), step=1,
+                key=f"ve_spaet_{pid}",
+            ))
+
         new_aufschub = st.slider(
             "Aufschubverzinsung p.a. (%)", 0.0, 6.0,
             value=round(float(p["aufschub_rendite"]) * 100, 1),
             step=0.1, key=f"ve_aufschub_{pid}",
         ) / 100
+
+        # Auszahlungsmodus: nur für Produkte mit echtem Wahlrecht
+        _MODUS_OPTS = {
+            "Optimieren (Optimizer wählt)": None,
+            "Nur Monatlich":  0.0,
+            "50/50 fixiert":  0.5,
+            "Nur Einmal":     1.0,
+        }
+        if not nur_mono_typ and not nur_einmal_typ:
+            cur_anteil = p.get("erzwungener_anteil")
+            cur_label = next(
+                (k for k, v in _MODUS_OPTS.items() if v == cur_anteil),
+                "Optimieren (Optimizer wählt)",
+            )
+            modus_label = st.selectbox(
+                "Auszahlungsmodus",
+                list(_MODUS_OPTS.keys()),
+                index=list(_MODUS_OPTS.keys()).index(cur_label),
+                key=f"ve_modus_{pid}",
+                help="Fixiert den Auszahlungsmodus → reduziert Kombinationen, beschleunigt Optimierung.",
+            )
+            new_anteil = _MODUS_OPTS[modus_label]
+        else:
+            new_anteil = p.get("erzwungener_anteil")
+
+        new_lfd_kap = float(st.number_input(
+            "Laufende Kapitalerträge (€/Mon.)",
+            min_value=0.0, max_value=10_000.0,
+            value=float(p.get("laufende_kapitalertraege_mono", 0.0)),
+            step=10.0, key=f"ve_lfdkap_{pid}",
+            help="Laufende Erträge (Zinsen, Dividenden, ETF-Ausschüttungen) aus diesem Produkt. "
+                 "Relevant für freiwillig GKV-Versicherte: zählen zur KV-Bemessungsgrundlage.",
+        ))
 
     return {
         **p,
@@ -209,15 +313,19 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
         "laufzeit_jahre": new_lz,
         "fruehestes_startjahr": new_frueh,
         "spaetestes_startjahr": new_spaet,
+        "startjahr_fix": fix_jahr,
         "aufschub_rendite": new_aufschub,
         "vertragsbeginn": new_vbeg,
         "einzahlungen_gesamt": new_einz,
         "teilfreistellung": new_tf,
+        "erzwungener_anteil": new_anteil,
+        "laufende_kapitalertraege_mono": new_lfd_kap,
     }
 
 
 def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
-           mieteinnahmen: float = 0.0, mietsteigerung: float = 0.0) -> None:
+           mieteinnahmen: float = 0.0, mietsteigerung: float = 0.0,
+           ergebnis2=None, veranlagung: str = "Getrennt") -> None:
     _init_state()
     st.session_state.vp_produkte = [_migriere(p) for p in st.session_state.vp_produkte]
 
@@ -339,6 +447,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     help="Jährliche Wertsteigerung von Einmalbetrag und Monatsrente "
                          "für jedes Jahr, das die Auszahlung hinausgezögert wird.",
                 ) / 100
+                lfd_kap_add = st.number_input(
+                    "Laufende Kapitalerträge (€/Mon.)",
+                    min_value=0.0, max_value=10_000.0, value=0.0, step=10.0,
+                    key="vp_add_lfdkap",
+                    help="Laufende Erträge (Zinsen, Dividenden, Ausschüttungen). "
+                         "Relevant für freiwillig GKV-Versicherte.",
+                )
 
             if st.button("Produkt hinzufügen", type="primary", key="vp_add_btn"):
                 if not name.strip():
@@ -348,6 +463,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 elif spaet < frueh:
                     st.error("Spätestes Startjahr darf nicht vor frühestem liegen.")
                 else:
+                    _clear_opt_caches()
                     st.session_state.vp_produkte.append({
                         "id": str(uuid.uuid4()),
                         "typ": typ_key, "typ_label": typ_label,
@@ -361,6 +477,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         "vertragsbeginn": int(vertragsbeginn),
                         "einzahlungen_gesamt": float(einzahlungen_gesamt),
                         "teilfreistellung": float(teilfreistellung),
+                        "laufende_kapitalertraege_mono": float(lfd_kap_add),
                     })
                     st.rerun()
 
@@ -374,8 +491,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         ges_einmal = sum(p["max_einmalzahlung"] for p in produkte_dicts)
         ges_mono = sum(p["max_monatsrente"] for p in produkte_dicts)
         m1, m2, m3 = st.columns(3)
-        m1.metric("Gesamt max. Einmalung", f"{ges_einmal:,.0f} €")
-        m2.metric("Gesamt max. Monatsrente", f"{ges_mono:,.0f} €/Mon.")
+        m1.metric("Gesamt max. Einmalung", f"{_de(ges_einmal)} €")
+        m2.metric("Gesamt max. Monatsrente", f"{_de(ges_mono)} €/Mon.")
         m3.metric("Anzahl Verträge", str(len(produkte_dicts)))
 
         editing_id = st.session_state.get("vp_edit_id")
@@ -384,7 +501,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         for idx, p in enumerate(produkte_dicts):
             lz = "lebenslang" if p["laufzeit_jahre"] == 0 else f"{p['laufzeit_jahre']} J."
-            aufschub_txt = f"{p['aufschub_rendite']:.1%} p.a." if p["aufschub_rendite"] > 0 else "–"
+            aufschub_txt = (
+                f"{p['aufschub_rendite']:.1%} p.a.".replace(".", ",")
+                if p["aufschub_rendite"] > 0 else "–"
+            )
 
             with st.container(border=True):
                 if editing_id == p["id"]:
@@ -402,8 +522,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     with ci:
                         st.markdown(
                             f"**{p['name']}** · {p['typ_label']} · 👤 {p['person']}  \n"
-                            f"Einmal: **{p['max_einmalzahlung']:,.0f} €** · "
-                            f"Monatl.: **{p['max_monatsrente']:,.0f} €/Mon.** · "
+                            f"Einmal: **{_de(p['max_einmalzahlung'])} €** · "
+                            f"Monatl.: **{_de(p['max_monatsrente'])} €/Mon.** · "
                             f"Laufzeit: {lz} · "
                             f"Start: {p['fruehestes_startjahr']}–{p['spaetestes_startjahr']} · "
                             f"Aufschub: {aufschub_txt}"
@@ -422,33 +542,50 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             if updated is not None:
                 st.session_state.vp_produkte[idx] = updated
             st.session_state.pop("vp_edit_id", None)
+            _clear_opt_caches()
             st.rerun()
         if to_delete:
             st.session_state.vp_produkte = [
                 p for p in produkte_dicts if p["id"] != to_delete
             ]
+            _clear_opt_caches()
             st.rerun()
 
         st.divider()
 
         # ── Parameter für Vergleich und Optimierung ───────────────────────────
-        pc1, pc2 = st.columns(2)
+        pc1, pc2, pc3 = st.columns(3)
         with pc1:
-            horizon = st.slider("Lebenserwartung ab Renteneintritt (Jahre)",
+            horizon = st.slider("Planungshorizont ab Renteneintritt (Jahre)",
                                 10, 40, 25, key="vp_horizon")
+            from engine import AKTUELLES_JAHR as _AJ_VP
+            _pre = max(0, profil.eintritt_jahr - _AJ_VP) if not profil.bereits_rentner else 0
+            if _pre > 0:
+                st.caption(f"Gesamt: {horizon + _pre} Jahre ({_pre} Arbeits- + {horizon} Rentenjahre)")
         with pc2:
             rendite = st.slider("Rendite auf Einmalauszahlung p.a. (%)",
                                 0.0, 8.0, float(profil.rendite_pa * 100),
                                 step=0.5, key="vp_rendite") / 100
+        with pc3:
+            if not profil.bereits_rentner:
+                gehalt = float(st.session_state.get("opt_gehalt_mono", 0.0))
+                st.metric("Bruttogehalt P1 (€/Mon.)", f"{_de(gehalt)} €")
+                st.caption("Einstellbar im Tab ⚙️ Profil.")
+            else:
+                gehalt = 0.0
 
         st.divider()
 
         # ── Steueroptimierung ─────────────────────────────────────────────────
         st.subheader("🔍 Steueroptimierung – beste Kombination")
-        miete_hinweis = (
-            f" Mieteinnahmen ({mieteinnahmen:,.0f} €/Mon., +{mietsteigerung:.1%} p.a.) "
-            "erhöhen die Steuerprogression und beeinflussen die optimale Auszahlungsstrategie."
-        ) if mieteinnahmen > 0 else ""
+        if mieteinnahmen > 0:
+            _mst = f"{mietsteigerung:.1%}".replace(".", ",")
+            miete_hinweis = (
+                f" Mieteinnahmen ({_de(mieteinnahmen)} €/Mon., +{_mst} p.a.) "
+                "erhöhen die Steuerprogression und beeinflussen die optimale Auszahlungsstrategie."
+            )
+        else:
+            miete_hinweis = ""
         st.caption(
             "Das System berechnet alle Kombinationen aus Startjahr und Auszahlungsart "
             "für jeden Vertrag und sucht die Kombination mit dem höchsten Netto-Gesamteinkommen "
@@ -457,8 +594,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         produkte_obj = [_aus_dict(p) for p in produkte_dicts]
         with st.spinner("Optimierung läuft …"):
-            opt = optimiere_auszahlungen(profil, ergebnis, produkte_obj, horizon,
-                                         mieteinnahmen, mietsteigerung)
+            opt = _run_optimierung("vp", profil, ergebnis, produkte_obj, produkte_dicts,
+                                   horizon, mieteinnahmen, mietsteigerung,
+                                   profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
+                                   gehalt=gehalt)
 
         if not opt:
             st.info("Keine Produkte für Optimierung vorhanden.")
@@ -467,22 +606,24 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # Kennzahlen
         oc1, oc2, oc3, oc4 = st.columns(4)
         oc1.metric(
-            "Netto optimal (gesamt)", f"{opt['bestes_netto']:,.0f} €",
+            "Netto optimal (gesamt)", f"{_de(opt['bestes_netto'])} €",
             help=f"Summe aller Netto-Jahreseinkommen über {horizon} Jahre.",
         )
         gewinn_vs_mono = opt["bestes_netto"] - opt["netto_alle_monatlich"]
+        _s1 = "+" if gewinn_vs_mono >= 0 else ""
         oc2.metric(
             "Vorteil vs. alles monatlich",
-            f"{gewinn_vs_mono:+,.0f} €",
+            f"{_s1}{_de(gewinn_vs_mono)} €",
             delta_color="normal",
         )
         gewinn_vs_einmal = opt["bestes_netto"] - opt["netto_alle_einmal"]
+        _s2 = "+" if gewinn_vs_einmal >= 0 else ""
         oc3.metric(
             "Vorteil vs. alles Einmal",
-            f"{gewinn_vs_einmal:+,.0f} €",
+            f"{_s2}{_de(gewinn_vs_einmal)} €",
             delta_color="normal",
         )
-        oc4.metric("Kombinationen geprüft", f"{opt['anzahl_kombinationen']:,}")
+        oc4.metric("Kombinationen geprüft", f"{_de(opt['anzahl_kombinationen'])}")
 
         # Beste Kombination anzeigen
         st.success("**Optimale Strategie:**")
@@ -494,13 +635,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 0, startjahr - prod.fruehestes_startjahr
             )
             if anteil == 1.0:
-                modus_txt = f"Einmalauszahlung **{einmal_wert:,.0f} €**"
+                modus_txt = f"Einmalauszahlung **{_de(einmal_wert)} €**"
             elif anteil == 0.0:
-                modus_txt = f"Monatliche Rente **{mono_wert:,.0f} €/Mon.**"
+                modus_txt = f"Monatliche Rente **{_de(mono_wert)} €/Mon.**"
             else:
                 modus_txt = (
-                    f"Kombiniert: **{einmal_wert * anteil:,.0f} €** Einmal + "
-                    f"**{mono_wert * (1 - anteil):,.0f} €/Mon.**"
+                    f"Kombiniert: **{_de(einmal_wert * anteil)} €** Einmal + "
+                    f"**{_de(mono_wert * (1 - anteil))} €/Mon.**"
                 )
             aufschub_jahre = startjahr - prod.fruehestes_startjahr
             aufschub_note = f" (+{aufschub_jahre} J. Aufschub)" if aufschub_jahre > 0 else ""
@@ -522,7 +663,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                "Alles Einmal\n(frühest möglich)"],
             y=[opt["bestes_netto"], opt["netto_alle_monatlich"], opt["netto_alle_einmal"]],
             marker_color=["#4CAF50", "#2196F3", "#FF9800"],
-            text=[f"{v:,.0f} €" for v in [
+            text=[f"{_de(v)} €" for v in [
                 opt["bestes_netto"], opt["netto_alle_monatlich"], opt["netto_alle_einmal"]
             ]],
             textposition="outside",
@@ -531,6 +672,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             template="plotly_white", height=360,
             yaxis=dict(title=f"Gesamt-Netto über {horizon} Jahre (€)", tickformat=",.0f"),
             margin=dict(l=10, r=10, t=10, b=10),
+            separators=",.",
         )
         st.plotly_chart(fig_vgl, use_container_width=True)
 
@@ -539,6 +681,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # Jahresverlauf für optimale Strategie
         st.subheader("Jahresverlauf der optimalen Strategie")
         df_jd = pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
+
+        # Metrik-Split Arbeitsphase / Rentenphase
+        netto_arbeit = df_jd.loc[df_jd.get("Src_Gehalt", pd.Series(0, index=df_jd.index)) > 0, "Netto"].sum() if "Src_Gehalt" in df_jd.columns else 0
+        netto_rente  = df_jd.loc[df_jd.get("Src_Gehalt", pd.Series(0, index=df_jd.index)) == 0, "Netto"].sum() if "Src_Gehalt" in df_jd.columns else df_jd["Netto"].sum()
+        if netto_arbeit > 0:
+            ms1, ms2 = st.columns(2)
+            ms1.metric("Netto Arbeitsphase (gesamt)", f"{_de(netto_arbeit)} €")
+            ms2.metric("Netto Rentenphase (gesamt)",  f"{_de(netto_rente)} €")
+
         fig_jv = go.Figure()
         fig_jv.add_trace(go.Bar(
             name="Netto (€)", x=df_jd.index, y=df_jd["Netto"],
@@ -555,12 +706,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             marker_color="#FFF176",
             hovertemplate="%{x}: %{y:,.0f} €<extra>KV/PV</extra>",
         ))
+        if not profil.bereits_rentner:
+            fig_jv.add_vline(
+                x=profil.eintritt_jahr, line_width=2, line_dash="dash", line_color="#5C6BC0",
+                annotation_text="Renteneintritt", annotation_position="top right",
+            )
         fig_jv.update_layout(
             barmode="stack", template="plotly_white", height=380,
             xaxis=dict(title="Jahr", dtick=2),
             yaxis=dict(title="€ / Jahr", tickformat=",.0f"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=10, r=10, t=40, b=10),
+            separators=",.",
         )
         st.plotly_chart(fig_jv, use_container_width=True)
 
@@ -581,9 +738,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "Vertrag": p.name,
                 "Typ": pd_dict["typ_label"],
                 "Person": p.person,
-                "Einmal (Total / Mon.)": f"{v['einmal']['total']:,.0f} € / {v['einmal']['monatlich']:,.0f} €",
-                "Monatlich (Total)": "–" if ist_lv else f"{v['monatlich']['total']:,.0f} €",
-                "Kombiniert (Total)": "–" if ist_lv else f"{v['kombiniert']['total']:,.0f} €",
+                "Einmal (Total / Mon.)": f"{_de(v['einmal']['total'])} € / {_de(v['einmal']['monatlich'])} €",
+                "Monatlich (Total)": "–" if ist_lv else f"{_de(v['monatlich']['total'])} €",
+                "Kombiniert (Total)": "–" if ist_lv else f"{_de(v['kombiniert']['total'])} €",
                 "Einfach-Empfehlung ✅": _LABELS[bestes],
             })
         st.dataframe(
