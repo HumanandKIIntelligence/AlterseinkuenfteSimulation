@@ -192,6 +192,7 @@ def _analyse_schenkungspotenzial(
     zu_verschieben: list[dict] = []
     nicht_verschiebbar: list[dict] = []
     gesamt_ersparnis_pa = 0.0
+    gesamt_einmal_ersparnis = 0.0
 
     for p in gkv_prods:
         typ = p.get("typ", "")
@@ -234,6 +235,7 @@ def _analyse_schenkungspotenzial(
             })
 
         elif typ in ("PrivateRente", "LV"):
+            _ist_einmal = False
             if gkv_ist_freiwillig:
                 if mono > 0:
                     kv_relevant = min(mono, _bbg_rest_mono)
@@ -241,13 +243,17 @@ def _analyse_schenkungspotenzial(
                     _bbg_rest_mono = max(0.0, _bbg_rest_mono - kv_relevant)
                     hinweis = ""
                 else:
-                    kv_j = 0.0
-                    einmal_ersparnis = min(einmal, _bbg_rest_mono * 12) * kv_rate_voll
-                    hinweis = f"Einmalauszahlung: einmalige KV-Ersparnis ca. {_de(einmal_ersparnis)} €"
+                    einmal_relevant = min(einmal, _bbg_rest_mono * 12)
+                    kv_j = einmal_relevant * kv_rate_voll
+                    _ist_einmal = True
+                    hinweis = "Einmalauszahlung – einmalige KV-Ersparnis (nicht p.a.)"
             else:
                 kv_j = 0.0
                 hinweis = "Unter KVdR nicht KV-pflichtig – kein KV-Vorteil durch Schenkung"
-            gesamt_ersparnis_pa += kv_j
+            if _ist_einmal:
+                gesamt_einmal_ersparnis += kv_j
+            else:
+                gesamt_ersparnis_pa += kv_j
             zu_verschieben.append({
                 "Vertrag": name, "Typ": typ, "Von": gkv_label, "An": pkv_label,
                 "KV-Ersparnis p.a. (ca.)": round(kv_j),
@@ -273,13 +279,14 @@ def _analyse_schenkungspotenzial(
             })
 
     return {
-        "hat_empfehlung": gesamt_ersparnis_pa > 0,
+        "hat_empfehlung": (gesamt_ersparnis_pa + gesamt_einmal_ersparnis) > 0,
         "gkv_label": gkv_label,
         "pkv_label": pkv_label,
         "gkv_ist_freiwillig": gkv_ist_freiwillig,
         "zu_verschieben": zu_verschieben,
         "nicht_verschiebbar": nicht_verschiebbar,
         "gesamt_ersparnis_pa": gesamt_ersparnis_pa,
+        "gesamt_einmal_ersparnis": gesamt_einmal_ersparnis,
         "verbleibender_freibetrag_bav_mono": verbleibender_freibetrag,
         "kv_rate_voll": kv_rate_voll,
         "kv_rate_halb": kv_rate_halb,
@@ -329,21 +336,32 @@ def _render_schenkungsanalyse(analyse: dict) -> None:
                 st.dataframe(df_nv.set_index("Vertrag"), use_container_width=True)
         return
 
-    sc1, sc2 = st.columns(2)
-    sc1.metric(
-        "KV-Ersparnis p.a. (ca.)",
-        f"{_de(analyse['gesamt_ersparnis_pa'])} €",
-        help=(
-            "Jährliche KV-Ersparnis wenn alle empfohlenen Verträge auf die PKV-Person übertragen werden. "
-            f"KV-Gesamtsatz: {analyse['kv_rate_voll']:.1%}".replace(".", ",")
-        ),
-    )
+    _kv_rate_str = f"{analyse['kv_rate_voll']:.1%}".replace(".", ",")
+    _metrics: list[tuple[str, str, str]] = []
+    if analyse["gesamt_ersparnis_pa"] > 0:
+        _metrics.append((
+            "KV-Ersparnis p.a. (ca.)",
+            f"{_de(analyse['gesamt_ersparnis_pa'])} €",
+            f"Jährliche KV-Ersparnis für laufende Renten bei Übertragung auf die PKV-Person. "
+            f"KV-Gesamtsatz: {_kv_rate_str}",
+        ))
+    if analyse["gesamt_einmal_ersparnis"] > 0:
+        _metrics.append((
+            "KV-Ersparnis einmalig (ca.)",
+            f"{_de(analyse['gesamt_einmal_ersparnis'])} €",
+            f"Einmalige KV-Ersparnis aus Einmalauszahlungen bei Übertragung auf die PKV-Person. "
+            f"KV-Gesamtsatz: {_kv_rate_str}",
+        ))
     if not analyse["gkv_ist_freiwillig"] and analyse["verbleibender_freibetrag_bav_mono"] > 0:
-        sc2.metric(
+        _metrics.append((
             "Verbleibender bAV-Freibetrag",
             f"{_de(analyse['verbleibender_freibetrag_bav_mono'])} €/Mon.",
-            help=f"Ungenutzter bAV-Freibetrag (§ 226 Abs. 2 SGB V): {_de(BAV_FREIBETRAG_MONATLICH)} €/Mon. gesamt.",
-        )
+            f"Ungenutzter bAV-Freibetrag (§ 226 Abs. 2 SGB V): {_de(BAV_FREIBETRAG_MONATLICH)} €/Mon. gesamt.",
+        ))
+    if _metrics:
+        _m_cols = st.columns(max(len(_metrics), 2))
+        for _i, (_lbl, _val, _hlp) in enumerate(_metrics):
+            _m_cols[_i].metric(_lbl, _val, help=_hlp)
 
     if analyse["zu_verschieben"]:
         st.markdown(
