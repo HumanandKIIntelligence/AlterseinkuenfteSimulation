@@ -1335,3 +1335,174 @@ class TestBerufsjahre:
         _pre = max(0, p.eintritt_jahr - AKTUELLES_JAHR)
         if _pre > 0:
             assert jd_hoch[0]["Steuer"] >= jd_niedrig[0]["Steuer"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P2-Produkte – KV und Steuer je Person korrekt berechnet
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestP2Produkte:
+    """
+    Invarianten für _netto_ueber_horizont mit Partnerkonstellation.
+
+    Schützt vor der Regression, bei der Vorsorgeverträge von Person 2 keine
+    Wirkung auf deren KV hatten – KV_P2 war unabhängig von zugeordneten Produkten
+    konstant (NameError auf p2_kv_mo0 bzw. Akkumulatoren wurden ignoriert).
+    """
+
+    def _p1(self, kv: str = "GKV", pkv: float = 0.0, kvdr: bool = True) -> Profil:
+        return _profil(
+            geburtsjahr=1958, renteneintritt_alter=67,
+            aktuelle_punkte=35.0, punkte_pro_jahr=0.0,
+            krankenversicherung=kv, pkv_beitrag=pkv, kvdr_pflicht=kvdr,
+        )
+
+    def _p2(self, kv: str = "GKV", pkv: float = 0.0, kvdr: bool = True) -> Profil:
+        return _profil(
+            geburtsjahr=1960, renteneintritt_alter=67,
+            aktuelle_punkte=28.0, punkte_pro_jahr=0.0,
+            krankenversicherung=kv, pkv_beitrag=pkv, kvdr_pflicht=kvdr,
+        )
+
+    def _bav(self, person: str, mono: float, sj: int) -> VorsorgeProdukt:
+        return VorsorgeProdukt(
+            id=f"bav-{person}", typ="bAV", name=f"bAV {person}", person=person,
+            max_einmalzahlung=0.0, max_monatsrente=mono,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+
+    def _bav_einmal(self, person: str, betrag: float, sj: int) -> VorsorgeProdukt:
+        return VorsorgeProdukt(
+            id=f"bav-e-{person}", typ="bAV", name=f"bAV-Einmal {person}", person=person,
+            max_einmalzahlung=betrag, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+
+    # ── KV_P2 reagiert auf Produkte ──────────────────────────────────────────
+
+    def test_p2_kvdr_bav_erhoetht_kv_p2(self):
+        """KVdR P2: bAV-Monatsrente über Freibetrag (187,25 €) erhöht KV_P2."""
+        p1, p2 = self._p1(), self._p2(kvdr=True)
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        sj = p1.eintritt_jahr
+        bav = self._bav("Person 2", 800.0, sj)
+        _, jd_ohne = _netto_ueber_horizont(p1, e1, [], 5, profil2=p2, ergebnis2=e2)
+        _, jd_mit  = _netto_ueber_horizont(p1, e1, [(bav, sj, 0.0)], 5, profil2=p2, ergebnis2=e2)
+        assert jd_mit[0]["KV_P2"] > jd_ohne[0]["KV_P2"]
+
+    def test_p2_kvdr_bav_unter_freibetrag_kein_kv_anstieg(self):
+        """KVdR P2: bAV unter 187,25 €/Mon. (Freibetrag) → KV_P2 unverändert."""
+        p1, p2 = self._p1(), self._p2(kvdr=True)
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        sj = p1.eintritt_jahr
+        bav = self._bav("Person 2", 100.0, sj)   # 100 < 187,25 Freibetrag
+        _, jd_ohne = _netto_ueber_horizont(p1, e1, [], 5, profil2=p2, ergebnis2=e2)
+        _, jd_mit  = _netto_ueber_horizont(p1, e1, [(bav, sj, 0.0)], 5, profil2=p2, ergebnis2=e2)
+        assert jd_mit[0]["KV_P2"] == jd_ohne[0]["KV_P2"]
+
+    def test_p2_pkv_kv_unveraendert_trotz_bav(self):
+        """PKV P2: Beliebige Produkte dürfen KV_P2 nicht verändern (Fixbeitrag)."""
+        p1, p2 = self._p1(), self._p2(kv="PKV", pkv=650.0)
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        sj = p1.eintritt_jahr
+        bav = self._bav("Person 2", 2_000.0, sj)
+        _, jd_ohne = _netto_ueber_horizont(p1, e1, [], 5, profil2=p2, ergebnis2=e2)
+        _, jd_mit  = _netto_ueber_horizont(p1, e1, [(bav, sj, 0.0)], 5, profil2=p2, ergebnis2=e2)
+        assert jd_mit[0]["KV_P2"] == jd_ohne[0]["KV_P2"]
+        assert jd_ohne[0]["KV_P2"] == pytest.approx(650.0 * 12)
+
+    def test_p2_freiwillig_bav_erhoetht_kv_ohne_freibetrag(self):
+        """Freiwillig §240 P2: auch kleine bAV (< 187,25 €) erhöht KV_P2 – kein Freibetrag."""
+        p1, p2 = self._p1(), self._p2(kvdr=False)
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        sj = p1.eintritt_jahr
+        bav = self._bav("Person 2", 100.0, sj)   # unter KVdR-Freibetrag, aber freiwillig voll zählend
+        _, jd_ohne = _netto_ueber_horizont(p1, e1, [], 5, profil2=p2, ergebnis2=e2)
+        _, jd_mit  = _netto_ueber_horizont(p1, e1, [(bav, sj, 0.0)], 5, profil2=p2, ergebnis2=e2)
+        assert jd_mit[0]["KV_P2"] > jd_ohne[0]["KV_P2"]
+
+    def test_p2_kvdr_bav_einmal_spreading_10_jahre(self):
+        """KVdR P2: bAV-Einmalauszahlung wird 10 Jahre auf KV_P2 verteilt (§229 SGB V)."""
+        p1, p2 = self._p1(), self._p2(kvdr=True)
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        sj = p1.eintritt_jahr
+        bav_e = self._bav_einmal("Person 2", 120_000.0, sj)
+        _, jd_ohne = _netto_ueber_horizont(p1, e1, [], 12, profil2=p2, ergebnis2=e2)
+        _, jd_mit  = _netto_ueber_horizont(p1, e1, [(bav_e, sj, 1.0)], 12, profil2=p2, ergebnis2=e2)
+        for i in range(10):
+            assert jd_mit[i]["KV_P2"] > jd_ohne[i]["KV_P2"], f"Jahr {i}: KV_P2 sollte erhöht sein"
+        assert jd_mit[10]["KV_P2"] == jd_ohne[10]["KV_P2"]   # Spreading endet nach 10 Jahren
+
+    # ── KV_P1 bleibt unberührt ───────────────────────────────────────────────
+
+    def test_p2_produkt_aendert_kv_p1_nicht(self):
+        """Produkt auf P2 darf KV_P1 nicht verändern."""
+        p1, p2 = self._p1(), self._p2()
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        sj = p1.eintritt_jahr
+        bav = self._bav("Person 2", 2_000.0, sj)
+        _, jd_ohne = _netto_ueber_horizont(p1, e1, [], 5, profil2=p2, ergebnis2=e2)
+        _, jd_mit  = _netto_ueber_horizont(p1, e1, [(bav, sj, 0.0)], 5, profil2=p2, ergebnis2=e2)
+        assert jd_mit[0]["KV_P1"] == jd_ohne[0]["KV_P1"]
+
+    # ── Produkt-Wechsel zwischen Personen ───────────────────────────────────
+
+    def test_produkt_wechsel_p1_gkv_zu_p2_pkv_aendert_kv_verteilung(self):
+        """Gleiches bAV-Produkt auf P1 (KVdR) vs. P2 (PKV): KV_P1 muss sich unterscheiden."""
+        p1 = self._p1(kvdr=True)           # GKV KVdR: bAV erhöht KV
+        p2 = self._p2(kv="PKV", pkv=650.0) # PKV fix: bAV hat keinen KV-Effekt
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        sj = p1.eintritt_jahr
+
+        bav_auf_p1 = self._bav("Person 1", 800.0, sj)
+        bav_auf_p2 = self._bav("Person 2", 800.0, sj)
+
+        _, jd_p1 = _netto_ueber_horizont(p1, e1, [(bav_auf_p1, sj, 0.0)], 5, profil2=p2, ergebnis2=e2)
+        _, jd_p2 = _netto_ueber_horizont(p1, e1, [(bav_auf_p2, sj, 0.0)], 5, profil2=p2, ergebnis2=e2)
+
+        # bAV auf P1 (KVdR) erhöht KV_P1; auf P2 (PKV) nicht
+        assert jd_p1[0]["KV_P1"] > jd_p2[0]["KV_P1"]
+        # KV_P2 bleibt in beiden Fällen der PKV-Fixbeitrag
+        assert jd_p1[0]["KV_P2"] == jd_p2[0]["KV_P2"]
+        # Gesamtkosten müssen sich unterscheiden → Entnahme-Optimierung reagiert korrekt
+        assert jd_p1[0]["KV_PV"] != jd_p2[0]["KV_PV"]
+
+    # ── Haushaltsbrutto und Steuer ───────────────────────────────────────────
+
+    def test_p2_bav_erhoetht_haushaltsbrutto(self):
+        """P2-bAV-Monatsrente fließt vollständig ins Haushaltsbrutto ein."""
+        p1, p2 = self._p1(), self._p2()
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        sj = p1.eintritt_jahr
+        bav = self._bav("Person 2", 500.0, sj)
+        _, jd_ohne = _netto_ueber_horizont(p1, e1, [], 5, profil2=p2, ergebnis2=e2)
+        _, jd_mit  = _netto_ueber_horizont(p1, e1, [(bav, sj, 0.0)], 5, profil2=p2, ergebnis2=e2)
+        assert jd_mit[0]["Brutto"] - jd_ohne[0]["Brutto"] == pytest.approx(500.0 * 12, abs=1.0)
+
+    def test_zusammen_p2_bav_erhoetht_splitting_steuer(self):
+        """Zusammenveranlagung: P2-bAV fließt in gemeinsames zvE → Steuer steigt."""
+        p1, p2 = self._p1(), self._p2()
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        sj = p1.eintritt_jahr
+        bav = self._bav("Person 2", 1_000.0, sj)
+        _, jd_ohne = _netto_ueber_horizont(p1, e1, [], 5, profil2=p2, ergebnis2=e2, veranlagung="Zusammen")
+        _, jd_mit  = _netto_ueber_horizont(p1, e1, [(bav, sj, 0.0)], 5, profil2=p2, ergebnis2=e2, veranlagung="Zusammen")
+        assert jd_mit[0]["Steuer"] > jd_ohne[0]["Steuer"]
+
+    def test_p2_etf_einmal_erzeugt_abgeltungsteuer(self):
+        """ETF-Einmalauszahlung auf P2 mit großem Ertrag erzeugt Abgeltungsteuer."""
+        p1, p2 = self._p1(), self._p2()
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        sj = p1.eintritt_jahr
+        etf = VorsorgeProdukt(
+            id="etf-p2", typ="ETF", name="ETF P2", person="Person 2",
+            max_einmalzahlung=100_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, einzahlungen_gesamt=50_000.0, teilfreistellung=0.30,
+        )
+        _, jd_ohne = _netto_ueber_horizont(p1, e1, [], 5, profil2=p2, ergebnis2=e2)
+        _, jd_mit  = _netto_ueber_horizont(p1, e1, [(etf, sj, 1.0)], 5, profil2=p2, ergebnis2=e2)
+        # Ertrag 50.000 €; TF 30 % → abgeltungspfl. 35.000 € >> 2 × Sparerpauschbetrag
+        assert jd_mit[0]["Steuer_Abgeltung"] > jd_ohne[0]["Steuer_Abgeltung"]
