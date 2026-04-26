@@ -14,6 +14,7 @@ import streamlit as st
 from engine import (
     Profil, RentenErgebnis, VorsorgeProdukt,
     optimiere_auszahlungen, besteuerungsanteil, ertragsanteil,
+    BAV_FREIBETRAG_MONATLICH,
 )
 from tabs import auszahlung
 from tabs.vorsorge import _run_optimierung
@@ -132,6 +133,213 @@ def _de(v: float, dec: int = 0) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _analyse_schenkungspotenzial(
+    produkte: list[dict],
+    profil: Profil,
+    profil2: Profil | None,
+) -> dict | None:
+    """Analysiert Schenkungspotenzial zwischen GKV- und PKV-Person.
+
+    Gibt None zurück wenn keine gemischte GKV/PKV-Konstellation vorliegt.
+    Sonst ein Dict mit Empfehlungen, KV-Ersparnis und nicht übertragbaren Verträgen.
+    """
+    if profil2 is None:
+        return None
+
+    p1_gkv = profil.krankenversicherung == "GKV"
+    p2_gkv = profil2.krankenversicherung == "GKV"
+    if p1_gkv == p2_gkv:
+        return None
+
+    if p1_gkv:
+        gkv_label, pkv_label, gkv_profil = "Person 1", "Person 2", profil
+    else:
+        gkv_label, pkv_label, gkv_profil = "Person 2", "Person 1", profil2
+
+    gkv_ist_freiwillig = not gkv_profil.kvdr_pflicht
+    pv_voll = 0.034 if gkv_profil.kinder else 0.040
+    pv_halb = 0.017 if gkv_profil.kinder else 0.023
+    kv_rate_voll = 0.146 + gkv_profil.gkv_zusatzbeitrag + pv_voll
+    kv_rate_halb = 0.073 + gkv_profil.gkv_zusatzbeitrag / 2 + pv_halb
+
+    gkv_prods = [p for p in produkte if p.get("person") == gkv_label]
+    bav_mono_sum = sum(p.get("max_monatsrente", 0.0) for p in gkv_prods if p.get("typ") == "bAV")
+    verbleibender_freibetrag = (
+        max(0.0, BAV_FREIBETRAG_MONATLICH - bav_mono_sum)
+        if not gkv_ist_freiwillig else 0.0
+    )
+
+    zu_verschieben: list[dict] = []
+    nicht_verschiebbar: list[dict] = []
+    gesamt_ersparnis_pa = 0.0
+
+    for p in gkv_prods:
+        typ = p.get("typ", "")
+        name = p.get("name", typ)
+        mono = p.get("max_monatsrente", 0.0)
+        einmal = p.get("max_einmalzahlung", 0.0)
+        lfd_kap = p.get("laufende_kapitalertraege_mono", 0.0)
+
+        if typ == "bAV":
+            kv_j = (
+                mono * 12 * kv_rate_voll if gkv_ist_freiwillig
+                else max(0.0, mono - BAV_FREIBETRAG_MONATLICH) * 12 * kv_rate_halb
+            )
+            nicht_verschiebbar.append({
+                "Vertrag": name, "Typ": typ,
+                "KV-Kosten p.a. (ca.)": round(kv_j),
+                "Grund": "Betriebsrente: nicht übertragbar (§ 1 BetrAVG)",
+            })
+
+        elif typ == "Rürup":
+            kv_j = mono * 12 * kv_rate_voll if gkv_ist_freiwillig else 0.0
+            nicht_verschiebbar.append({
+                "Vertrag": name, "Typ": typ,
+                "KV-Kosten p.a. (ca.)": round(kv_j),
+                "Grund": "Rürup/Basisrente: nicht abtretbar (§ 97 EStG i.V.m. § 10 Abs. 1 Nr. 2b EStG)",
+            })
+
+        elif typ == "Riester":
+            kv_j = mono * 12 * kv_rate_voll if gkv_ist_freiwillig else 0.0
+            gesamt_ersparnis_pa += kv_j
+            zu_verschieben.append({
+                "Vertrag": name, "Typ": typ, "Von": gkv_label, "An": pkv_label,
+                "KV-Ersparnis p.a. (ca.)": round(kv_j),
+                "Hinweis": "Nur zwischen Riester-berechtigten Eheleuten (§ 6 AltZertG)",
+            })
+
+        elif typ in ("PrivateRente", "LV"):
+            if gkv_ist_freiwillig:
+                if mono > 0:
+                    kv_j = mono * 12 * kv_rate_voll
+                    hinweis = ""
+                else:
+                    kv_j = 0.0
+                    einmal_ersparnis = min(einmal, 5_175 * 12) * kv_rate_voll
+                    hinweis = f"Einmalauszahlung: einmalige KV-Ersparnis ca. {_de(einmal_ersparnis)} €"
+            else:
+                kv_j = 0.0
+                hinweis = "Unter KVdR nicht KV-pflichtig – kein KV-Vorteil durch Schenkung"
+            gesamt_ersparnis_pa += kv_j
+            zu_verschieben.append({
+                "Vertrag": name, "Typ": typ, "Von": gkv_label, "An": pkv_label,
+                "KV-Ersparnis p.a. (ca.)": round(kv_j),
+                "Hinweis": hinweis,
+            })
+
+        elif typ == "ETF":
+            kv_j = lfd_kap * 12 * kv_rate_voll if gkv_ist_freiwillig and lfd_kap > 0 else 0.0
+            hinweis = (
+                "" if kv_j > 0
+                else "Keine lfd. Kapitalerträge erfasst – KV-Ersparnis nicht berechenbar"
+            )
+            gesamt_ersparnis_pa += kv_j
+            zu_verschieben.append({
+                "Vertrag": name, "Typ": typ, "Von": gkv_label, "An": pkv_label,
+                "KV-Ersparnis p.a. (ca.)": round(kv_j),
+                "Hinweis": hinweis,
+            })
+
+    return {
+        "hat_empfehlung": gesamt_ersparnis_pa > 0,
+        "gkv_label": gkv_label,
+        "pkv_label": pkv_label,
+        "gkv_ist_freiwillig": gkv_ist_freiwillig,
+        "zu_verschieben": zu_verschieben,
+        "nicht_verschiebbar": nicht_verschiebbar,
+        "gesamt_ersparnis_pa": gesamt_ersparnis_pa,
+        "verbleibender_freibetrag_bav_mono": verbleibender_freibetrag,
+        "kv_rate_voll": kv_rate_voll,
+        "kv_rate_halb": kv_rate_halb,
+    }
+
+
+def _render_schenkungsanalyse(analyse: dict) -> None:
+    """Rendert den Schenkungsanalyse-Abschnitt."""
+    st.subheader("🎁 Schenkungspotenzial – Vertragsübertragung zur KV-Optimierung")
+    gkv_kv_typ = (
+        "freiwillig GKV (§ 240 SGB V)" if analyse["gkv_ist_freiwillig"]
+        else "KVdR-Pflichtmitglied (§ 229 SGB V)"
+    )
+    st.caption(
+        f"**{analyse['gkv_label']}** ist {gkv_kv_typ}. "
+        f"**{analyse['pkv_label']}** ist PKV-versichert (fixer Beitrag). "
+        "Eine Übertragung von Vorsorgeverträgen auf die PKV-Person kann KV-Beiträge dauerhaft reduzieren."
+    )
+
+    if not analyse["hat_empfehlung"]:
+        if not analyse["gkv_ist_freiwillig"]:
+            st.info(
+                f"**{analyse['gkv_label']} ist KVdR-Pflichtmitglied.** "
+                "Unter KVdR (§ 229 SGB V) sind nur betriebliche Versorgungsbezüge (bAV) KV-pflichtig – "
+                "diese sind arbeitsrechtlich nicht übertragbar (§ 1 BetrAVG). "
+                "Private Renten, Riester und ETF-Erträge sind unter KVdR nicht KV-pflichtig. "
+                "Eine Vertragsschenkung bringt daher **keinen KV-Vorteil**."
+            )
+        elif not analyse["zu_verschieben"]:
+            st.info(
+                "Keine Verträge der GKV-Person erfasst. "
+                "Im Tab **Vorsorge-Bausteine** Produkte anlegen."
+            )
+        else:
+            st.info(
+                "Die erfassten Verträge der GKV-Person haben kein berechenbares KV-Einsparpotenzial "
+                "(keine monatliche Rente oder laufende Kapitalerträge erfasst)."
+            )
+        if analyse["nicht_verschiebbar"]:
+            with st.expander(
+                f"Nicht übertragbare Verträge ({len(analyse['nicht_verschiebbar'])})",
+                expanded=False,
+            ):
+                df_nv = pd.DataFrame(analyse["nicht_verschiebbar"])[
+                    ["Vertrag", "Typ", "KV-Kosten p.a. (ca.)", "Grund"]
+                ]
+                st.dataframe(df_nv.set_index("Vertrag"), use_container_width=True)
+        return
+
+    sc1, sc2 = st.columns(2)
+    sc1.metric(
+        "KV-Ersparnis p.a. (ca.)",
+        f"{_de(analyse['gesamt_ersparnis_pa'])} €",
+        help=(
+            "Jährliche KV-Ersparnis wenn alle empfohlenen Verträge auf die PKV-Person übertragen werden. "
+            f"KV-Gesamtsatz: {analyse['kv_rate_voll']:.1%}".replace(".", ",")
+        ),
+    )
+    if not analyse["gkv_ist_freiwillig"] and analyse["verbleibender_freibetrag_bav_mono"] > 0:
+        sc2.metric(
+            "Verbleibender bAV-Freibetrag",
+            f"{_de(analyse['verbleibender_freibetrag_bav_mono'])} €/Mon.",
+            help=f"Ungenutzter bAV-Freibetrag (§ 226 Abs. 2 SGB V): {_de(BAV_FREIBETRAG_MONATLICH)} €/Mon. gesamt.",
+        )
+
+    if analyse["zu_verschieben"]:
+        st.markdown(
+            f"**Empfohlen – von {analyse['gkv_label']} auf {analyse['pkv_label']} übertragen:**"
+        )
+        df_v = pd.DataFrame(analyse["zu_verschieben"])[
+            ["Vertrag", "Typ", "Von", "An", "KV-Ersparnis p.a. (ca.)", "Hinweis"]
+        ]
+        st.dataframe(df_v.set_index("Vertrag"), use_container_width=True)
+
+    if analyse["nicht_verschiebbar"]:
+        with st.expander(
+            f"Nicht übertragbare Verträge ({len(analyse['nicht_verschiebbar'])})",
+            expanded=False,
+        ):
+            df_nv = pd.DataFrame(analyse["nicht_verschiebbar"])[
+                ["Vertrag", "Typ", "KV-Kosten p.a. (ca.)", "Grund"]
+            ]
+            st.dataframe(df_nv.set_index("Vertrag"), use_container_width=True)
+
+    st.caption(
+        "⚠️ **Rechtlicher Hinweis:** Schenkungen zwischen Eheleuten können den Freibetrag "
+        "von 500.000 € (alle 10 Jahre, § 16 Abs. 1 Nr. 1 ErbStG) nutzen. "
+        "Riester-Übertragungen nur zwischen förderberechtigten Eheleuten (§ 6 AltZertG). "
+        "Die individuelle Umsetzung sollte mit einem Steuerberater abgestimmt werden."
+    )
+
+
 def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
            mieteinnahmen: float = 0.0, mietsteigerung: float = 0.0,
            ergebnis2=None, veranlagung: str = "Getrennt") -> None:
@@ -207,6 +415,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         st.dataframe(df_stb.set_index("Produkt"), use_container_width=True)
 
         st.divider()
+
+        # ── Schenkungsanalyse (nur bei gemischter GKV/PKV-Konstellation) ────────
+        if eo_person == "Zusammen" and hat_partner:
+            _analyse = _analyse_schenkungspotenzial(produkte_dicts, profil, profil2)
+            if _analyse is not None:
+                _render_schenkungsanalyse(_analyse)
+                st.divider()
 
         # ── Optimierungsparameter ─────────────────────────────────────────────
         oc1, oc2, oc3 = st.columns(3)
@@ -548,9 +763,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             st.dataframe(df_jd, use_container_width=True)
 
         st.caption(
-            "⚠️ Simulation auf Basis der Rechtslage 2024. Sparerpauschbetrag 1.000 €/Person "
-            "berücksichtigt. Soli, Kirchensteuer und individuelle Freibeträge werden nicht "
-            "modelliert. Steuerberatung empfohlen."
+            "⚠️ Simulation auf Basis der Rechtslage 2024. "
+            "Solidaritätszuschlag, Kirchensteuer (auf progressive ESt) und Sparerpauschbetrag "
+            "sind berücksichtigt. "
+            "Kirchensteuer auf Abgeltungsteuer sowie weitere individuelle Freibeträge "
+            "sind nicht modelliert. Steuerberatung empfohlen."
         )
 
         st.divider()

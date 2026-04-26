@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import session_io
 from session_io import save_session, load_session, list_saves, _load_profil, _PROFIL_LADE_DEFAULTS
 from engine import Profil, AKTUELLES_JAHR
-from tabs.entnahme_opt import _kv_label_und_wert, _steuer_steckbrief, _de
+from tabs.entnahme_opt import _kv_label_und_wert, _steuer_steckbrief, _de, _analyse_schenkungspotenzial
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -212,6 +212,112 @@ class TestSteuerSteckbrief:
 # ─────────────────────────────────────────────────────────────────────────────
 # _de – Deutsche Zahlenformatierung (Punkt als Tausender, Komma als Dezimal)
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _analyse_schenkungspotenzial – Schenkungsanalyse GKV ↔ PKV
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSchenkungsanalyse:
+    def _prod(self, typ: str, person: str = "Person 1",
+              mono: float = 0.0, einmal: float = 0.0, lfd: float = 0.0) -> dict:
+        return {
+            "name": f"Test {typ}", "typ": typ, "typ_label": typ,
+            "person": person, "vertragsbeginn": 2010, "teilfreistellung": 0.30,
+            "max_monatsrente": mono, "max_einmalzahlung": einmal,
+            "laufende_kapitalertraege_mono": lfd,
+        }
+
+    def _p_freiwillig(self) -> Profil:
+        return _profil(krankenversicherung="GKV", kvdr_pflicht=False,
+                       gkv_zusatzbeitrag=0.017, kinder=True)
+
+    def _p_kvdr(self) -> Profil:
+        return _profil(krankenversicherung="GKV", kvdr_pflicht=True,
+                       gkv_zusatzbeitrag=0.017, kinder=True)
+
+    def _p_pkv(self) -> Profil:
+        return _profil(krankenversicherung="PKV", pkv_beitrag=600.0)
+
+    def test_beide_gkv_gibt_none(self):
+        """Beide GKV → keine gemischte Konstellation → None."""
+        assert _analyse_schenkungspotenzial([], self._p_freiwillig(), self._p_kvdr()) is None
+
+    def test_beide_pkv_gibt_none(self):
+        """Beide PKV → None."""
+        assert _analyse_schenkungspotenzial([], self._p_pkv(), self._p_pkv()) is None
+
+    def test_kein_partner_gibt_none(self):
+        """Kein Partner → None."""
+        assert _analyse_schenkungspotenzial([], self._p_freiwillig(), None) is None
+
+    def test_bav_nicht_verschiebbar(self):
+        """bAV geht in nicht_verschiebbar (§ 1 BetrAVG)."""
+        prod = self._prod("bAV", mono=500.0)
+        result = _analyse_schenkungspotenzial([prod], self._p_freiwillig(), self._p_pkv())
+        assert result is not None
+        assert any(r["Vertrag"] == "Test bAV" for r in result["nicht_verschiebbar"])
+        assert all(r["Vertrag"] != "Test bAV" for r in result["zu_verschieben"])
+
+    def test_ruerup_nicht_verschiebbar(self):
+        """Rürup geht in nicht_verschiebbar (§ 97 EStG)."""
+        prod = self._prod("Rürup", mono=300.0)
+        result = _analyse_schenkungspotenzial([prod], self._p_freiwillig(), self._p_pkv())
+        assert any(r["Vertrag"] == "Test Rürup" for r in result["nicht_verschiebbar"])
+        assert all(r["Vertrag"] != "Test Rürup" for r in result["zu_verschieben"])
+
+    def test_privaterente_freiwillig_korrekte_ersparnis(self):
+        """PrivateRente unter §240: KV-Ersparnis = mono × 12 × (0,146 + zusatz + pv_voll)."""
+        prod = self._prod("PrivateRente", mono=500.0)
+        result = _analyse_schenkungspotenzial([prod], self._p_freiwillig(), self._p_pkv())
+        assert result["hat_empfehlung"]
+        expected = 500 * 12 * (0.146 + 0.017 + 0.034)
+        assert result["gesamt_ersparnis_pa"] == pytest.approx(expected, rel=1e-6)
+
+    def test_privaterente_kvdr_keine_ersparnis(self):
+        """PrivateRente unter KVdR: nicht KV-pflichtig → gesamt_ersparnis_pa == 0."""
+        prod = self._prod("PrivateRente", mono=500.0)
+        result = _analyse_schenkungspotenzial([prod], self._p_kvdr(), self._p_pkv())
+        assert not result["hat_empfehlung"]
+        assert result["gesamt_ersparnis_pa"] == pytest.approx(0.0)
+
+    def test_p2_ist_gkv_korrekte_zuweisung(self):
+        """Wenn P2 GKV hat, werden P2-Produkte analysiert und P2 als gkv_label gesetzt."""
+        prod = self._prod("PrivateRente", person="Person 2", mono=400.0)
+        result = _analyse_schenkungspotenzial([prod], self._p_pkv(), self._p_freiwillig())
+        assert result["gkv_label"] == "Person 2"
+        assert result["pkv_label"] == "Person 1"
+        assert result["gesamt_ersparnis_pa"] > 0
+
+    def test_etf_lfd_ertraege_kv_pflichtig_freiwillig(self):
+        """ETF-laufende Erträge sind unter §240 KV-pflichtig."""
+        prod = self._prod("ETF", lfd=200.0)
+        result = _analyse_schenkungspotenzial([prod], self._p_freiwillig(), self._p_pkv())
+        expected = 200 * 12 * (0.146 + 0.017 + 0.034)
+        assert result["gesamt_ersparnis_pa"] == pytest.approx(expected, rel=1e-6)
+
+    def test_riester_mit_altzertg_hinweis(self):
+        """Riester ist übertragbar, aber mit §6-AltZertG-Einschränkung im Hinweis."""
+        prod = self._prod("Riester", mono=300.0)
+        result = _analyse_schenkungspotenzial([prod], self._p_freiwillig(), self._p_pkv())
+        riester_row = next(r for r in result["zu_verschieben"] if r["Vertrag"] == "Test Riester")
+        assert "AltZertG" in riester_row["Hinweis"]
+
+    def test_pkv_person_produkte_werden_ignoriert(self):
+        """Produkte der PKV-Person werden nicht in die Analyse einbezogen."""
+        prod_pkv = self._prod("PrivateRente", person="Person 1", mono=500.0)
+        result = _analyse_schenkungspotenzial([prod_pkv], self._p_pkv(), self._p_freiwillig())
+        assert result["gesamt_ersparnis_pa"] == pytest.approx(0.0)
+        assert result["zu_verschieben"] == []
+
+    def test_kvdr_verbleibender_freibetrag_korrekt(self):
+        """KVdR: verbleibender bAV-Freibetrag wird korrekt berechnet."""
+        from engine import BAV_FREIBETRAG_MONATLICH
+        prod = self._prod("bAV", mono=100.0)
+        result = _analyse_schenkungspotenzial([prod], self._p_kvdr(), self._p_pkv())
+        assert result["verbleibender_freibetrag_bav_mono"] == pytest.approx(
+            BAV_FREIBETRAG_MONATLICH - 100.0
+        )
+
 
 class TestDeFormatierung:
     def test_tausendertrennzeichen_punkt(self):
