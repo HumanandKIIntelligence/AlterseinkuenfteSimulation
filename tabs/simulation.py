@@ -77,6 +77,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         # ── Genaue Jahressimulation je Szenario ──────────────────────────────
         # Ersetzt die bisherige Näherung netto_eintritt × (1+anp)^n durch
         # vollständige Jahressimulation mit korrekter Steuerprogression.
+        # gehalt_monatlich wird mitgegeben, damit Vorjahre (vor Renteneintritt) abgedeckt sind.
         _sz_jd: dict[str, dict[int, dict]] = {}
         for _nm in ["Pessimistisch", "Neutral", "Optimistisch"]:
             _rpa, _kpa = _PARAMS[_nm]
@@ -91,15 +92,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 _, _jd_n = _netto_ueber_horizont(
                     _p1_n, _e1_n, [], 32, mieteinnahmen, 0.0,
                     profil2=_p2_n, ergebnis2=_e2_n, veranlagung=veranlagung,
+                    gehalt_monatlich=_g_sim,
                 )
             else:
                 _p_n = _dc_replace(profil, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
                 _e_n = berechne_rente(_p_n)
-                _, _jd_n = _netto_ueber_horizont(_p_n, _e_n, [], 32, 0.0, 0.0)
+                _, _jd_n = _netto_ueber_horizont(_p_n, _e_n, [], 32, 0.0, 0.0,
+                                                  gehalt_monatlich=_g_sim)
             _sz_jd[_nm] = {r["Jahr"]: r for r in _jd_n}
 
         # ── Szenario-Vergleich Tabelle ────────────────────────────────────────
-        st.subheader(f"Vergleich der drei Szenarien – {betrachtungsjahr}")
+        _phase_label = " (Erwerbsphase)" if _vor_rente else ""
+        st.subheader(f"Vergleich der drei Szenarien – {betrachtungsjahr}{_phase_label}")
         rows = []
         namen = ["Pessimistisch", "Neutral", "Optimistisch"]
         for name in namen:
@@ -111,8 +115,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             if zusammen_modus:
                 kapital = (sz1[name].kapital_bei_renteneintritt
                            + sz2[name].kapital_bei_renteneintritt)
-                _brutto_hh = _row_n["Brutto"] / 12 if _row_n else (sz1[name].brutto_monatlich + sz2[name].brutto_monatlich)
-                _netto_hh  = _row_n["Netto"]  / 12 if _row_n else (sz1[name].netto_monatlich  + sz2[name].netto_monatlich)
+                _brutto_hh = _row_n["Brutto"] / 12 if _row_n else 0.0
+                _netto_hh  = _row_n["Netto"]  / 12 if _row_n else 0.0
                 rows.append({
                     "Szenario": name,
                     "Rentenanpassung p.a.": f"{ren_pa:.1%}".replace(".", ","),
@@ -123,8 +127,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 })
             else:
                 erg = szenarien[name]
-                _brutto_val = _row_n["Brutto"] / 12 if _row_n else erg.brutto_monatlich
-                _netto_val  = _row_n["Netto"]  / 12 if _row_n else erg.netto_monatlich
+                _brutto_val = _row_n["Brutto"] / 12 if _row_n else 0.0
+                _netto_val  = _row_n["Netto"]  / 12 if _row_n else 0.0
                 rows.append({
                     "Szenario": name,
                     "Rentenanpassung p.a.": f"{ren_pa:.1%}".replace(".", ","),
@@ -143,22 +147,22 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         st.divider()
 
         # ── Nettorente / Haushalt Szenarien ───────────────────────────────────
+        _vor_rente = betrachtungsjahr < _start_ret
         col_l, col_r = st.columns(2)
 
         with col_l:
             if zusammen_modus:
-                st.subheader(f"Netto Haushalt {betrachtungsjahr}")
+                _hh_titel = "Netto Haushalt" if not _vor_rente else "Netto Haushalt (Erwerbsphase)"
+                st.subheader(f"{_hh_titel} {betrachtungsjahr}")
                 y_title = "Netto Haushalt (€/Monat)"
             else:
-                st.subheader(f"Nettorente {betrachtungsjahr}")
-                y_title = "Nettorente (€/Monat)"
+                _ep_titel = "Nettorente" if not _vor_rente else "Nettoeinkommen (Erwerbsphase)"
+                st.subheader(f"{_ep_titel} {betrachtungsjahr}")
+                y_title = "Netto (€/Monat)"
             netto_vals = []
             for n in namen:
                 _row_n = _sz_jd[n].get(betrachtungsjahr)
-                if _row_n:
-                    netto_vals.append(_row_n["Netto"] / 12)
-                else:
-                    netto_vals.append(szenarien[n].netto_monatlich)
+                netto_vals.append(_row_n["Netto"] / 12 if _row_n else 0.0)
             fig_bar = go.Figure(go.Bar(
                 x=namen,
                 y=netto_vals,

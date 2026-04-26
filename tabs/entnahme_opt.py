@@ -25,59 +25,106 @@ def _aus_dict(d: dict) -> VorsorgeProdukt:
     return _vp_aus_dict(d)
 
 
-def _steuer_steckbrief(prod_dicts: list[dict], profil: Profil) -> pd.DataFrame:
+def _kv_label_und_wert(typ: str, vbeg: int, tf: float, profil_p: Profil) -> tuple[str, str]:
+    """Gibt (Spaltentitel, Zellwert) für die KV-Spalte zurück, abhängig vom KV-Status der Person."""
+    is_pkv  = profil_p.krankenversicherung == "PKV"
+    is_kvdr = profil_p.kvdr_pflicht  # nur relevant wenn GKV
+
+    if is_pkv:
+        return "KV", "–"
+
+    if is_kvdr:
+        col = "KVdR-pflichtig"
+        kv_map = {
+            "bAV":         "Ja – FB 187 €/Mon. (§ 226 SGB V)",
+            "Riester":     "Nein",
+            "Rürup":       "Nein",
+            "LV":          "–",
+            "PrivateRente":"Nein",
+            "ETF":         "Nein",
+        }
+    else:
+        col = "KV-pflichtig (§240)"
+        kv_map = {
+            "bAV":         "Ja – ohne Freibetrag (§ 240 SGB V)",
+            "Riester":     "Ja (§ 240 SGB V)",
+            "Rürup":       "Ja (§ 240 SGB V)",
+            "LV":          "Ja – Einmalauszahlung (§ 240 SGB V)",
+            "PrivateRente":"Ja (§ 240 SGB V)",
+            "ETF":         "Ja – laufende Erträge (§ 240 SGB V)",
+        }
+    return col, kv_map.get(typ, "–")
+
+
+def _steuer_steckbrief(prod_dicts: list[dict], profil: Profil,
+                       profil2: Profil | None = None) -> pd.DataFrame:
     rows = []
+    kv_cols_seen: set[str] = set()
+
     for p in prod_dicts:
         typ  = p.get("typ", "bAV")
         vbeg = p.get("vertragsbeginn", 2010)
         tf   = p.get("teilfreistellung", 0.30)
+        person_label = p.get("person", "Person 1")
+        profil_p = profil2 if (person_label == "Person 2" and profil2 is not None) else profil
 
         if typ == "bAV":
             einmal_regel = "100 % progressiv (§ 19 EStG)"
             mono_regel   = "100 % progressiv (§ 19 EStG)"
-            kvdr         = "Ja – FB 187 €/Mon. (§ 226 SGB V)"
         elif typ == "Riester":
             einmal_regel = "100 % progressiv (§ 22 Nr. 5 EStG)"
             mono_regel   = "100 % progressiv (§ 22 Nr. 5 EStG)"
-            kvdr         = "Nein"
         elif typ == "Rürup":
             einmal_regel = "Nicht möglich (Basisrente)"
-            ba = besteuerungsanteil(profil.eintritt_jahr)
+            ba = besteuerungsanteil(profil_p.eintritt_jahr)
             mono_regel   = f"Besteuerungsanteil {ba:.0%} (§ 22 Nr. 1 EStG)"
-            kvdr         = "Nein"
         elif typ == "LV":
             if vbeg < 2005:
                 einmal_regel = "Steuerfrei (Altvertrag vor 2005)"
             else:
                 einmal_regel = "Halbeinkünfte (≥ 12 J. + ≥ 60/62 J.) oder 25 % Abgeltungsteuer"
             mono_regel = "–"
-            kvdr       = "–"
         elif typ == "PrivateRente":
             if vbeg < 2005:
                 einmal_regel = "Steuerfrei (Altvertrag vor 2005)"
             else:
                 einmal_regel = "Halbeinkünfte (≥ 12 J. + ≥ 60/62 J.) oder 25 % Abgeltungsteuer"
-            ea = ertragsanteil(profil.renteneintritt_alter)
+            ea = ertragsanteil(profil_p.renteneintritt_alter)
             mono_regel = f"Ertragsanteil {ea:.0%} (§ 22 Nr. 1 S. 3a bb EStG)"
-            kvdr       = "Nein"
         elif typ == "ETF":
             einmal_regel = f"25 % Abgelt. auf {(1 - tf):.0%} des Gewinns (TF {tf:.0%}, § 20 InvStG)"
             mono_regel   = "–"
-            kvdr         = "Nein"
         else:
             einmal_regel = "–"
             mono_regel   = "–"
-            kvdr         = "–"
+
+        kv_col, kv_val = _kv_label_und_wert(typ, vbeg, tf, profil_p)
+        kv_cols_seen.add(kv_col)
 
         rows.append({
-            "Produkt":           p["name"],
-            "Typ":               p["typ_label"],
-            "Person":            p.get("person", "Person 1"),
-            "Einmalauszahlung":  einmal_regel,
-            "Monatsrente":       mono_regel,
-            "KVdR-pflichtig":    kvdr,
+            "Produkt":          p["name"],
+            "Typ":              p["typ_label"],
+            "Person":           person_label,
+            "Einmalauszahlung": einmal_regel,
+            "Monatsrente":      mono_regel,
+            "_kv_col":          kv_col,
+            "_kv_val":          kv_val,
         })
-    return pd.DataFrame(rows)
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    # Wenn alle Produkte dieselbe KV-Spalte haben, einfache Spalte; sonst "KV-Status"
+    if len(kv_cols_seen) == 1:
+        col_name = kv_cols_seen.pop()
+        df = df.rename(columns={"_kv_val": col_name}).drop(columns=["_kv_col"])
+    else:
+        df["KV-Status"] = df.apply(
+            lambda r: f"{r['_kv_col']}: {r['_kv_val']}", axis=1)
+        df = df.drop(columns=["_kv_col", "_kv_val"])
+
+    return df
 
 
 def _de(v: float, dec: int = 0) -> str:
@@ -149,8 +196,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         # ── Steuer-Steckbrief ─────────────────────────────────────────────────
         st.subheader("📋 Steuer-Steckbrief")
-        st.caption("Steuerliche und KVdR-Behandlung je Produkt auf einen Blick.")
-        df_stb = _steuer_steckbrief(produkte_dicts, _profil_eo)
+        _kv_hint = (
+            "KVdR-Pflichtmitglied (§229 SGB V)" if _profil_eo.krankenversicherung == "GKV" and _profil_eo.kvdr_pflicht
+            else "freiwillig GKV (§240 SGB V)" if _profil_eo.krankenversicherung == "GKV"
+            else "PKV"
+        )
+        st.caption(f"Steuerliche und KV-Behandlung je Produkt auf einen Blick. KV-Status: {_kv_hint}.")
+        df_stb = _steuer_steckbrief(produkte_dicts, _profil_eo,
+                                    profil2=_profil2_eo if eo_person == "Zusammen" else None)
         st.dataframe(df_stb.set_index("Produkt"), use_container_width=True)
 
         st.divider()
