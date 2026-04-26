@@ -525,6 +525,7 @@ def _sidebar_top() -> None:
             if st.button("📥 Laden", key="load_btn", use_container_width=True):
                 data = load_session(dict(saves)[auswahl])
                 _apply_loaded_session(data)
+                st.session_state["save_name"] = auswahl
                 st.rerun()
 
 
