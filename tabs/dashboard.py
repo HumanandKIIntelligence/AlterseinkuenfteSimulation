@@ -5,7 +5,8 @@ import streamlit as st
 
 from engine import (
     Profil, RentenErgebnis, GRUNDFREIBETRAG_2024, AKTUELLES_JAHR,
-    berechne_haushalt, _netto_ueber_horizont, einkommensteuer, solidaritaetszuschlag,
+    berechne_haushalt, _netto_ueber_horizont,
+    einkommensteuer, einkommensteuer_splitting, solidaritaetszuschlag,
 )
 from tabs import steuern
 
@@ -50,37 +51,45 @@ def _kv_pv_split(profil: Profil, kv_gesamt: float,
     return kv_gesamt * _kv_rate / _total, kv_gesamt * _pv_rate / _total
 
 
-def _steuerampel(zvE: float, titel: str = "") -> None:
+def _steuerampel(zvE: float, titel: str = "", splitting: bool = False) -> None:
+    """zvE: bei splitting=True das kombinierte Haushalts-zvE; sonst individuelles zvE."""
     if zvE <= 0:
         zvE = 0.0
+    f = 2 if splitting else 1              # Grenzen × 2 für Splitting-Haushalt
+    zvE_ind = zvE / f                      # individuelles zvE für Grenzsteuersatz
 
-    if zvE <= GRUNDFREIBETRAG_2024:
+    _GFB = GRUNDFREIBETRAG_2024 * f
+    _Z1  = 17_005 * f
+    _Z2  = 66_760 * f
+    _Z42 = 277_825 * f
+
+    if zvE <= _GFB:
         zone = "Steuerfrei"
         farbe = "✅"
         gst = 0.0
-        freiraum = GRUNDFREIBETRAG_2024 - zvE
-        naechste = f"Grundfreibetrag ({_de(GRUNDFREIBETRAG_2024)} €)"
+        freiraum = _GFB - zvE
+        naechste = f"Grundfreibetrag ({_de(_GFB)} €)"
         tipp = "Optimale Zone – Einkommen vollständig unter Grundfreibetrag."
-    elif zvE <= 17_005:
+    elif zvE <= _Z1:
         zone = "Progressionszone 1 (14–24 %)"
         farbe = "🟢"
-        gst = _grenzsteuersatz(zvE)
-        freiraum = 17_005 - zvE
-        naechste = "Zone 2 (17.005 €)"
+        gst = _grenzsteuersatz(zvE_ind)
+        freiraum = _Z1 - zvE
+        naechste = f"Zone 2 ({_de(_Z1)} €)"
         tipp = "Geringe Progression – Einnahmen vorziehen oder strecken prüfen."
-    elif zvE <= 66_760:
+    elif zvE <= _Z2:
         zone = "Progressionszone 2 (24–42 %)"
         farbe = "🟡"
-        gst = _grenzsteuersatz(zvE)
-        freiraum = 66_760 - zvE
-        naechste = "42%-Zone (66.760 €)"
+        gst = _grenzsteuersatz(zvE_ind)
+        freiraum = _Z2 - zvE
+        naechste = f"42%-Zone ({_de(_Z2)} €)"
         tipp = "Wachsende Progression – Aufschub oder Einmalentnahme-Streckung sinnvoll."
-    elif zvE <= 277_825:
+    elif zvE <= _Z42:
         zone = "Proportionalzone 42 %"
         farbe = "🟠"
         gst = 0.42
-        freiraum = 277_825 - zvE
-        naechste = "Spitzensteuersatz (277.825 €)"
+        freiraum = _Z42 - zvE
+        naechste = f"Spitzensteuersatz ({_de(_Z42)} €)"
         tipp = "42 % Grenzsteuersatz – Einnahmen auf mehrere Jahre verteilen."
     else:
         zone = "Spitzensteuersatz 45 %"
@@ -97,9 +106,14 @@ def _steuerampel(zvE: float, titel: str = "") -> None:
     zc1, zc2, zc3, zc4 = st.columns(4)
     zc1.metric("Grenzsteuersatz", f"{gst:.1%}".replace(".", ","),
                help="Steuersatz auf jeden zusätzlichen Euro Einkommen.")
-    zc2.metric("zvE aktuell", f"{_de(zvE)} €/Jahr")
-    _est = einkommensteuer(zvE)
-    _soli = solidaritaetszuschlag(_est)
+    _zvE_label = "zvE Haushalt" if splitting else "zvE aktuell"
+    zc2.metric(_zvE_label, f"{_de(zvE)} €/Jahr")
+    if splitting:
+        _est  = einkommensteuer_splitting(zvE)
+        _soli = 2 * solidaritaetszuschlag(einkommensteuer(zvE_ind))
+    else:
+        _est  = einkommensteuer(zvE)
+        _soli = solidaritaetszuschlag(_est)
     zc3.metric("Jahressteuer (ESt + Soli)",
                f"{_de(_est + _soli)} €",
                help=f"ESt: {_de(_est)} € + Soli: {_de(_soli, 2)} € (5,5 % ab 17.543 € ESt)")
@@ -345,10 +359,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             # ── Steuerampel ───────────────────────────────────────────────────
             if veranlagung == "Zusammen":
                 st.caption(
-                    f"Steuerampel auf Basis des effektiven zvE pro Person bei Splitting "
-                    f"(zvE gesamt {_de(_zvE_dash)} € ÷ 2)."
+                    f"Steuerampel auf Basis des gemeinsamen Haushalts-zvE bei Splitting "
+                    f"(§ 32a Abs. 5 EStG). Grenzen = 2 × Einzelperson."
                 )
-                _steuerampel(_zvE_dash / 2)
+                _steuerampel(_zvE_dash, splitting=True)
             else:
                 ac1, ac2 = st.columns(2)
                 with ac1:
