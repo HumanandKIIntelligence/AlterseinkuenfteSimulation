@@ -101,6 +101,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                                                   gehalt_monatlich=_g_sim)
             _sz_jd[_nm] = {r["Jahr"]: r for r in _jd_n}
 
+        _vor_rente = betrachtungsjahr < _start_ret
+
         # ── Szenario-Vergleich Tabelle ────────────────────────────────────────
         _phase_label = " (Erwerbsphase)" if _vor_rente else ""
         st.subheader(f"Vergleich der drei Szenarien – {betrachtungsjahr}{_phase_label}")
@@ -147,7 +149,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         st.divider()
 
         # ── Nettorente / Haushalt Szenarien ───────────────────────────────────
-        _vor_rente = betrachtungsjahr < _start_ret
         col_l, col_r = st.columns(2)
 
         with col_l:
