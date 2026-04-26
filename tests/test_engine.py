@@ -19,6 +19,8 @@ from engine import (
     BBG_KV_MONATLICH,
     SPARERPAUSCHBETRAG,
     MINDEST_BMG_FREIWILLIG_MONO,
+    altersentlastungsbetrag,
+    _pv_satz,
     AKTUELLES_JAHR,
     einkommensteuer,
     einkommensteuer_splitting,
@@ -1764,9 +1766,10 @@ class TestKirchensteuer:
 
 class TestMieteinnahmenSplit:
     def _paar(self):
-        p1 = _profil(geburtsjahr=1958, renteneintritt_alter=67,
+        # Geburtsjahr 1975/1977: erstjahr AEB = 2040/2042 → AEB = 0, kein Einfluss auf zvE-Split
+        p1 = _profil(geburtsjahr=1975, renteneintritt_alter=67,
                      aktuelle_punkte=35.0, punkte_pro_jahr=0.0, rentenanpassung_pa=0.0)
-        p2 = _profil(geburtsjahr=1960, renteneintritt_alter=67,
+        p2 = _profil(geburtsjahr=1977, renteneintritt_alter=67,
                      aktuelle_punkte=25.0, punkte_pro_jahr=0.0, rentenanpassung_pa=0.0)
         return p1, p2, berechne_rente(p1), berechne_rente(p2)
 
@@ -1802,3 +1805,179 @@ class TestMieteinnahmenSplit:
         _, jd_getrennt = _netto_ueber_horizont(p1, e1, [], 5, miete, 0.0,
                                                 profil2=p2, ergebnis2=e2, veranlagung="Getrennt")
         assert jd_getrennt[0]["Steuer_Progressiv"] < jd_allein[0]["Steuer_Progressiv"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Altersentlastungsbetrag § 24a EStG
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAltersentlastungsbetrag:
+    def test_2005_tabellenwert(self):
+        """Geboren 1940: erstjahr 2005 → 40 % / max 1.900 €."""
+        assert altersentlastungsbetrag(1940, 5_000) == pytest.approx(1_900.0)
+
+    def test_2005_unter_max(self):
+        """Qualifying unter Höchstbetrag: nur Prozentsatz."""
+        assert altersentlastungsbetrag(1940, 1_000) == pytest.approx(400.0)
+
+    def test_phase_a_2010(self):
+        """Geboren 1945: erstjahr 2010 → 5 Schritte aus Phase A.
+        Anteil = 40 % − 5×1,6 % = 32 %; Max = 1.900 − 5×76 = 1.520 €."""
+        anteil = 0.40 - 5 * 0.016
+        max_b  = 1_900 - 5 * 76
+        assert altersentlastungsbetrag(1945, 10_000) == pytest.approx(max_b)
+        assert altersentlastungsbetrag(1945, 1_000)  == pytest.approx(1_000 * anteil)
+
+    def test_phase_a_grenze_2020(self):
+        """Geboren 1955: erstjahr 2020 → letztes Phase-A-Jahr.
+        Anteil = 40 % − 15×1,6 % = 16 %; Max = 1.900 − 15×76 = 760 €."""
+        assert altersentlastungsbetrag(1955, 10_000) == pytest.approx(760.0)
+        assert altersentlastungsbetrag(1955, 1_000)  == pytest.approx(160.0)
+
+    def test_phase_b_2025(self):
+        """Geboren 1960: erstjahr 2025 → 5 Schritte Phase B ab 2020.
+        Anteil = 16 % − 5×0,8 % = 12 %; Max = 760 − 5×38 = 570 €."""
+        anteil = 0.16 - 5 * 0.008
+        max_b  = 760 - 5 * 38
+        assert altersentlastungsbetrag(1960, 10_000) == pytest.approx(max_b)
+        assert altersentlastungsbetrag(1960, 1_000)  == pytest.approx(1_000 * anteil)
+
+    def test_ab_2040_null(self):
+        """Geboren 1975: erstjahr 2040 → AEB = 0."""
+        assert altersentlastungsbetrag(1975, 50_000) == 0.0
+        assert altersentlastungsbetrag(1980, 50_000) == 0.0
+
+    def test_kein_qualifying_einfluss(self):
+        """Kein qualifizierendes Einkommen → immer 0."""
+        assert altersentlastungsbetrag(1945, 0.0) == 0.0
+
+    def test_bereits_genutzt_cap(self):
+        """bereits_genutzt reduziert den Restbetrag (Cap-Schutz für berechne_haushalt)."""
+        # Born 1955: max 760 €; wenn 600 € bereits genutzt, bleiben 160 €
+        rest = altersentlastungsbetrag(1955, 10_000, bereits_genutzt=600.0)
+        assert rest == pytest.approx(160.0)
+
+    def test_bereits_genutzt_vollstaendig_ausgeschoepft(self):
+        """Wenn bereits_genutzt ≥ max → 0."""
+        assert altersentlastungsbetrag(1955, 10_000, bereits_genutzt=760.0) == 0.0
+        assert altersentlastungsbetrag(1955, 10_000, bereits_genutzt=900.0) == 0.0
+
+    def test_monoton_in_qualifying(self):
+        """Mehr qualifizierendes Einkommen → mehr oder gleich AEB (bis Cap)."""
+        gbj = 1950
+        for q_low, q_high in [(0, 500), (500, 1_000), (1_000, 5_000)]:
+            assert (altersentlastungsbetrag(gbj, q_high)
+                    >= altersentlastungsbetrag(gbj, q_low))
+
+    def test_berechne_rente_weniger_steuer_mit_privaterente(self):
+        """PrivRV-Ertragsanteil mindert zvE via AEB – ältere Person (born 1955)."""
+        p_basis = _profil(geburtsjahr=1955, renteneintritt_alter=67, bereits_rentner=True,
+                          rentenbeginn_jahr=2022, aktuelles_brutto_monatlich=2_000.0)
+        p_rv    = _profil(geburtsjahr=1955, renteneintritt_alter=67, bereits_rentner=True,
+                          rentenbeginn_jahr=2022, aktuelles_brutto_monatlich=2_000.0,
+                          zusatz_monatlich=500.0, zusatz_typ="PrivateRente")
+        e_basis = berechne_rente(p_basis)
+        e_rv    = berechne_rente(p_rv)
+        # PrivRV-Ertragsanteil qualifiziert für AEB → zvE-Differenz kleiner als bloßer Ertragsanteil
+        ea = e_rv.zvE_jahres - e_basis.zvE_jahres + e_rv.altersentlastungsbetrag_jahres
+        assert e_rv.altersentlastungsbetrag_jahres > 0.0
+        assert e_rv.zvE_jahres < e_basis.zvE_jahres + 500 * 12 * 0.22  # 22% = ertragsanteil(67)
+
+    def test_berechne_rente_bav_kein_aeb(self):
+        """bAV qualifiziert NICHT für AEB → altersentlastungsbetrag_jahres = 0."""
+        p = _profil(geburtsjahr=1955, renteneintritt_alter=67, bereits_rentner=True,
+                    rentenbeginn_jahr=2022, aktuelles_brutto_monatlich=2_000.0,
+                    zusatz_monatlich=500.0, zusatz_typ="bAV")
+        e = berechne_rente(p)
+        assert e.altersentlastungsbetrag_jahres == 0.0
+
+    def test_netto_horizont_aeb_reduziert_steuer(self):
+        """In _netto_ueber_horizont: Ältere Person mit PrivRV zahlt weniger Steuer (AEB)."""
+        p_basis = _profil(geburtsjahr=1955, renteneintritt_alter=67, bereits_rentner=True,
+                          rentenbeginn_jahr=2022, aktuelles_brutto_monatlich=2_000.0)
+        p_rv    = _profil(geburtsjahr=1955, renteneintritt_alter=67, bereits_rentner=True,
+                          rentenbeginn_jahr=2022, aktuelles_brutto_monatlich=2_000.0,
+                          zusatz_monatlich=500.0, zusatz_typ="PrivateRente")
+        e_basis = berechne_rente(p_basis)
+        e_rv    = berechne_rente(p_rv)
+        prod = VorsorgeProdukt(
+            id="rv", typ="PrivateRente", name="PrivRV", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=500.0, laufzeit_jahre=0,
+            fruehestes_startjahr=2022, spaetestes_startjahr=2022, aufschub_rendite=0.0,
+        )
+        _, jd_basis = _netto_ueber_horizont(p_basis, e_basis, [], 5)
+        _, jd_rv    = _netto_ueber_horizont(p_rv,    e_rv,    [(prod, 2022, 0.0)], 5)
+        # PrivRV erhöht Brutto, aber AEB dämpft Steuererhöhung
+        assert jd_rv[0]["Steuer_Progressiv"] > jd_basis[0]["Steuer_Progressiv"]   # mehr Einkommen
+        assert jd_rv[0]["Netto"] > jd_basis[0]["Netto"]                            # trotzdem mehr netto
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PV-Kinderstaffelung § 55 Abs. 3a SGB XI
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPVKinderstaffelung:
+    def test_null_kinder(self):
+        """0 Kinder: Kinderlosenzuschlag 0,6 % → 4,0 % / 2,3 %."""
+        assert _pv_satz(0) == (0.040, 0.023)
+
+    def test_ein_kind(self):
+        """1 Kind: Basissatz 3,4 % / 1,7 % (kein Abschlag)."""
+        assert _pv_satz(1) == (0.034, 0.017)
+
+    def test_zwei_kinder(self):
+        """2 Kinder: −0,25 % → 3,15 % / 1,45 %."""
+        voll, halb = _pv_satz(2)
+        assert voll == pytest.approx(0.0315)
+        assert halb == pytest.approx(0.0145)
+
+    def test_fuenf_kinder_maximum(self):
+        """5 Kinder (Maximum): −1,0 % → 2,4 % / 0,7 %."""
+        assert _pv_satz(5) == (0.024, 0.007)
+
+    def test_mehr_als_fuenf_wie_fuenf(self):
+        """≥5 Kinder: gleicher Satz wie 5 Kinder."""
+        assert _pv_satz(6) == _pv_satz(5)
+        assert _pv_satz(10) == _pv_satz(5)
+
+    def test_monoton_abnehmend(self):
+        """Mehr Kinder → geringerer PV-Beitrag."""
+        for n in range(5):
+            v_low, h_low   = _pv_satz(n)
+            v_high, h_high = _pv_satz(n + 1)
+            assert v_high <= v_low
+            assert h_high <= h_low
+
+    def test_berechne_rente_fuenf_kinder_weniger_kv(self):
+        """5 Kinder zahlen weniger PV als 1 Kind (KVdR-Fall)."""
+        p1 = _profil(geburtsjahr=1958, kinder=True, kinder_anzahl=1, krankenversicherung="GKV",
+                     kvdr_pflicht=True, bereits_rentner=True, rentenbeginn_jahr=2022,
+                     aktuelles_brutto_monatlich=2_000.0)
+        p5 = _profil(geburtsjahr=1958, kinder=True, kinder_anzahl=5, krankenversicherung="GKV",
+                     kvdr_pflicht=True, bereits_rentner=True, rentenbeginn_jahr=2022,
+                     aktuelles_brutto_monatlich=2_000.0)
+        e1 = berechne_rente(p1)
+        e5 = berechne_rente(p5)
+        assert e5.kv_pv_monatlich < e1.kv_pv_monatlich
+
+    def test_berechne_rente_null_kinder_teurer(self):
+        """0 Kinder zahlen mehr PV als 1 Kind (Kinderlosenzuschlag)."""
+        p0 = _profil(geburtsjahr=1958, kinder=False, kinder_anzahl=0,
+                     krankenversicherung="GKV", kvdr_pflicht=True, bereits_rentner=True,
+                     rentenbeginn_jahr=2022, aktuelles_brutto_monatlich=2_000.0)
+        p1 = _profil(geburtsjahr=1958, kinder=True, kinder_anzahl=1,
+                     krankenversicherung="GKV", kvdr_pflicht=True, bereits_rentner=True,
+                     rentenbeginn_jahr=2022, aktuelles_brutto_monatlich=2_000.0)
+        e0 = berechne_rente(p0)
+        e1 = berechne_rente(p1)
+        assert e0.kv_pv_monatlich > e1.kv_pv_monatlich
+
+    def test_kinder_bool_false_entspricht_null_kinder(self):
+        """kinder=False → _pv_satz(0) unabhängig von kinder_anzahl."""
+        p = _profil(geburtsjahr=1970, kinder=False, kinder_anzahl=3,
+                    krankenversicherung="GKV", kvdr_pflicht=True)
+        e = berechne_rente(p)
+        p_ref = _profil(geburtsjahr=1970, kinder=False, kinder_anzahl=0,
+                        krankenversicherung="GKV", kvdr_pflicht=True)
+        e_ref = berechne_rente(p_ref)
+        assert e.kv_pv_monatlich == pytest.approx(e_ref.kv_pv_monatlich)

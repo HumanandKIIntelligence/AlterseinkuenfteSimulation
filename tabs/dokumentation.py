@@ -33,7 +33,8 @@ def render(T: dict) -> None:
         - Vorsorgeprodukte: bAV, Riester, Rürup, Lebensversicherung, ETF-Depot, private RV
         - Sparkapital und monatlicher Sparrate bis zum Renteneintritt
         - Einkommensteuer nach § 32a EStG (Grundtarif 2024) inkl. Solidaritätszuschlag, Kirchensteuer und Progressionszone-Ampel
-        - Kranken- und Pflegeversicherung in der Rente (GKV/PKV/Beihilfe)
+        - Altersentlastungsbetrag (§ 24a EStG) für Personen ab 65 Jahren
+        - Kranken- und Pflegeversicherung in der Rente (GKV/PKV/Beihilfe) mit PV-Kinderstaffelung (§ 55 Abs. 3a SGB XI)
         - Dienstunfähigkeitsversicherung (DUV) und Berufsunfähigkeitsversicherung (BUV)
         - Mieteinnahmen als Haushaltseinkommen (§ 21 EStG)
         - Ehegatten-Splitting bei Zusammenveranlagung (§ 32a Abs. 5 EStG)
@@ -118,6 +119,47 @@ def render(T: dict) -> None:
 
             **BUV** ist für GRV-Versicherte (Nicht-Beamte). Die gesetzliche
             Erwerbsminderungsrente wird stattdessen als „Bereits in Rente" erfasst.
+            """)
+
+        # ── Altersentlastungsbetrag ────────────────────────────────────────────
+        with st.expander("🎁 Altersentlastungsbetrag – § 24a EStG"):
+            st.markdown("""
+            Steuerpflichtige, die zu Beginn des Veranlagungszeitraums das 64. Lebensjahr
+            vollendet haben, erhalten einen Altersentlastungsbetrag auf qualifizierende
+            Einkünfte. Der Betrag richtet sich nach dem **Jahr des erstmaligen Bezugs**
+            (= Geburtsjahr + 65) und wird jährlich abgebaut.
+
+            **Qualifizierende Einkunftsarten:**
+
+            | Einkunftsart | Qualifizierend? | Hinweis |
+            |---|---|---|
+            | Gesetzliche Rente (§ 22 Nr. 1 S. 3a aa EStG) | ❌ Nein | Abgegolten durch Besteuerungsanteil |
+            | Rürup-Rente (§ 22 Nr. 1 S. 3a aa EStG) | ❌ Nein | Gleiche Vorschrift |
+            | bAV, Beamtenpension (§ 19 Abs. 2 EStG) | ❌ Nein | Versorgungsbezüge |
+            | Arbeitslohn (§ 19 EStG, kein Versorgungsbezug) | ✅ Ja | Z. B. Teilzeit in Rente |
+            | Ertragsanteil private RV / DUV / BUV (§ 22 Nr. 1 S. 3a bb) | ✅ Ja | |
+            | Riester (§ 22 Nr. 5 EStG) | ✅ Ja | |
+            | Mieteinnahmen (§ 21 EStG) | ✅ Ja | |
+
+            **Phase-out-Tabelle (Auszug):**
+
+            | Erstjahr (Geburtsjahr + 65) | Prozentsatz | Höchstbetrag |
+            |---|---|---|
+            | bis 2005 | 40,0 % | 1.900 € |
+            | 2010 | 32,0 % | 1.520 € |
+            | 2020 | 16,0 % | 760 € |
+            | 2025 | 12,0 % | 570 € |
+            | 2030 | 8,0 % | 380 € |
+            | ab 2040 | 0 % | 0 € |
+
+            **Beispiel:** Person geboren 1960, Erstjahr AEB = 2025 → 12,0 % auf qualifizierendes
+            Einkommen, maximal 570 €/Jahr. Bei 400 € PrivRV-Ertragsanteil/Jahr:
+            AEB = min(400 × 12 % = 48 €, 570 €) = 48 €.
+
+            **Umsetzung:** Der AEB wird in `berechne_rente()` und im Jahres-Simulationsloop
+            (`_netto_ueber_horizont()`) automatisch angewendet. Bei Mieteinnahmen über
+            `berechne_haushalt()` wird der verbleibende Restbetrag (nach Abzug der
+            bereits genutzten AEB-Summe aus `berechne_rente()`) berücksichtigt.
             """)
 
         # ── Einkommensteuer ────────────────────────────────────────────────────
@@ -216,8 +258,12 @@ def render(T: dict) -> None:
             |---|---|---|
             | KV-Basis | 7,3 % | Rentner zahlt die Hälfte; DRV übernimmt die andere Hälfte |
             | KV-Zusatzbeitrag | ½ × kassenbezogener Zusatzbeitrag | Rentner |
-            | PV mit Kindern | 3,4 % | Rentner trägt voll |
-            | PV ohne Kinder | 4,0 % | Rentner trägt voll |
+            | PV 1 Kind | 3,4 % | Rentner trägt voll |
+            | PV 2 Kinder | 3,15 % | −0,25 % Abschlag ab 2. Kind |
+            | PV 3 Kinder | 2,90 % | −0,50 % Abschlag |
+            | PV 4 Kinder | 2,65 % | −0,75 % Abschlag |
+            | PV 5+ Kinder | 2,40 % | −1,00 % Abschlag (Maximum) |
+            | PV ohne Kinder | 4,0 % | inkl. Kinderlosenzuschlag 0,6 % |
 
             ---
 
@@ -267,6 +313,37 @@ def render(T: dict) -> None:
             **Privat versichert (PKV):**
             Der PKV-Beitrag wird als fixer Monatsbetrag eingegeben. Der DRV-Beitragszuschuss
             ist vereinfacht nicht gesondert ausgewiesen.
+            """)
+
+        # ── PV-Kinderstaffelung ────────────────────────────────────────────────
+        with st.expander("👶 PV-Kinderstaffelung – § 55 Abs. 3a SGB XI"):
+            st.markdown("""
+            Seit dem **01.07.2023** staffelt sich der Pflegeversicherungsbeitrag nach
+            der Anzahl der Kinder (§ 55 Abs. 3a SGB XI). Der Abschlag gilt nur für den
+            **eigenen Anteil** des Versicherten, nicht für den Arbeitgeber- bzw. DRV-Anteil.
+
+            **Beitragssätze 2024 (eigener Anteil):**
+
+            | Kinder | Voller Satz (freiwillig GKV) | Halber Satz (KVdR / AN) |
+            |---|---|---|
+            | 0 (kinderlos) | 4,00 % | 2,30 % |
+            | 1 | 3,40 % | 1,70 % |
+            | 2 | 3,15 % | 1,45 % |
+            | 3 | 2,90 % | 1,20 % |
+            | 4 | 2,65 % | 0,95 % |
+            | 5+ | 2,40 % | 0,70 % |
+
+            **Kinderlosenzuschlag:** 0,6 % trägt der Versicherte allein (bei 0 Kindern).
+
+            **Abschlag:** Ab dem 2. Kind je −0,25 % auf den eigenen PV-Anteil;
+            maximal −1,0 % bei 5 oder mehr Kindern.
+
+            **Nachweis:** Kinder müssen der Pflegekasse nachgewiesen werden. Die App
+            nimmt keine automatische Altersgrenze (Kinder unter 25 J.) an – der
+            Nutzer gibt die relevante Kinderzahl direkt ein.
+
+            **Eingabe:** Im Tab „Profil" bei GKV-Wahl erscheint bei aktivierter
+            Checkbox „Hat Kinder" ein Zahlenfeld „Anzahl Kinder (1–5)".
             """)
 
         # ── Vorsorge-Bausteine ─────────────────────────────────────────────────

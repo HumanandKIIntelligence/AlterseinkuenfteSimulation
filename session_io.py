@@ -52,6 +52,7 @@ _PROFIL_LADE_DEFAULTS: dict = {
     "kvdr_pflicht":              True,
     "kirchensteuer":             False,
     "kirchensteuer_satz":        0.09,
+    "kinder_anzahl":             1,
 }
 
 

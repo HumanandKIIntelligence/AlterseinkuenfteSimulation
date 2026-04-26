@@ -7,8 +7,10 @@ Eine interaktive Web-App zur Simulation und Optimierung des Renteneinkommens. Be
 - **Gesetzliche Rente & Beamtenpension** – DRV-Rentenpunkt-System oder direkte Pensionseingabe mit Versorgungsfreibetrag (§ 19 Abs. 2 EStG)
 - **Vorsorgebausteine** – bAV, Riester, Rürup, Lebensversicherung, ETF-Depot, private Rentenversicherung; mit korrekter Steuer- und KV-Behandlung je Produkttyp
 - **Einkommensteuer** – §32a EStG Grundtarif 2024 inkl. Solidaritätszuschlag und Kirchensteuer (8 %/9 %)
+- **Altersentlastungsbetrag** – §24a EStG; automatisch für Personen ab 65, qualifizierend: PrivRV-Ertragsanteil, Riester, BUV/DUV, Mieteinnahmen, Arbeitslohn (nicht GRV/Rürup/bAV)
 - **Ehegatten-Splitting** – §32a Abs. 5 EStG; Haushalt-Tab zeigt Splitting-Vorteil
-- **Kranken- und Pflegeversicherung** – GKV (KVdR-Pflicht vs. freiwillig §240 SGB V) und PKV; korrekte bAV-Freibetragslogik und BBG-Deckelung
+- **Kranken- und Pflegeversicherung** – GKV (KVdR-Pflicht vs. freiwillig §240 SGB V) und PKV; korrekte bAV-Freibetragslogik, BBG-Deckelung und PV-Kinderstaffelung (§55 Abs. 3a SGB XI)
+- **PV-Kinderstaffelung** – §55 Abs. 3a SGB XI; 0–5 Kinder: Abschlag von −0,25 % je Kind ab dem 2. Kind (max. −1,0 %)
 - **Szenarien** – Pessimistisch / Neutral / Optimistisch mit exakter Jahres-Simulation je Szenario
 - **Entnahme-Optimierung** – Brute-Force über alle Startjahr × Auszahlungsart-Kombinationen; Kapitalverzehr-Kalkulator
 - **Mieteinnahmen** – §21 EStG; jährliche Steigerung konfigurierbar
@@ -71,7 +73,7 @@ docker compose logs -f
 docker exec altereinkuenfte-app python -m pytest tests/ -v
 ```
 
-Alle Berechnungslogiken in `engine.py` sind durch Unit-Tests abgedeckt (121 Tests).
+Alle Berechnungslogiken in `engine.py` sind durch Unit-Tests abgedeckt (215 Tests).
 
 ## Projektstruktur
 
@@ -102,10 +104,12 @@ data/               – Gespeicherte Profile (JSON)
 | §22 EStG / JStG 2022 | Besteuerungsanteil Rente (ab 2023: +0,5 %/Jahr) |
 | §19 Abs. 2 EStG | Versorgungsfreibetrag Beamtenpension |
 | §22 Nr. 1 S. 3a bb EStG | Ertragsanteil private RV / DUV / BUV |
+| §24a EStG | Altersentlastungsbetrag für Personen ab 64 Jahren |
 | §51a EStG | Solidaritätszuschlag und Kirchensteuer |
 | §226 Abs. 2 SGB V | bAV-Freibetrag KVdR (187,25 €/Mon.) |
 | §229 SGB V | Versorgungsbezüge KVdR-pflichtig |
 | §240 SGB V | Freiwillig GKV: alle Einkünfte beitragspflichtig |
+| §55 Abs. 3a SGB XI | PV-Kinderstaffelung: −0,25 % je Kind ab dem 2. Kind |
 | §77 SGB VI | Rentenabschlag 0,3 %/Monat Frühverrentung |
 
 ## Haftungsausschluss

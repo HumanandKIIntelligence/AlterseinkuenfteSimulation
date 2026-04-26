@@ -339,8 +339,8 @@ def render(
         _row_get = _row_for_year(_jd_get, betrachtungsjahr)
 
         # Fallback auf Eintrittsmonat wenn kein Jahreseintrag verfügbar
-        hh_zusammen = berechne_haushalt(e1, e2, "Zusammen", mieteinnahmen)
-        hh_getrennt  = berechne_haushalt(e1, e2, "Getrennt",  mieteinnahmen)
+        hh_zusammen = berechne_haushalt(e1, e2, "Zusammen", mieteinnahmen, p1, p2)
+        hh_getrennt  = berechne_haushalt(e1, e2, "Getrennt",  mieteinnahmen, p1, p2)
         _st_zus = _row_zus["Steuer"] / 12 if _row_zus else hh_zusammen["steuer_gesamt"]
         _st_get = _row_get["Steuer"] / 12 if _row_get else hh_getrennt["steuer_gesamt"]
         _nt_zus = _row_zus["Netto"]  / 12 if _row_zus else hh_zusammen["netto_gesamt"]

@@ -150,7 +150,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         # ZUSAMMEN-ANSICHT
         # ══════════════════════════════════════════════════════════════════════
         if zusammen_modus:
-            hh = berechne_haushalt(ergebnis, ergebnis2, veranlagung, mieteinnahmen)
+            hh = berechne_haushalt(ergebnis, ergebnis2, veranlagung, mieteinnahmen, profil, profil2)
 
             # Jahressimulationen für Slider (HH kombiniert + Einzelpersonen)
             _g_p1 = 0.0 if profil.ist_pensionaer  or profil.bereits_rentner  else profil.aktuelles_brutto_monatlich

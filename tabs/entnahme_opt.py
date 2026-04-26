@@ -764,7 +764,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         st.caption(
             "⚠️ Simulation auf Basis der Rechtslage 2024. "
-            "Solidaritätszuschlag, Kirchensteuer (auf progressive ESt) und Sparerpauschbetrag "
+            "Solidaritätszuschlag, Kirchensteuer (auf progressive ESt), Sparerpauschbetrag, "
+            "Altersentlastungsbetrag (§ 24a EStG) und PV-Kinderstaffelung (§ 55 Abs. 3a SGB XI) "
             "sind berücksichtigt. "
             "Kirchensteuer auf Abgeltungsteuer sowie weitere individuelle Freibeträge "
             "sind nicht modelliert. Steuerberatung empfohlen."

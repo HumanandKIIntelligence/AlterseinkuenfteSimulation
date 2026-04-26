@@ -33,6 +33,13 @@ _VFB_2005 = (0.40, 3_000, 900)
 _VFB_SCHRITT_A = (0.016, 120, 36)   # 2006–2020
 _VFB_SCHRITT_B = (0.008,  60, 18)   # 2021–2039
 
+# Altersentlastungsbetrag § 24a EStG – für Steuerpflichtige ab 64 Jahren
+# Erstjahr = geburtsjahr + 65 (Veranlagungszeitraum nach Vollendung des 64. Lebensjahrs)
+# 2005: 40 %/1.900 €; 2006–2020: −1,6 %/−76 €/Jahr; 2021–2039: −0,8 %/−38 €/Jahr; ab 2040: 0
+_AEB_2005      = (0.40, 1_900)
+_AEB_SCHRITT_A = (0.016,   76)      # 2006–2020
+_AEB_SCHRITT_B = (0.008,   38)      # 2021–2039
+
 
 def versorgungsfreibetrag(ruhestand_jahr: int, pension_jahres: float) -> float:
     """Versorgungsfreibetrag § 19 Abs. 2 EStG 2024 für Beamtenpensionen.
@@ -61,6 +68,37 @@ def versorgungsfreibetrag(ruhestand_jahr: int, pension_jahres: float) -> float:
         zuschlag   = zuschlag_2020   - n * _VFB_SCHRITT_B[2]
     return max(0.0, min(pension_jahres * anteil, float(max_betrag)) + zuschlag)
 
+
+def altersentlastungsbetrag(
+    geburtsjahr: int,
+    qualifying_jahres: float,
+    bereits_genutzt: float = 0.0,
+) -> float:
+    """Altersentlastungsbetrag § 24a EStG.
+
+    Qualifizierendes Einkommen: Arbeitslohn (§ 19, kein Versorgungsbezug), Ertragsanteil
+    PrivateRente (§ 22 Nr. 1 S. 3a bb), Riester (§ 22 Nr. 5), BUV/DUV-Ertragsanteil,
+    Mieteinnahmen (§ 21).
+    Nicht qualifizierend: GRV (§ 22 Nr. 1 S. 3a aa), Rürup, bAV, Beamtenpension (§ 19 Abs. 2).
+    bereits_genutzt: Bereits beanspruchter Betrag (für berechne_haushalt Cap-Schutz).
+    """
+    erstjahr = geburtsjahr + 65
+    if erstjahr >= 2040:
+        return 0.0
+    if erstjahr <= 2005:
+        anteil, max_betrag = _AEB_2005
+    elif erstjahr <= 2020:
+        n = erstjahr - 2005
+        anteil    = _AEB_2005[0] - n * _AEB_SCHRITT_A[0]
+        max_betrag = _AEB_2005[1] - n * _AEB_SCHRITT_A[1]
+    else:
+        n = erstjahr - 2020
+        anteil    = max(0.0, (_AEB_2005[0] - 15 * _AEB_SCHRITT_A[0]) - n * _AEB_SCHRITT_B[0])
+        max_betrag = max(0.0, (_AEB_2005[1] - 15 * _AEB_SCHRITT_A[1]) - n * _AEB_SCHRITT_B[1])
+    remaining = max(0.0, max_betrag - bereits_genutzt)
+    return min(qualifying_jahres * anteil, remaining)
+
+
 # Ertragsanteil-Tabelle § 22 Nr. 1 S. 3a bb EStG (Anlage, vollständige gesetzliche Tabelle)
 _ERTRAGSANTEIL: dict[int, int] = {
     0: 59, 1: 59, 2: 58, 3: 58, 4: 57, 5: 57, 6: 56, 7: 56, 8: 56,
@@ -84,6 +122,19 @@ def ertragsanteil(alter: int) -> float:
     if alter < 0:
         return 0.59
     return _ERTRAGSANTEIL.get(alter, 1) / 100
+
+
+def _pv_satz(kinder_anzahl: int) -> tuple[float, float]:
+    """PV-Beitragssatz § 55 Abs. 1 und 3a SGB XI 2024. Returns (pv_voll, pv_halb).
+
+    0 Kinder: Kinderlosenzuschlag 0,6 % trägt Versicherter allein (4,0 % / 2,3 %).
+    1 Kind: Basissatz 3,4 % / 1,7 %. Ab 2. Kind: −0,25 % je Kind auf eigenen Anteil.
+    """
+    n = max(0, min(kinder_anzahl, 5))
+    if n == 0:
+        return 0.040, 0.023
+    abschlag = (n - 1) * 0.0025
+    return round(0.034 - abschlag, 4), round(0.017 - abschlag, 4)
 
 
 # ── Steuerformeln (§ 32a EStG Grundtarif 2024) ────────────────────────────────
@@ -144,6 +195,7 @@ class Profil:
     pkv_beitrag: float = 500.0         # €/Monat, nur bei PKV
     gkv_zusatzbeitrag: float = 0.017   # kassenindividueller Zusatzbeitrag
     kinder: bool = True
+    kinder_anzahl: int = 1          # Anzahl Kinder (PV-Kinderstaffelung § 55 Abs. 3a SGB XI)
 
     zusatz_typ: str = "bAV"   # "bAV" | "Riester" | "Rürup" | "PrivateRente"
 
@@ -205,6 +257,7 @@ class RentenErgebnis:
     kv_gkv_monatlich: float = 0.0         # GKV-Anteil (Krankenkasse, ohne PV)
     kv_pv_monatlich: float = 0.0          # PV-Anteil (Pflegekasse)
     kirchensteuer_monatlich: float = 0.0  # Kirchensteuer (in steuer_monatlich enthalten)
+    altersentlastungsbetrag_jahres: float = 0.0  # genutzter AEB § 24a EStG (Cap für berechne_haushalt)
 
 
 # ── Kernberechnungen ──────────────────────────────────────────────────────────
@@ -304,6 +357,18 @@ def berechne_rente(p: Profil) -> RentenErgebnis:  # noqa: C901
         zvE = max(0.0, brutto_gesetzlich * 12 * ba + zusatz_zvE + buv_zvE_j
                   - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG)
 
+    # ── Altersentlastungsbetrag § 24a EStG ────────────────────────────────────
+    # Qualifizierend: §22 Nr.1 S.3a bb (PrivRV-Ertragsanteil, BUV/DUV), §22 Nr.5 (Riester)
+    # Nicht qualifizierend: GRV/Rürup (§22 Nr.1 S.3a aa), bAV/Pension (§19 Abs.2)
+    if p.ist_pensionaer:
+        _aeb_qualifying = duv_zvE_j
+    else:
+        _aeb_qualifying = buv_zvE_j
+        if p.zusatz_typ in ("PrivateRente", "Riester"):
+            _aeb_qualifying += zusatz_zvE
+    _aeb_j = altersentlastungsbetrag(p.geburtsjahr, _aeb_qualifying)
+    zvE = max(0.0, zvE - _aeb_j)
+
     jahressteuer     = einkommensteuer(zvE)
     kist_j           = p.kirchensteuer_satz * jahressteuer if p.kirchensteuer else 0.0
     steuer_monatlich = (jahressteuer + kist_j) / 12
@@ -314,8 +379,7 @@ def berechne_rente(p: Profil) -> RentenErgebnis:  # noqa: C901
         kv_gkv = p.pkv_beitrag
         kv_pv  = 0.0
     else:
-        _pv_halb = 0.017 if p.kinder else 0.023   # KVdR/AN-Anteil PV
-        _pv_voll = 0.034 if p.kinder else 0.040   # Freiwillig: voller PV-Satz
+        _pv_voll, _pv_halb = _pv_satz(p.kinder_anzahl if p.kinder else 0)
         if p.ist_pensionaer:
             # Beamtenversorgung freiwillig GKV: kein DRV-Trägeranteil, kein bAV-Freibetrag
             # §229 Abs. 1 Nr. 1 SGB V: volle Pensionsbasis (kein GRV-Beitragszuschuss)
@@ -362,6 +426,7 @@ def berechne_rente(p: Profil) -> RentenErgebnis:  # noqa: C901
         kv_gkv_monatlich=kv_gkv,
         kv_pv_monatlich=kv_pv,
         kirchensteuer_monatlich=kist_j / 12,
+        altersentlastungsbetrag_jahres=_aeb_j,
     )
 
 
@@ -387,18 +452,30 @@ def berechne_haushalt(
     erg2: "RentenErgebnis | None",
     veranlagung: str,           # "Zusammen" | "Getrennt"
     mieteinnahmen_monatlich: float = 0.0,
+    profil1: "Profil | None" = None,
+    profil2: "Profil | None" = None,
 ) -> dict:
     """Haushalts-Nettoeinkommen mit optionalem Splitting und Mieteinnahmen.
 
     Mieteinnahmen (§ 21 EStG): voll steuerpflichtig, keine KV-Pflicht.
     Bei Getrennte Veranlagung werden die Mieteinnahmen 50/50 aufgeteilt.
+    profil1/profil2: optional; wenn vorhanden wird AEB § 24a auf Mieteinnahmen angewendet.
     """
     miet_jahres = mieteinnahmen_monatlich * 12
+
+    def _aeb_miet(profil: "Profil | None", erg: RentenErgebnis, miet_anteil: float) -> float:
+        if profil is None or miet_anteil <= 0:
+            return 0.0
+        return altersentlastungsbetrag(
+            profil.geburtsjahr, miet_anteil,
+            bereits_genutzt=erg.altersentlastungsbetrag_jahres,
+        )
 
     if erg2 is None:
         brutto = erg1.brutto_monatlich + mieteinnahmen_monatlich
         kv = erg1.kv_monatlich
-        zvE = erg1.zvE_jahres + miet_jahres
+        _aeb1 = _aeb_miet(profil1, erg1, miet_jahres)
+        zvE = max(0.0, erg1.zvE_jahres + miet_jahres - _aeb1)
         steuer = einkommensteuer(zvE) / 12
         return {
             "netto_gesamt": brutto - steuer - kv,
@@ -411,14 +488,18 @@ def berechne_haushalt(
     brutto = erg1.brutto_monatlich + erg2.brutto_monatlich + mieteinnahmen_monatlich
     kv = erg1.kv_monatlich + erg2.kv_monatlich
 
-    # Getrennte Veranlagung: Mieteinnahmen 50/50 aufgeteilt
+    # Getrennte Veranlagung: Mieteinnahmen 50/50 aufgeteilt; AEB je Person auf eigenen Anteil
+    _aeb1_get = _aeb_miet(profil1, erg1, miet_jahres / 2)
+    _aeb2_get = _aeb_miet(profil2, erg2, miet_jahres / 2) if erg2 is not None else 0.0
     steuer_getrennt = (
-        einkommensteuer(erg1.zvE_jahres + miet_jahres / 2)
-        + einkommensteuer(erg2.zvE_jahres + miet_jahres / 2)
+        einkommensteuer(max(0.0, erg1.zvE_jahres + miet_jahres / 2 - _aeb1_get))
+        + einkommensteuer(max(0.0, erg2.zvE_jahres + miet_jahres / 2 - _aeb2_get))
     ) / 12
 
     if veranlagung == "Zusammen":
-        zvE_gesamt = erg1.zvE_jahres + erg2.zvE_jahres + miet_jahres
+        # Zusammen: alle Mieteinnahmen gehen in gemeinsamen zvE; P1 beansprucht AEB auf Miet
+        _aeb1_zus = _aeb_miet(profil1, erg1, miet_jahres)
+        zvE_gesamt = max(0.0, erg1.zvE_jahres + erg2.zvE_jahres + miet_jahres - _aeb1_zus)
         steuer_zusammen = einkommensteuer_splitting(zvE_gesamt) / 12
         ersparnis = max(0.0, steuer_getrennt - steuer_zusammen)
         steuer = steuer_zusammen
@@ -573,8 +654,7 @@ def _netto_ueber_horizont(
     # Beitragssätze je Mitgliedsstatus (eigener Anteil):
     # KVdR/AN: DRV/AG trägt halben GKV- und PV-Beitrag; Kinderlosenzuschlag (0,6 %) trägt Versicherter allein
     # Freiwillig: kein Trägeranteil → voller GKV- und PV-Satz
-    _pv_halb     = 0.017 if profil.kinder else 0.023   # KVdR/AN-Anteil PV
-    _pv_voll     = 0.034 if profil.kinder else 0.040   # Freiwillig GKV: voller PV-Satz
+    _pv_voll, _pv_halb = _pv_satz(profil.kinder_anzahl if profil.kinder else 0)
     kv_rate_halb = (0.073 + profil.gkv_zusatzbeitrag / 2) + _pv_halb   # AN + KVdR
 
     # Person 2: feste Basiswerte für die Haushaltssimulation
@@ -589,8 +669,7 @@ def _netto_ueber_horizont(
     _p2_ist_pkv        = profil2.krankenversicherung == "PKV" if hat_partner else True
     _p2_ist_freiwillig = (profil2.krankenversicherung == "GKV" and not profil2.kvdr_pflicht) if hat_partner else False
     if hat_partner and not _p2_ist_pkv:
-        _p2_pv_halb      = 0.017 if profil2.kinder else 0.023
-        _p2_pv_voll      = 0.034 if profil2.kinder else 0.040
+        _p2_pv_voll, _p2_pv_halb = _pv_satz(profil2.kinder_anzahl if profil2.kinder else 0)
         _p2_kv_rate_halb = (0.073 + profil2.gkv_zusatzbeitrag / 2) + _p2_pv_halb
     else:
         _p2_pv_voll      = 0.0
@@ -814,6 +893,22 @@ def _netto_ueber_horizont(
             + p2_priv_zvE_j + p2_einmal_progr_j
         )
 
+        # ── Altersentlastungsbetrag § 24a EStG ───────────────────────────────
+        # Qualifying P1: §22 Nr.1 S.3a bb (priv_zvE incl. DUV/BUV), §22 Nr.5 Riester, §21 Miete
+        # Qualifying P2 (Zusammen): §22 Nr.1 S.3a bb, §22 Nr.5 Riester
+        # Salary (Arbeitslohn §19, kein Versorgungsbezug) qualifiziert ebenfalls.
+        if profil.geburtsjahr + 64 < jahr:
+            if in_rente:
+                _aeb_qual_p1 = priv_zvE_j + riester_lfd_j + miet_tax_j
+            else:
+                _aeb_qual_p1 = gesetzl_j + miet_tax_j
+            _aeb_p1 = altersentlastungsbetrag(profil.geburtsjahr, _aeb_qual_p1)
+        else:
+            _aeb_p1 = 0.0
+        if zusammen and profil2.geburtsjahr + 64 < jahr:
+            _p2_aeb = altersentlastungsbetrag(profil2.geburtsjahr, p2_priv_zvE_j + p2_riester_j)
+            p2_zvE_j = max(0.0, p2_zvE_j - _p2_aeb)
+
         # P2 KV dynamisch je Versicherungsstatus
         if not hat_partner:
             p2_kv_j = 0.0
@@ -856,6 +951,7 @@ def _netto_ueber_horizont(
             + priv_zvE_j
             + einmal_progr_j
             + miet_tax_j
+            - _aeb_p1
             - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG,
         )
         # Laufende Kapitalerträge: Abgeltungsteuer (P1 + P2, je 1.000 € Sparerpauschbetrag)
@@ -867,7 +963,8 @@ def _netto_ueber_horizont(
             steuer_progr = einkommensteuer_splitting(zvE_p1 + p2_zvE_j)
         else:
             steuer_progr = einkommensteuer(zvE_p1)
-        steuer = steuer_progr + steuer_abgelt
+        _soli_j = solidaritaetszuschlag(steuer_progr)
+        steuer = steuer_progr + _soli_j + steuer_abgelt
         # Kirchensteuer § 51a EStG (auf die progressive Einkommensteuer)
         if zusammen:
             # Splitting: KiSt je Ehegatte auf die ihm zuzurechnende Hälfte

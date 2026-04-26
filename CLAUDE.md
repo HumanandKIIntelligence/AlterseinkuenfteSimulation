@@ -53,6 +53,8 @@ docker exec altereinkuenfte-app pip install pytest -q
 | `TestKVdRVsFreiwillig` | KVdR §229 vs. freiwillig §240: Miete/PrivateRV/bAV-Freibetrag/Mindest-BMG |
 | `TestLaufendeKapitalertraege` | Laufende Kapitalerträge: Sparerpauschbetrag, Abgeltungsteuer, freiwillig-KV |
 | `TestBerufsjahre` | Pre-retirement Simulation: Gehalt, Jahresanzahl, Src_Gehalt-Verlauf |
+| `TestAltersentlastungsbetrag` | §24a EStG: Tabellenwerte 2005/2010/2020/2025, Phase-A/B, Cap, bereits_genutzt, Integration berechne_rente |
+| `TestPVKinderstaffelung` | §55 Abs. 3a SGB XI: 0–5 Kinder Beitragssätze, Monotonie, Integration berechne_rente |
 
 ---
 
@@ -108,10 +110,12 @@ Profil-Tab (app.py) + Mieteinnahmen
 | `einkommensteuer_splitting(zvE_gesamt)` | §32a Abs. 5: 2× ESt(zvE/2) |
 | `besteuerungsanteil(eintritt_jahr)` | §22 EStG / JStG 2022: ab 2023 +0,5 %/Jahr |
 | `versorgungsfreibetrag(ruhestand_jahr, pension_jahres)` | §19 Abs. 2 EStG: Freibetrag für Beamtenpensionen; 0 ab 2040 |
+| `altersentlastungsbetrag(geburtsjahr, qualifying_jahres, bereits_genutzt)` | §24a EStG: AEB für Personen ab 64 Jahren; Erstjahr = geburtsjahr+65 |
+| `_pv_satz(kinder_anzahl)` | §55 Abs. 3a SGB XI: PV-Kinderstaffelung; returns (pv_voll, pv_halb) |
 | `ertragsanteil(alter)` | §22 Nr. 1 S. 3a bb EStG: Tabellenwert als Dezimalzahl |
 | `kapitalwachstum(kapital, sparrate, rendite_pa, jahre)` | Zinseszins mit monatlicher Sparrate |
-| `berechne_rente(profil)` | Vollberechnung → `RentenErgebnis` |
-| `berechne_haushalt(erg1, erg2, veranlagung, mieteinnahmen_monatlich)` | Haushaltseinkommen mit Splitting und Mieteinnahmen |
+| `berechne_rente(profil)` | Vollberechnung → `RentenErgebnis` (inkl. AEB, _pv_satz) |
+| `berechne_haushalt(erg1, erg2, veranlagung, mieteinnahmen_monatlich, profil1, profil2)` | Haushaltseinkommen mit Splitting, Mieteinnahmen und AEB auf Miete |
 | `_netto_ueber_horizont(..., gehalt_monatlich)` | Jahressimulation; startet ab AKTUELLES_JAHR wenn gehalt_monatlich>0; Rentenanpassung p.a. eingebaut; KVdR vs. freiwillig GKV |
 | `optimiere_auszahlungen(..., gehalt_monatlich)` | Brute-Force über alle Startjahr × Auszahlungsart-Kombinationen |
 
@@ -208,10 +212,28 @@ Wenn `gehalt_monatlich > 0` und nicht `bereits_rentner`:
 - **`kvdr_pflicht`** (bool, default True): Ob Person KVdR-Pflichtmitglied ist. Steuert KV-Berechnungslogik in Rente. UI: Checkbox im Profil-Tab bei GKV.
 - **`kirchensteuer`** (bool, default False): Ob Person kirchensteuerpflichtig ist. UI: Checkbox im Profil-Tab mit Rate-Radio (8 %/9 %).
 - **`kirchensteuer_satz`** (float, default 0.09): Kirchensteuersatz (0.09 für alle Länder außer Bayern/Baden-Württemberg, 0.08 dort).
+- **`kinder_anzahl`** (int, default 1): Anzahl Kinder für PV-Kinderstaffelung §55 Abs. 3a SGB XI. Nur relevant wenn `kinder=True`. UI: Zahlen-Input im Profil-Tab bei GKV-Wahl + Kinder-Checkbox.
 
 ## RentenErgebnis – neue Felder
 
 - **`kirchensteuer_monatlich`** (float, default 0.0): Monatliche Kirchensteuer; in `steuer_monatlich` bereits enthalten.
+- **`altersentlastungsbetrag_jahres`** (float, default 0.0): Genutzter AEB §24a EStG; für `berechne_haushalt()` als Cap-Basis bei Mieteinnahmen.
+
+## Altersentlastungsbetrag § 24a EStG
+
+`altersentlastungsbetrag(geburtsjahr, qualifying_jahres, bereits_genutzt=0.0)`:
+- Erstjahr = `geburtsjahr + 65`; ab 2040: 0
+- Qualifizierend: PrivRV-Ertragsanteil (§22 Nr.1 S.3a bb), Riester (§22 Nr.5), BUV/DUV, Mieteinnahmen (§21), Arbeitslohn (§19, kein Versorgungsbezug)
+- Nicht qualifizierend: GRV/Rürup (§22 Nr.1 S.3a aa), bAV (§22 Nr.5 / §19 Abs.2), Beamtenpension (§19 Abs.2)
+- In `berechne_rente()` und `_netto_ueber_horizont()` angewendet; in `berechne_haushalt()` für Mieteinnahmen mit `bereits_genutzt`-Cap
+
+## PV-Kinderstaffelung § 55 Abs. 3a SGB XI
+
+`_pv_satz(kinder_anzahl: int) -> tuple[float, float]` (pv_voll, pv_halb):
+- 0 Kinder: 4,0 % / 2,3 % (Kinderlosenzuschlag 0,6 % trägt Versicherter allein)
+- 1 Kind: 3,4 % / 1,7 % (Basisrate)
+- Ab 2. Kind: −0,25 % je Kind (max. 5 Kinder → −1,0 %); z.B. 5 Kinder: 2,4 % / 0,7 %
+- Ersetzt überall die früheren `0.017 if p.kinder else 0.023` Inline-Berechnungen
 
 ## Progressionszone-Ampel (dashboard.py)
 

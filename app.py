@@ -9,7 +9,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR, einkommensteuer, BBG_KV_MONATLICH
+from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR, einkommensteuer, BBG_KV_MONATLICH, _pv_satz
 from session_io import save_session, load_session, list_saves
 from tabs import dashboard, simulation, vorsorge, haushalt, dokumentation, entnahme_opt
 
@@ -67,8 +67,9 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
     kv_typ      = "PKV" if "PKV" in kv_raw else "GKV"
     pkv_beitrag = float(_get(pfx, "pkv", 250.0 if ist_pensionaer else 600.0))
     gkv_zusatz  = float(_get(pfx, "gkv_zus", 1.7)) / 100
-    kinder      = bool(_get(pfx, "kinder", True))
-    kvdr_pflicht = bool(_get(pfx, "kvdr", True))
+    kinder        = bool(_get(pfx, "kinder", True))
+    kinder_anzahl = int(_get(pfx, "kinder_anz", 1)) if kinder else 0
+    kvdr_pflicht  = bool(_get(pfx, "kvdr", True))
 
     duv_monatlich = float(_get(pfx, "duv", 0.0))
     duv_endjahr   = int(_get(pfx, "duv_end", AKTUELLES_JAHR + 10))
@@ -93,6 +94,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         pkv_beitrag=pkv_beitrag,
         gkv_zusatzbeitrag=gkv_zusatz,
         kinder=kinder,
+        kinder_anzahl=kinder_anzahl,
         ist_pensionaer=ist_pensionaer,
         bereits_rentner=bereits_rentner,
         rentenbeginn_jahr=rentenbeginn_jahr,
@@ -133,6 +135,7 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
         f"rc{_RC}_{pfx}_pkv":        p.pkv_beitrag,
         f"rc{_RC}_{pfx}_gkv_zus":    p.gkv_zusatzbeitrag * 100,
         f"rc{_RC}_{pfx}_kinder":     p.kinder,
+        f"rc{_RC}_{pfx}_kinder_anz": p.kinder_anzahl,
         f"rc{_RC}_{pfx}_kv_radio":   kv_label,
         f"rc{_RC}_{pfx}_rentner":    p.bereits_rentner,
         f"rc{_RC}_{pfx}_pensionaer": p.ist_pensionaer,
@@ -294,9 +297,16 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                           value=float(_get(pfx, "gkv_zus", 1.7)),
                           step=0.1, key=f"rc{_RC}_{pfx}_gkv_zus")
             with cb:
-                st.checkbox("Hat Kinder",
-                            value=bool(_get(pfx, "kinder", True)),
-                            key=f"rc{_RC}_{pfx}_kinder")
+                _kinder_val = st.checkbox("Hat Kinder",
+                                          value=bool(_get(pfx, "kinder", True)),
+                                          key=f"rc{_RC}_{pfx}_kinder")
+            if _kinder_val:
+                st.number_input(
+                    "Anzahl Kinder (PV-Staffelung § 55 Abs. 3a SGB XI)", 1, 5,
+                    value=int(_get(pfx, "kinder_anz", 1)),
+                    step=1, key=f"rc{_RC}_{pfx}_kinder_anz",
+                    help="Ab 2. Kind: je −0,25 % PV-Eigenbeitrag (max. 5 Kinder → −1,0 %).",
+                )
             st.checkbox(
                 "KVdR-Pflichtmitglied (§ 5 Abs. 1 Nr. 11 SGB V)",
                 value=bool(_get(pfx, "kvdr", True)),
@@ -332,9 +342,16 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                           value=float(_get(pfx, "gkv_zus", 1.7)),
                           step=0.1, key=f"rc{_RC}_{pfx}_gkv_zus")
             with cb:
-                st.checkbox("Hat Kinder",
-                            value=bool(_get(pfx, "kinder", True)),
-                            key=f"rc{_RC}_{pfx}_kinder")
+                _kinder_val2 = st.checkbox("Hat Kinder",
+                                           value=bool(_get(pfx, "kinder", True)),
+                                           key=f"rc{_RC}_{pfx}_kinder")
+            if _kinder_val2:
+                st.number_input(
+                    "Anzahl Kinder (PV-Staffelung § 55 Abs. 3a SGB XI)", 1, 5,
+                    value=int(_get(pfx, "kinder_anz", 1)),
+                    step=1, key=f"rc{_RC}_{pfx}_kinder_anz",
+                    help="Ab 2. Kind: je −0,25 % PV-Eigenbeitrag (max. 5 Kinder → −1,0 %).",
+                )
             st.checkbox(
                 "KVdR-Pflichtmitglied (§ 5 Abs. 1 Nr. 11 SGB V)",
                 value=bool(_get(pfx, "kvdr", True)),
@@ -568,7 +585,7 @@ st.session_state["opt_gehalt_mono"] = 0.0 if profil1.ist_pensionaer else profil1
 
 ergebnis1      = berechne_rente(profil1)
 ergebnis2      = berechne_rente(profil2) if profil2 else None
-haushalt_daten = berechne_haushalt(ergebnis1, ergebnis2, veranlagung, mieteinnahmen)
+haushalt_daten = berechne_haushalt(ergebnis1, ergebnis2, veranlagung, mieteinnahmen, profil1, profil2)
 
 # Sidebar unten: Speichern (braucht Profil-Objekte)
 _sidebar_save(profil1, profil2, veranlagung, mieteinnahmen, mietsteigerung)
@@ -588,7 +605,7 @@ def _approx_netto_gehalt(p: Profil) -> float:
     if p.krankenversicherung == "GKV":
         basis = min(brutto, BBG_KV_MONATLICH)
         an_kv = basis * (0.073 + p.gkv_zusatzbeitrag / 2)
-        an_pv = basis * (0.017 if p.kinder else 0.023)
+        an_pv = basis * _pv_satz(p.kinder_anzahl if p.kinder else 0)[1]
     else:
         an_kv = an_pv = 0.0
     zvE_j = max(0.0, brutto * 12 - (an_kv + an_pv) * 12)
