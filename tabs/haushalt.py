@@ -53,27 +53,42 @@ def render(
                 horizontal=True, key="hh_ansicht",
             )
         with fil2:
+            # Arbeits- und Renteneinkommen pro Person
+            _gehalt_p1 = 0.0 if p1.ist_pensionaer or p1.bereits_rentner else p1.aktuelles_brutto_monatlich
+            _gehalt_p2 = 0.0 if p2.ist_pensionaer or p2.bereits_rentner else p2.aktuelles_brutto_monatlich
+
             # Simulationshorizont: frühester Renteneintritt bis +30 Jahre
-            _start_j = min(
-                p1.rentenbeginn_jahr if p1.bereits_rentner else p1.eintritt_jahr,
-                p2.rentenbeginn_jahr if p2.bereits_rentner else p2.eintritt_jahr,
-            )
-            _end_j = _start_j + 30
-            _default_j = max(_start_j, AKTUELLES_JAHR)
+            _start_p1 = p1.rentenbeginn_jahr if p1.bereits_rentner else p1.eintritt_jahr
+            _start_p2 = p2.rentenbeginn_jahr if p2.bereits_rentner else p2.eintritt_jahr
+            _start_j_ret = min(_start_p1, _start_p2)
+            _end_j = _start_j_ret + 30
+
+            # Slider beginnt ab AKTUELLES_JAHR wenn jemand noch berufstätig ist
+            _start_j = AKTUELLES_JAHR if (_gehalt_p1 > 0 or _gehalt_p2 > 0) else _start_j_ret
+            _default_j = min(_end_j, max(_start_j, AKTUELLES_JAHR))
             betrachtungsjahr = st.slider(
                 "Betrachtungsjahr", _start_j, _end_j, _default_j,
                 key="hh_jahr",
                 help="Zeigt projizierte Einkommenswerte für das gewählte Jahr (mit Rentenanpassung).",
             )
 
-        # Jahresverlauf berechnen (kein Produkde-Einfluss)
-        _horizont = _end_j - _start_j + 1
-        _, _jd_hh = _netto_ueber_horizont(
-            p1, e1, [], _horizont, mieteinnahmen, mietsteigerung,
-            profil2=p2, ergebnis2=e2, veranlagung=veranlagung,
+        # Jahresverlauf berechnen (keine Produkte); individuelle Horizonte je Person
+        _horizont_hh = _end_j - _start_j_ret + 1
+        _horizont_p1 = max(1, _end_j - _start_p1 + 1)
+        _horizont_p2 = max(1, _end_j - _start_p2 + 1)
+        _, _jd_zus = _netto_ueber_horizont(
+            p1, e1, [], _horizont_hh, mieteinnahmen, mietsteigerung,
+            profil2=p2, ergebnis2=e2, veranlagung="Zusammen",
         )
-        _, _jd_p1 = _netto_ueber_horizont(p1, e1, [], _horizont, 0.0, 0.0)
-        _, _jd_p2 = _netto_ueber_horizont(p2, e2, [], _horizont, 0.0, 0.0)
+        _, _jd_get = _netto_ueber_horizont(
+            p1, e1, [], _horizont_hh, mieteinnahmen, mietsteigerung,
+            profil2=p2, ergebnis2=e2, veranlagung="Getrennt",
+        )
+        _jd_hh = _jd_zus if veranlagung == "Zusammen" else _jd_get
+        _, _jd_p1 = _netto_ueber_horizont(p1, e1, [], _horizont_p1, 0.0, 0.0,
+                                           gehalt_monatlich=_gehalt_p1)
+        _, _jd_p2 = _netto_ueber_horizont(p2, e2, [], _horizont_p2, 0.0, 0.0,
+                                           gehalt_monatlich=_gehalt_p2)
 
         def _row_for_year(jd: list[dict], jahr: int) -> dict | None:
             for r in jd:
@@ -81,20 +96,48 @@ def render(
                     return r
             return None
 
-        _row_hh = _row_for_year(_jd_hh, betrachtungsjahr)
-        _row_p1 = _row_for_year(_jd_p1, betrachtungsjahr)
-        _row_p2 = _row_for_year(_jd_p2, betrachtungsjahr)
+        # _jd_hh startet erst ab P1's Renteneintritt – für frühere Jahre (z.B. wenn P2
+        # früher in Rente geht) werden P1- und P2-Einzeldaten addiert.
+        _hh_by_y = {r["Jahr"]: r for r in _jd_hh}
+        _p1_by_y = {r["Jahr"]: r for r in _jd_p1}
+        _p2_by_y = {r["Jahr"]: r for r in _jd_p2}
+        _all_jahre = sorted(set(_hh_by_y) | set(_p1_by_y) | set(_p2_by_y))
+        _jd_combined: list[dict] = []
+        for _j in _all_jahre:
+            if _j in _hh_by_y:
+                _jd_combined.append(_hh_by_y[_j])
+            else:
+                _r1 = _p1_by_y.get(_j)
+                _r2 = _p2_by_y.get(_j)
+                _jd_combined.append({
+                    "Jahr":   _j,
+                    "Brutto": (_r1["Brutto"] if _r1 else 0) + (_r2["Brutto"] if _r2 else 0),
+                    "Netto":  (_r1["Netto"]  if _r1 else 0) + (_r2["Netto"]  if _r2 else 0),
+                    "Steuer": (_r1["Steuer"] if _r1 else 0) + (_r2["Steuer"] if _r2 else 0),
+                    "KV_PV":  (_r1["KV_PV"]  if _r1 else 0) + (_r2["KV_PV"]  if _r2 else 0),
+                })
+
+        _row_comb = _row_for_year(_jd_combined, betrachtungsjahr)
+        _row_p1   = _row_for_year(_jd_p1,       betrachtungsjahr)
+        _row_p2   = _row_for_year(_jd_p2,        betrachtungsjahr)
 
         # ── Kennzahlen für gewähltes Jahr ─────────────────────────────────────
         st.subheader(f"Monatseinkommen {betrachtungsjahr}")
         c1, c2, c3, c4 = st.columns(4)
 
-        if ansicht == "Haushalt gesamt" and _row_hh:
-            _b = _row_hh["Brutto"] / 12
-            _n = _row_hh["Netto"] / 12
-            _s = _row_hh["Steuer"] / 12
-            _k = _row_hh["KV_PV"] / 12
+        _no_data = False
+        if ansicht == "Haushalt gesamt" and _row_comb:
+            _b = _row_comb["Brutto"] / 12
+            _n = _row_comb["Netto"] / 12
+            _s = _row_comb["Steuer"] / 12
+            _k = _row_comb["KV_PV"] / 12
             _label = "Haushalt gesamt"
+        elif ansicht == "Haushalt gesamt":
+            _b = hh["brutto_gesamt"]
+            _n = hh["netto_gesamt"]
+            _s = hh["steuer_gesamt"]
+            _k = hh["kv_gesamt"]
+            _label = "Haushalt (Eintrittsmonat)"
         elif ansicht == "Person 1" and _row_p1:
             _b = _row_p1["Brutto"] / 12
             _n = _row_p1["Netto"] / 12
@@ -108,18 +151,20 @@ def render(
             _k = _row_p2["KV_PV"] / 12
             _label = "Person 2"
         else:
-            # Fallback auf aktuelle Werte
-            _b = hh["brutto_gesamt"]
-            _n = hh["netto_gesamt"]
-            _s = hh["steuer_gesamt"]
-            _k = hh["kv_gesamt"]
-            _label = "Haushalt"
+            _no_data = True
+            _start_sel = _start_p1 if ansicht == "Person 1" else _start_p2
+            st.info(
+                f"Für **{ansicht}** liegen für {betrachtungsjahr} noch keine Daten vor "
+                f"(Renteneintritt: {_start_sel}). "
+                f"Bruttogehalt im Profil eingeben, um Berufsjahre zu simulieren."
+            )
 
-        c1.metric("Brutto", f"{_de(_b)} €",
-                  help=f"{_label}: Bruttoeinkommen inkl. Mieteinnahmen")
-        c2.metric("Netto", f"{_de(_n)} €")
-        c3.metric("Steuer", f"{_de(_s)} €/Mon.")
-        c4.metric("KV / PV", f"{_de(_k)} €/Mon.")
+        if not _no_data:
+            c1.metric("Brutto", f"{_de(_b)} €",
+                      help=f"{_label}: Bruttoeinkommen inkl. Mieteinnahmen")
+            c2.metric("Netto", f"{_de(_n)} €")
+            c3.metric("Steuer", f"{_de(_s)} €/Mon.")
+            c4.metric("KV / PV", f"{_de(_k)} €/Mon.")
 
         if ansicht == "Haushalt gesamt" and hh["steuerersparnis_splitting"] > 0:
             st.caption(
@@ -131,17 +176,23 @@ def render(
 
         # ── Seite-an-Seite Vergleich ──────────────────────────────────────────
         if ansicht != "Haushalt gesamt":
-            # Einzelpersonen-Ansicht
-            _e = e1 if ansicht == "Person 1" else e2
-            _p = p1 if ansicht == "Person 1" else p2
-            st.subheader(f"{ansicht} – Eintrittsmonat")
+            # Einzelpersonen-Ansicht – Slider-Jahr oder Eintrittsmonat als Fallback
+            _e   = e1 if ansicht == "Person 1" else e2
+            _p   = p1 if ansicht == "Person 1" else p2
+            _row = _row_p1 if ansicht == "Person 1" else _row_p2
+            _b_d = _row["Brutto"] / 12 if _row else _e.brutto_monatlich
+            _n_d = _row["Netto"]  / 12 if _row else _e.netto_monatlich
+            _s_d = _row["Steuer"] / 12 if _row else _e.steuer_monatlich
+            _k_d = _row["KV_PV"]  / 12 if _row else _e.kv_monatlich
+            _note = "" if _row else " (Eintrittsmonat)"
+            st.subheader(f"{ansicht} – {betrachtungsjahr}{_note}")
             cv1, cv2 = st.columns(2)
             with cv1:
                 for label, wert in [
-                    ("Bruttorente", f"{_de(_e.brutto_monatlich)} €"),
-                    ("− Steuer", f"{_de(_e.steuer_monatlich)} €"),
-                    ("− KV / PV", f"{_de(_e.kv_monatlich)} €"),
-                    ("**= Netto**", f"**{_de(_e.netto_monatlich)} €**"),
+                    ("Bruttoeinkommen", f"{_de(_b_d)} €"),
+                    ("− Steuer", f"{_de(_s_d)} €"),
+                    ("− KV / PV", f"{_de(_k_d)} €"),
+                    ("**= Netto**", f"**{_de(_n_d)} €**"),
                     ("Rentenpunkte", f"{_e.gesamtpunkte:.1f}".replace(".", ",")),
                     ("Renteneintritt",
                      str(_p.rentenbeginn_jahr if _p.bereits_rentner else _p.eintritt_jahr)),
@@ -150,16 +201,27 @@ def render(
                     a.markdown(label)
                     b.markdown(wert)
         else:
-            st.subheader("Person 1 vs. Person 2 – Eintrittsmonat")
+            # Jahr-spezifische Werte aus Slider; Fallback auf Eintrittsmonat
+            _p1_b = _row_p1["Brutto"] / 12 if _row_p1 else e1.brutto_monatlich
+            _p1_n = _row_p1["Netto"]  / 12 if _row_p1 else e1.netto_monatlich
+            _p1_s = _row_p1["Steuer"] / 12 if _row_p1 else e1.steuer_monatlich
+            _p1_k = _row_p1["KV_PV"]  / 12 if _row_p1 else e1.kv_monatlich
+            _p2_b = _row_p2["Brutto"] / 12 if _row_p2 else e2.brutto_monatlich
+            _p2_n = _row_p2["Netto"]  / 12 if _row_p2 else e2.netto_monatlich
+            _p2_s = _row_p2["Steuer"] / 12 if _row_p2 else e2.steuer_monatlich
+            _p2_k = _row_p2["KV_PV"]  / 12 if _row_p2 else e2.kv_monatlich
+            _note = "" if (_row_p1 and _row_p2) else " (Eintrittsmonat)"
+
+            st.subheader(f"Person 1 vs. Person 2 – {betrachtungsjahr}{_note}")
             col1, col2, col3 = st.columns([2, 2, 3])
 
             with col1:
                 st.markdown("**Person 1**")
                 for label, wert in [
-                    ("Bruttorente", f"{_de(e1.brutto_monatlich)} €"),
-                    ("− Steuer", f"{_de(e1.steuer_monatlich)} €"),
-                    ("− KV / PV", f"{_de(e1.kv_monatlich)} €"),
-                    ("**= Netto**", f"**{_de(e1.netto_monatlich)} €**"),
+                    ("Bruttoeinkommen", f"{_de(_p1_b)} €"),
+                    ("− Steuer", f"{_de(_p1_s)} €"),
+                    ("− KV / PV", f"{_de(_p1_k)} €"),
+                    ("**= Netto**", f"**{_de(_p1_n)} €**"),
                     ("Rentenpunkte", f"{e1.gesamtpunkte:.1f}".replace(".", ",")),
                     ("Ruhestand seit" if p1.bereits_rentner else "Renteneintritt",
                      str(p1.rentenbeginn_jahr if p1.bereits_rentner else p1.eintritt_jahr)),
@@ -171,10 +233,10 @@ def render(
             with col2:
                 st.markdown("**Person 2**")
                 for label, wert in [
-                    ("Bruttorente", f"{_de(e2.brutto_monatlich)} €"),
-                    ("− Steuer", f"{_de(e2.steuer_monatlich)} €"),
-                    ("− KV / PV", f"{_de(e2.kv_monatlich)} €"),
-                    ("**= Netto**", f"**{_de(e2.netto_monatlich)} €**"),
+                    ("Bruttoeinkommen", f"{_de(_p2_b)} €"),
+                    ("− Steuer", f"{_de(_p2_s)} €"),
+                    ("− KV / PV", f"{_de(_p2_k)} €"),
+                    ("**= Netto**", f"**{_de(_p2_n)} €**"),
                     ("Rentenpunkte", f"{e2.gesamtpunkte:.1f}".replace(".", ",")),
                     ("Ruhestand seit" if p2.bereits_rentner else "Renteneintritt",
                      str(p2.rentenbeginn_jahr if p2.bereits_rentner else p2.eintritt_jahr)),
@@ -184,29 +246,32 @@ def render(
                     b.markdown(wert)
 
             with col3:
-                fig = go.Figure()
+                # Stacked bar: Netto + Steuer + KV = Brutto (Total-Höhe)
                 personen = ["Person 1", "Person 2"]
-                farbe_brutto = ["#90CAF9", "#80DEEA"]
-                farbe_steuer = ["#EF9A9A", "#F48FB1"]
-                farbe_kv     = ["#FFF176", "#FFCC80"]
-                farbe_netto  = ["#A5D6A7", "#C5E1A5"]
-                for farben, werte, name in [
-                    (farbe_brutto, [e1.brutto_monatlich, e2.brutto_monatlich], "Brutto"),
-                    (farbe_steuer, [-e1.steuer_monatlich, -e2.steuer_monatlich], "− Steuer"),
-                    (farbe_kv,     [-e1.kv_monatlich, -e2.kv_monatlich], "− KV/PV"),
-                    (farbe_netto,  [e1.netto_monatlich, e2.netto_monatlich], "Netto"),
-                ]:
-                    fig.add_trace(go.Bar(
-                        name=name, x=personen, y=werte,
-                        marker_color=farben,
-                        text=[f"{_de(abs(v))} €" for v in werte],
-                        textposition="inside",
-                    ))
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    name="Netto", x=personen, y=[_p1_n, _p2_n],
+                    marker_color="#A5D6A7",
+                    text=[f"{_de(_p1_n)} €", f"{_de(_p2_n)} €"],
+                    textposition="inside",
+                ))
+                fig.add_trace(go.Bar(
+                    name="− Steuer", x=personen, y=[_p1_s, _p2_s],
+                    marker_color="#EF9A9A",
+                    text=[f"{_de(_p1_s)} €", f"{_de(_p2_s)} €"],
+                    textposition="inside",
+                ))
+                fig.add_trace(go.Bar(
+                    name="− KV/PV", x=personen, y=[_p1_k, _p2_k],
+                    marker_color="#FFF176",
+                    text=[f"{_de(_p1_k)} €", f"{_de(_p2_k)} €"],
+                    textposition="inside",
+                ))
                 fig.update_layout(
-                    barmode="overlay",
+                    barmode="stack",
                     template="plotly_white",
                     height=320,
-                    yaxis=dict(title="€ / Monat"),
+                    yaxis=dict(title="€ / Monat (Brutto = Gesamthöhe)"),
                     showlegend=True,
                     legend=dict(orientation="h", yanchor="bottom", y=1.02),
                     margin=dict(l=0, r=0, t=30, b=0),
@@ -226,7 +291,7 @@ def render(
         # ── Jahresverlauf (Haushalt) ──────────────────────────────────────────
         st.subheader("Jahresverlauf")
         if ansicht == "Haushalt gesamt":
-            _jd_display = _jd_hh
+            _jd_display = _jd_combined
             _label_netto = "Netto Haushalt"
         elif ansicht == "Person 1":
             _jd_display = _jd_p1
@@ -265,19 +330,27 @@ def render(
         st.divider()
 
         # ── Steuervergleich: Zusammen vs. Getrennt ────────────────────────────
-        st.subheader("Steuervergleich: Zusammen- vs. Getrennte Veranlagung")
+        st.subheader(f"Steuervergleich {betrachtungsjahr}: Zusammen- vs. Getrennte Veranlagung")
 
+        _row_zus = _row_for_year(_jd_zus, betrachtungsjahr)
+        _row_get = _row_for_year(_jd_get, betrachtungsjahr)
+
+        # Fallback auf Eintrittsmonat wenn kein Jahreseintrag verfügbar
         hh_zusammen = berechne_haushalt(e1, e2, "Zusammen", mieteinnahmen)
-        hh_getrennt = berechne_haushalt(e1, e2, "Getrennt", mieteinnahmen)
+        hh_getrennt  = berechne_haushalt(e1, e2, "Getrennt",  mieteinnahmen)
+        _st_zus = _row_zus["Steuer"] / 12 if _row_zus else hh_zusammen["steuer_gesamt"]
+        _st_get = _row_get["Steuer"] / 12 if _row_get else hh_getrennt["steuer_gesamt"]
+        _nt_zus = _row_zus["Netto"]  / 12 if _row_zus else hh_zusammen["netto_gesamt"]
+        _nt_get = _row_get["Netto"]  / 12 if _row_get else hh_getrennt["netto_gesamt"]
 
         sv1, sv2, sv3, sv4 = st.columns(4)
-        sv1.metric("Steuer Zusammen (Mon.)", f"{_de(hh_zusammen['steuer_gesamt'])} €")
-        sv2.metric("Steuer Getrennt (Mon.)", f"{_de(hh_getrennt['steuer_gesamt'])} €")
-        sv3.metric("Netto Zusammen (Mon.)", f"{_de(hh_zusammen['netto_gesamt'])} €")
-        sv4.metric("Netto Getrennt (Mon.)", f"{_de(hh_getrennt['netto_gesamt'])} €")
+        sv1.metric("Steuer Zusammen (Mon.)", f"{_de(_st_zus)} €")
+        sv2.metric("Steuer Getrennt (Mon.)", f"{_de(_st_get)} €")
+        sv3.metric("Netto Zusammen (Mon.)", f"{_de(_nt_zus)} €")
+        sv4.metric("Netto Getrennt (Mon.)", f"{_de(_nt_get)} €")
 
-        ersparnis_monatlich = hh_zusammen["steuerersparnis_splitting"]
-        if ersparnis_monatlich > 0:
+        ersparnis_monatlich = _nt_zus - _nt_get
+        if ersparnis_monatlich > 1:
             st.success(
                 f"**Zusammenveranlagung spart {_de(ersparnis_monatlich)} €/Monat "
                 f"({_de(ersparnis_monatlich * 12)} €/Jahr)** gegenüber getrennter Veranlagung."
@@ -288,17 +361,14 @@ def render(
 
         fig_st = go.Figure(go.Bar(
             x=["Zusammenveranlagung\n(Splitting)", "Getrennte\nVeranlagung"],
-            y=[hh_zusammen["steuer_gesamt"] * 12, hh_getrennt["steuer_gesamt"] * 12],
+            y=[_st_zus * 12, _st_get * 12],
             marker_color=["#A5D6A7", "#EF9A9A"],
-            text=[f"{_de(v)} €/Jahr" for v in [
-                hh_zusammen["steuer_gesamt"] * 12,
-                hh_getrennt["steuer_gesamt"] * 12,
-            ]],
+            text=[f"{_de(v)} €/Jahr" for v in [_st_zus * 12, _st_get * 12]],
             textposition="outside",
         ))
         fig_st.update_layout(
             template="plotly_white", height=300,
-            yaxis=dict(title="Jahressteuer (€)", tickformat=",.0f"),
+            yaxis=dict(title=f"Jahressteuer {betrachtungsjahr} (€)", tickformat=",.0f"),
             margin=dict(l=10, r=10, t=10, b=10),
             separators=",.",
         )
@@ -307,21 +377,28 @@ def render(
         st.divider()
 
         # ── Szenarien-Vergleich Haushalt ──────────────────────────────────────
-        st.subheader("Haushalt-Szenarien (pessimistisch / neutral / optimistisch)")
+        st.subheader(f"Haushalt-Szenarien {betrachtungsjahr} (pessimistisch / neutral / optimistisch)")
 
         sz1 = simuliere_szenarien(p1)
         sz2 = simuliere_szenarien(p2)
+        _anp_sz = {"Pessimistisch": 0.01, "Neutral": max(p1.rentenanpassung_pa, 0.0), "Optimistisch": 0.03}
+        _ry1 = max(0, betrachtungsjahr - _start_p1)
+        _ry2 = max(0, betrachtungsjahr - _start_p2)
         rows = []
         for name in ["Pessimistisch", "Neutral", "Optimistisch"]:
             hh_sz = berechne_haushalt(sz1[name], sz2[name], veranlagung)
+            _fak1 = (1 + _anp_sz[name]) ** _ry1
+            _fak2 = (1 + _anp_sz[name]) ** _ry2
+            _fak_hh = (1 + _anp_sz[name]) ** max(_ry1, _ry2)
             rows.append({
                 "Szenario": name,
-                "Brutto gesamt (€/Mon.)": _de(hh_sz["brutto_gesamt"]),
-                "Netto gesamt (€/Mon.)": _de(hh_sz["netto_gesamt"]),
-                "Netto Person 1": _de(sz1[name].netto_monatlich),
-                "Netto Person 2": _de(sz2[name].netto_monatlich),
+                "Brutto gesamt (€/Mon.)": _de(hh_sz["brutto_gesamt"] * _fak_hh),
+                "Netto gesamt (€/Mon.)": _de(hh_sz["netto_gesamt"] * _fak_hh),
+                "Netto Person 1": _de(sz1[name].netto_monatlich * _fak1),
+                "Netto Person 2": _de(sz2[name].netto_monatlich * _fak2),
             })
         st.dataframe(pd.DataFrame(rows).set_index("Szenario"), use_container_width=True)
+        st.caption("Werte mit Rentenanpassung hochgerechnet (Näherung; Steuerprogression nicht neu berechnet).")
 
         st.divider()
 

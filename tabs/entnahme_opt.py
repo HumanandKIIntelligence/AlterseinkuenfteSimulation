@@ -103,7 +103,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         if hat_partner:
             eo_person = st.radio(
                 "Optimierung für", ["Person 1", "Person 2", "Zusammen"],
-                horizontal=True, key="eo_person",
+                horizontal=True, key="eo_person", index=2,
                 help="Person 1/2: nur deren Produkte + einzelne Steuerberechnung. "
                      "Zusammen: alle Produkte, gemeinsame Steuer (Splitting falls aktiv).",
             )
@@ -267,21 +267,71 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         st.subheader("Jahresverlauf nach Einkommensquelle")
         df_jd = pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
 
+        # Vertragsnamen pro Jahr für Einmal- und Versorgungsbalken
+        _jahre = list(df_jd.index)
+        _VERSORGUNG_TYPEN = {"bAV", "Riester", "Rürup", "PrivateRente"}
+        _einmal_info  = {j: [] for j in _jahre}
+        _versorg_info = {j: [] for j in _jahre}
+        for _prod, _startjahr, _anteil in opt["beste_entscheidungen"]:
+            _aufschub = max(0, _startjahr - _prod.fruehestes_startjahr)
+            _fak = (1 + _prod.aufschub_rendite) ** _aufschub
+            # Einmalauszahlung: nur im Startjahr
+            if _anteil > 0 and _startjahr in _einmal_info:
+                _betrag = _prod.max_einmalzahlung * _fak * _anteil
+                _einmal_info[_startjahr].append(f"{_prod.name}: {_de(_betrag)} €")
+            # Laufende Versorgung: ab Startjahr für die Laufzeit
+            if _anteil < 1.0 and _prod.typ in _VERSORGUNG_TYPEN:
+                _mono = _prod.max_monatsrente * _fak * (1 - _anteil)
+                _lz = _prod.laufzeit_jahre  # 0 = lebenslang
+                for _j in _jahre:
+                    if _j < _startjahr:
+                        continue
+                    if _lz > 0 and _j >= _startjahr + _lz:
+                        break
+                    _versorg_info[_j].append(f"{_prod.name}: {_de(_mono)} €/Mon.")
+
+        def _hover_lines(info_dict: dict, jahre: list) -> list[str]:
+            return [
+                "<br>".join(info_dict[j]) if info_dict[j] else ""
+                for j in jahre
+            ]
+
+        _cd_einmal  = _hover_lines(_einmal_info,  _jahre)
+        _cd_versorg = _hover_lines(_versorg_info, _jahre)
+
         fig_src = go.Figure()
         src_cols = [
-            ("Src_Gehalt",     "Bruttogehalt (aktiv)",   "#78909C"),
-            ("Src_GesRente",   "Gesetzl. Rente",         "#4CAF50"),
-            ("Src_Versorgung", "Betriebliche Versorgung", "#2196F3"),
-            ("Src_Einmal",     "Einmalauszahlungen",      "#FF9800"),
-            ("Src_Miete",      "Mieteinnahmen",           "#9C27B0"),
+            ("Src_Gehalt",     "Bruttogehalt (aktiv)",    "#78909C", None),
+            ("Src_GesRente",   "Gesetzl. Rente P1",       "#4CAF50", None),
+            ("Src_P2_Rente",   "Gesetzl. Rente P2",       "#81C784", None),
+            ("Src_Versorgung", "Betriebliche Versorgung", "#2196F3", _cd_versorg),
+            ("Src_Einmal",     "Einmalauszahlungen",      "#FF9800", _cd_einmal),
+            ("Src_Miete",      "Mieteinnahmen",           "#9C27B0", None),
         ]
-        for col, label, color in src_cols:
+        for col, label, color, customdata in src_cols:
             if col in df_jd.columns and df_jd[col].sum() > 0:
-                fig_src.add_trace(go.Bar(
-                    name=label, x=df_jd.index, y=df_jd[col],
-                    marker_color=color,
-                    hovertemplate="%{x}: %{y:,.0f} €<extra>" + label + "</extra>",
-                ))
+                if customdata is not None:
+                    _non_empty = [s for s in customdata if s]
+                    _has_detail = len(_non_empty) > 0
+                else:
+                    _has_detail = False
+                if _has_detail:
+                    fig_src.add_trace(go.Bar(
+                        name=label, x=df_jd.index, y=df_jd[col],
+                        marker_color=color,
+                        customdata=customdata,
+                        hovertemplate=(
+                            "%{x}: %{y:,.0f} €"
+                            "<br><i>%{customdata}</i>"
+                            "<extra>" + label + "</extra>"
+                        ),
+                    ))
+                else:
+                    fig_src.add_trace(go.Bar(
+                        name=label, x=df_jd.index, y=df_jd[col],
+                        marker_color=color,
+                        hovertemplate="%{x}: %{y:,.0f} €<extra>" + label + "</extra>",
+                    ))
         fig_src.add_trace(go.Scatter(
             name="Netto", x=df_jd.index, y=df_jd["Netto"],
             mode="lines+markers",
@@ -303,6 +353,30 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         )
         st.plotly_chart(fig_src, use_container_width=True)
 
+        # ── Jahresdetails ─────────────────────────────────────────────────────
+        st.subheader("Jahresdetails")
+        _min_j_jd = int(df_jd.index.min())
+        _max_j_jd = int(df_jd.index.max())
+        _def_j_jd = min(_max_j_jd, max(_min_j_jd, _profil_eo.eintritt_jahr))
+        _sel_j = st.slider(
+            "Betrachtungsjahr", _min_j_jd, _max_j_jd, _def_j_jd, key="eo_sel_jahr",
+            help="Zeigt Monatswerte aus dem optimalen Auszahlungsplan für das gewählte Jahr.",
+        )
+        if _sel_j in df_jd.index:
+            _jrow = df_jd.loc[_sel_j]
+            jm1, jm2, jm3, jm4 = st.columns(4)
+            jm1.metric(f"Brutto {_sel_j}", f"{_de(_jrow['Brutto'] / 12)} €/Mon.")
+            jm2.metric(f"Netto {_sel_j}", f"{_de(_jrow['Netto'] / 12)} €/Mon.")
+            jm3.metric(f"Steuer {_sel_j}", f"{_de(_jrow['Steuer'] / 12)} €/Mon.")
+            jm4.metric(f"KV/PV {_sel_j}", f"{_de(_jrow['KV_PV'] / 12)} €/Mon.")
+            if "KV_P2" in df_jd.columns and _jrow["KV_P2"] > 0:
+                st.caption(
+                    f"KV-Aufteilung: P1 {_de(_jrow['KV_P1'] / 12)} €/Mon. "
+                    f"| P2 {_de(_jrow['KV_P2'] / 12)} €/Mon."
+                )
+
+        st.divider()
+
         # ── Steuer- und KV-Verlauf ────────────────────────────────────────────
         st.subheader("Steuer- und KV-Verlauf")
         fig_tax = go.Figure()
@@ -317,11 +391,24 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 marker_color="#FFCDD2",
                 hovertemplate="%{x}: %{y:,.0f} €<extra>Abgeltungsteuer</extra>",
             ))
-        fig_tax.add_trace(go.Bar(
-            name="KV/PV", x=df_jd.index, y=df_jd["KV_PV"],
-            marker_color="#FFF176",
-            hovertemplate="%{x}: %{y:,.0f} €<extra>KV/PV</extra>",
-        ))
+        _hat_p2_kv = "KV_P2" in df_jd.columns and df_jd["KV_P2"].sum() > 0
+        if _hat_p2_kv:
+            _kv_custom = [
+                f"P1: {_de(r['KV_P1'])} €<br>P2: {_de(r['KV_P2'])} €"
+                for _, r in df_jd.iterrows()
+            ]
+            fig_tax.add_trace(go.Bar(
+                name="KV/PV", x=df_jd.index, y=df_jd["KV_PV"],
+                marker_color="#FFF176",
+                customdata=_kv_custom,
+                hovertemplate="%{x}: %{y:,.0f} €<br><i>%{customdata}</i><extra>KV/PV</extra>",
+            ))
+        else:
+            fig_tax.add_trace(go.Bar(
+                name="KV/PV", x=df_jd.index, y=df_jd["KV_PV"],
+                marker_color="#FFF176",
+                hovertemplate="%{x}: %{y:,.0f} €<extra>KV/PV</extra>",
+            ))
         fig_tax.add_trace(go.Scatter(
             name="zvE", x=df_jd.index, y=df_jd["zvE"],
             mode="lines", line=dict(color="#5C6BC0", width=2, dash="dot"),

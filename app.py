@@ -573,7 +573,8 @@ T["Dokumentation"] = tabs[idx]; idx += 1
 
 render_profil_tab(T)
 dashboard.render(T, profil1, ergebnis1, mieteinnahmen=mieteinnahmen,
-                 profil2=profil2, ergebnis2=ergebnis2)
+                 mietsteigerung=mietsteigerung,
+                 profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung)
 if profil2:
     haushalt.render(T, profil1, profil2, ergebnis1, ergebnis2, veranlagung, haushalt_daten,
                     mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)

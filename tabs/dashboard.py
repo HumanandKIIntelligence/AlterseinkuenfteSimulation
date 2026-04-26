@@ -3,7 +3,7 @@
 import plotly.graph_objects as go
 import streamlit as st
 
-from engine import Profil, RentenErgebnis, GRUNDFREIBETRAG_2024
+from engine import Profil, RentenErgebnis, GRUNDFREIBETRAG_2024, berechne_haushalt, _netto_ueber_horizont
 from tabs import steuern
 
 
@@ -47,7 +47,7 @@ def _kv_pv_split(profil: Profil, kv_gesamt: float,
     return kv_gesamt * _kv_rate / _total, kv_gesamt * _pv_rate / _total
 
 
-def _steuerampel(zvE: float) -> None:
+def _steuerampel(zvE: float, titel: str = "") -> None:
     if zvE <= 0:
         zvE = 0.0
 
@@ -87,7 +87,10 @@ def _steuerampel(zvE: float) -> None:
         naechste = "–"
         tipp = "Maximale Steuerbelastung – intensive Steuerplanung und -beratung empfohlen."
 
-    st.subheader(f"{farbe} Steuerzone: {zone}")
+    _header = f"{farbe} Steuerzone: {zone}"
+    if titel:
+        _header = f"{farbe} {titel} – {zone}"
+    st.subheader(_header)
     zc1, zc2, zc3 = st.columns(3)
     zc1.metric("Grenzsteuersatz", f"{gst:.1%}".replace(".", ","),
                help="Steuersatz auf jeden zusätzlichen Euro Einkommen.")
@@ -102,16 +105,267 @@ def _steuerampel(zvE: float) -> None:
 
 def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
            mieteinnahmen: float = 0.0,
+           mietsteigerung: float = 0.0,
            profil2: Profil | None = None,
-           ergebnis2: RentenErgebnis | None = None) -> None:
+           ergebnis2: RentenErgebnis | None = None,
+           veranlagung: str = "Getrennt") -> None:
     with T["Dashboard"]:
         st.header("📊 Rentenübersicht")
 
-        if profil2 is not None and ergebnis2 is not None:
-            wahl = st.radio("Person", ["Person 1", "Person 2"],
+        hat_partner = profil2 is not None and ergebnis2 is not None
+        wahl = "Person 1"
+        if hat_partner:
+            wahl = st.radio("Ansicht", ["Person 1", "Person 2", "Zusammen"],
                             horizontal=True, key="dash_person")
-            if wahl == "Person 2":
-                profil, ergebnis = profil2, ergebnis2
+
+        zusammen_modus = wahl == "Zusammen"
+
+        if wahl == "Person 2":
+            profil, ergebnis = profil2, ergebnis2
+
+        # ══════════════════════════════════════════════════════════════════════
+        # ZUSAMMEN-ANSICHT
+        # ══════════════════════════════════════════════════════════════════════
+        if zusammen_modus:
+            hh = berechne_haushalt(ergebnis, ergebnis2, veranlagung, mieteinnahmen)
+
+            # Jahressimulationen für Slider (HH kombiniert + Einzelpersonen)
+            _start_hh = min(
+                profil.rentenbeginn_jahr if profil.bereits_rentner else profil.eintritt_jahr,
+                profil2.rentenbeginn_jahr if profil2.bereits_rentner else profil2.eintritt_jahr,
+            )
+            _, _jd_dash    = _netto_ueber_horizont(
+                profil, ergebnis, [], 31, mieteinnahmen, mietsteigerung,
+                profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
+            )
+            _, _jd_dash_p1 = _netto_ueber_horizont(profil,  ergebnis,  [], 31, 0.0, 0.0)
+            _, _jd_dash_p2 = _netto_ueber_horizont(profil2, ergebnis2, [], 31, 0.0, 0.0)
+            _end_hh = _start_hh + 30
+            _sel_j_dash = st.slider(
+                "Betrachtungsjahr", _start_hh, _end_hh, _start_hh, key="dash_jahr",
+                help="Zeigt projizierte Haushaltswerte mit Rentenanpassung für das gewählte Jahr.",
+            )
+            _row_dash    = next((r for r in _jd_dash    if r["Jahr"] == _sel_j_dash), None)
+            _row_dash_p1 = next((r for r in _jd_dash_p1 if r["Jahr"] == _sel_j_dash), None)
+            _row_dash_p2 = next((r for r in _jd_dash_p2 if r["Jahr"] == _sel_j_dash), None)
+            # Einzelnetto für P1 vs P2 Chart (keine Mieteinnahmen → nur Rente)
+            _p1_n_y = _row_dash_p1["Netto"]  / 12 if _row_dash_p1 else ergebnis.netto_monatlich
+            _p2_n_y = _row_dash_p2["Netto"]  / 12 if _row_dash_p2 else ergebnis2.netto_monatlich
+            # P1/P2 Brutto aus Src-Feldern des HH-Datensatzes (ohne Produkte = nur Rente/Gehalt)
+            _p1_b_y = (_row_dash.get("Src_GesRente", 0) + _row_dash.get("Src_Gehalt", 0)) / 12 \
+                      if _row_dash else ergebnis.brutto_monatlich
+            _p2_b_y = _row_dash.get("Src_P2_Rente", 0) / 12 if _row_dash else ergebnis2.brutto_monatlich
+            _miete_y = _row_dash.get("Src_Miete", 0) / 12 if _row_dash else mieteinnahmen
+            # zvE für Steuerampel
+            _zvE_dash = _row_dash["zvE"] if _row_dash else (ergebnis.zvE_jahres + ergebnis2.zvE_jahres + mieteinnahmen * 12)
+            _zvE_p1_y = _row_dash_p1["zvE"] if _row_dash_p1 else ergebnis.zvE_jahres
+            _zvE_p2_y = _row_dash_p2["zvE"] if _row_dash_p2 else ergebnis2.zvE_jahres
+            # Miete wächst mit Mietsteigerung
+            _miet_r_y = max(0, _sel_j_dash - _start_hh)
+            _miete_zvE_half = mieteinnahmen * (1 + mietsteigerung) ** _miet_r_y * 6  # halbes Jahresmiete je Person
+
+            # Header: beide Personen
+            hi1, hi2 = st.columns(2)
+            with hi1:
+                _ab1 = (
+                    f"  |  Abschlag: {ergebnis.rentenabschlag:.1%}".replace(".", ",")
+                    if ergebnis.rentenabschlag > 0 else ""
+                )
+                st.info(
+                    f"**P1:** {profil.aktuelles_alter} Jahre  |  "
+                    f"Renteneintritt {profil.renteneintritt_alter} ({profil.eintritt_jahr})  |  "
+                    f"Noch {profil.jahre_bis_rente} Jahre" + _ab1
+                )
+            with hi2:
+                _ab2 = (
+                    f"  |  Abschlag: {ergebnis2.rentenabschlag:.1%}".replace(".", ",")
+                    if ergebnis2.rentenabschlag > 0 else ""
+                )
+                st.info(
+                    f"**P2:** {profil2.aktuelles_alter} Jahre  |  "
+                    f"Renteneintritt {profil2.renteneintritt_alter} ({profil2.eintritt_jahr})  |  "
+                    f"Noch {profil2.jahre_bis_rente} Jahre" + _ab2
+                )
+
+            # ── Top-Kennzahlen (Jahr-spezifisch) ─────────────────────────────
+            _hh_brutto = _row_dash["Brutto"] / 12 if _row_dash else hh["brutto_gesamt"]
+            _hh_netto  = _row_dash["Netto"]  / 12 if _row_dash else hh["netto_gesamt"]
+            _hh_steuer = _row_dash["Steuer"] / 12 if _row_dash else hh["steuer_gesamt"]
+            _hh_kv     = _row_dash["KV_PV"]  / 12 if _row_dash else hh["kv_gesamt"]
+            _hh_kv_p1  = _row_dash["KV_P1"]  / 12 if _row_dash and "KV_P1" in _row_dash else None
+            _hh_kv_p2  = _row_dash["KV_P2"]  / 12 if _row_dash and "KV_P2" in _row_dash else None
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric(
+                f"Brutto Haushalt {_sel_j_dash}", f"{_de(_hh_brutto)} €/Mon.",
+                help="Gesetzliche Renten + Zusatzrenten beider Personen + Mieteinnahmen.",
+            )
+            c2.metric(
+                f"Netto Haushalt {_sel_j_dash}", f"{_de(_hh_netto)} €/Mon.",
+                help="Nach Einkommensteuer und KV/PV beider Personen.",
+            )
+            kapital_gesamt = ergebnis.kapital_bei_renteneintritt + ergebnis2.kapital_bei_renteneintritt
+            c3.metric(
+                "Kapital gesamt (Eintritt)", f"{_de(kapital_gesamt)} €",
+                help="Summe des angewachsenen Spar- und Depotkapitals beider Personen.",
+            )
+            if hh["steuerersparnis_splitting"] > 0:
+                c4.metric(
+                    "Splitting-Ersparnis / Mon.", f"{_de(hh['steuerersparnis_splitting'])} €",
+                    help="Steuerersparnis durch Zusammenveranlagung (§ 32a Abs. 5 EStG) gegenüber getrennter Veranlagung.",
+                )
+            else:
+                c4.metric(f"Steuer {_sel_j_dash} / Mon.", f"{_de(_hh_steuer)} €")
+
+            # ── Zeile 2: P1/P2 Netto + Steuer / KV ──────────────────────────
+            c5, c6, c7, c8, c9 = st.columns(5)
+            c5.metric(f"P1 Netto {_sel_j_dash}", f"{_de(_p1_n_y)} €/Mon.")
+            c6.metric(f"P2 Netto {_sel_j_dash}", f"{_de(_p2_n_y)} €/Mon.")
+            c7.metric(f"Steuer {_sel_j_dash} / Mon.", f"{_de(_hh_steuer)} €")
+            c8.metric(f"KV/PV {_sel_j_dash} / Mon.", f"{_de(_hh_kv)} €")
+            if mieteinnahmen > 0:
+                c9.metric(
+                    "Mieteinnahmen", f"{_de(mieteinnahmen)} €/Mon.",
+                    help="Gemeinsame Nettomieteinnahmen (§ 21 EStG).",
+                )
+            else:
+                c9.metric(
+                    "Veranlagung", veranlagung,
+                    help="Getrennte oder gemeinsame Einkommensteuerveranlagung.",
+                )
+
+            st.divider()
+
+            # ── Wasserfall Haushalt Brutto → Netto ───────────────────────────
+            st.subheader(f"Haushalt Brutto → Netto {_sel_j_dash} (monatlich)")
+            _wf_x = ["P1 Brutto", "P2 Brutto"]
+            _wf_m = ["absolute", "relative"]
+            _wf_y = [_p1_b_y, _p2_b_y]
+            _wf_t = [
+                f"{_de(_p1_b_y)} €",
+                f"+{_de(_p2_b_y)} €",
+            ]
+            if _miete_y > 0:
+                _wf_x.append("Mieteinnahmen")
+                _wf_m.append("relative")
+                _wf_y.append(_miete_y)
+                _wf_t.append(f"+{_de(_miete_y)} €")
+            _wf_x += ["− Einkommensteuer", "− KV/PV", "Netto Haushalt"]
+            _wf_m += ["relative", "relative", "total"]
+            _wf_y += [-_hh_steuer, -_hh_kv, _hh_netto]
+            _wf_t += [
+                f"−{_de(_hh_steuer)} €",
+                f"−{_de(_hh_kv)} €",
+                f"{_de(_hh_netto)} €",
+            ]
+            fig_wf = go.Figure(go.Waterfall(
+                orientation="v",
+                measure=_wf_m,
+                x=_wf_x,
+                y=_wf_y,
+                text=_wf_t,
+                textposition="outside",
+                connector=dict(line=dict(color="#888")),
+                increasing=dict(marker=dict(color="#4CAF50")),
+                decreasing=dict(marker=dict(color="#F44336")),
+                totals=dict(marker=dict(color="#2196F3")),
+            ))
+            fig_wf.update_layout(
+                template="plotly_white",
+                height=380,
+                yaxis=dict(title="€ / Monat", ticksuffix=" €"),
+                margin=dict(l=10, r=10, t=10, b=10),
+                separators=",.",
+            )
+            st.plotly_chart(fig_wf, use_container_width=True)
+
+            st.divider()
+
+            # ── Vergleich P1 / P2 + Kaufkraft ────────────────────────────────
+            left, right = st.columns(2)
+
+            with left:
+                st.subheader(f"Nettorente P1 vs. P2 – {_sel_j_dash}")
+                fig_bar = go.Figure(go.Bar(
+                    x=["Person 1", "Person 2"],
+                    y=[_p1_n_y, _p2_n_y],
+                    marker_color=["#2196F3", "#4CAF50"],
+                    text=[f"{_de(_p1_n_y)} €", f"{_de(_p2_n_y)} €"],
+                    textposition="outside",
+                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra></extra>",
+                ))
+                fig_bar.update_layout(
+                    template="plotly_white", height=300,
+                    yaxis=dict(title="Nettorente (€/Mon.)", ticksuffix=" €"),
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    separators=",.",
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            with right:
+                st.subheader(f"Kaufkraft Haushalt heute vs. {_sel_j_dash}")
+                inflation = 0.02
+                jahre_max = _sel_j_dash - _start_hh + max(profil.jahre_bis_rente, profil2.jahre_bis_rente)
+                kaufkraft = _hh_netto / (1 + inflation) ** max(0, jahre_max)
+                verlust = _hh_netto - kaufkraft
+                st.metric(
+                    f"Haushaltsnetto {_sel_j_dash} in heutiger Kaufkraft (2 % Inflation)",
+                    f"{_de(kaufkraft)} €",
+                    delta=f"−{_de(verlust)} € Kaufkraftverlust",
+                    delta_color="inverse",
+                )
+                st.caption(
+                    f"Das Haushaltsnetto von **{_de(_hh_netto)} €** im Jahr {_sel_j_dash} "
+                    f"entspricht bei 2 % Inflation der heutigen Kaufkraft von nur **{_de(kaufkraft)} €**."
+                )
+
+            st.divider()
+
+            # ── Steuerampel ───────────────────────────────────────────────────
+            if veranlagung == "Zusammen":
+                st.caption(
+                    f"Steuerampel auf Basis des effektiven zvE pro Person bei Splitting "
+                    f"(zvE gesamt {_de(_zvE_dash)} € ÷ 2)."
+                )
+                _steuerampel(_zvE_dash / 2)
+            else:
+                ac1, ac2 = st.columns(2)
+                with ac1:
+                    _steuerampel(_zvE_p1_y + _miete_zvE_half, titel="Person 1")
+                with ac2:
+                    _steuerampel(_zvE_p2_y + _miete_zvE_half, titel="Person 2")
+
+            st.divider()
+
+            with st.expander("🧾 Steuer- & KV-Details Person 1", expanded=False):
+                steuern.render_section(profil, ergebnis, mieteinnahmen / 2 if mieteinnahmen > 0 else 0.0)
+            with st.expander("🧾 Steuer- & KV-Details Person 2", expanded=False):
+                steuern.render_section(profil2, ergebnis2, mieteinnahmen / 2 if mieteinnahmen > 0 else 0.0)
+
+            st.caption(
+                "⚠️ Alle Angaben sind Simulationswerte auf Basis vereinfachter Annahmen. "
+                "Keine Steuer- oder Anlageberatung."
+            )
+            return
+
+        # ══════════════════════════════════════════════════════════════════════
+        # EINZELPERSON-ANSICHT (Person 1 oder Person 2)
+        # ══════════════════════════════════════════════════════════════════════
+
+        # Jahressimulation für Slider (keine Produkte)
+        _start_einzel = profil.rentenbeginn_jahr if profil.bereits_rentner else profil.eintritt_jahr
+        _, _jd_dash = _netto_ueber_horizont(profil, ergebnis, [], 31, mieteinnahmen, mietsteigerung)
+        _end_einzel = _start_einzel + 30
+        _sel_j_dash = st.slider(
+            "Betrachtungsjahr", _start_einzel, _end_einzel, _start_einzel, key="dash_jahr",
+            help="Zeigt projizierte Rentenwerte mit Rentenanpassung für das gewählte Jahr.",
+        )
+        _row_dash = next((r for r in _jd_dash if r["Jahr"] == _sel_j_dash), None)
+        _d_brutto = _row_dash["Brutto"] / 12 if _row_dash else ergebnis.brutto_monatlich
+        _d_netto  = _row_dash["Netto"]  / 12 if _row_dash else ergebnis.netto_monatlich
+        _d_steuer = _row_dash["Steuer"] / 12 if _row_dash else ergebnis.steuer_monatlich
+        _d_kv     = _row_dash["KV_PV"]  / 12 if _row_dash else ergebnis.kv_monatlich
+        _d_zvE    = _row_dash["zvE"]         if _row_dash else ergebnis.zvE_jahres
 
         abschlag_info = (
             f"  |  **Rentenabschlag:** {ergebnis.rentenabschlag:.1%}".replace(".", ",") +
@@ -125,14 +379,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             + abschlag_info
         )
 
-        # ── Kennzahlen ────────────────────────────────────────────────────────
+        # ── Kennzahlen (Jahr-spezifisch via Slider) ───────────────────────────
         c1, c2, c3, c4 = st.columns(4)
         c1.metric(
-            "Bruttorente / Monat", f"{_de(ergebnis.brutto_monatlich)} €",
+            f"Bruttorente {_sel_j_dash}", f"{_de(_d_brutto)} €/Mon.",
             help="Gesetzliche Rente + Zusatzrente vor Steuer und KV-Abzügen.",
         )
         c2.metric(
-            "Nettorente / Monat", f"{_de(ergebnis.netto_monatlich)} €",
+            f"Nettorente {_sel_j_dash}", f"{_de(_d_netto)} €/Mon.",
             help="Nach Einkommensteuer und Kranken-/Pflegeversicherungsbeitrag.",
         )
         c3.metric(
@@ -145,20 +399,24 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                  f"+ {profil.punkte_pro_jahr:.2f} Punkte/Jahr × {profil.jahre_bis_rente} Jahre.".replace(".", ","),
         )
 
-        # KV/PV-Split berechnen
-        gkv_mono, pv_mono = _kv_pv_split(profil, ergebnis.kv_monatlich, ergebnis)
+        # KV/PV-Split berechnen (Eintrittsmonat-Verhältnis auf Jahr-KV anwenden)
+        _kv_ratio = _kv_pv_split(profil, ergebnis.kv_monatlich, ergebnis)
+        _kv_total_ratio = ergebnis.kv_monatlich if ergebnis.kv_monatlich > 0 else 1.0
+        _kv_share_gkv = _kv_ratio[0] / _kv_total_ratio
+        _kv_share_pv  = _kv_ratio[1] / _kv_total_ratio
+        gkv_mono = _d_kv * _kv_share_gkv
+        pv_mono  = _d_kv * _kv_share_pv
         _kv_label = "PKV / Monat" if profil.krankenversicherung == "PKV" else "KV / Monat"
-        _pv_label = "–" if profil.krankenversicherung == "PKV" else "PV / Monat"
 
         c5, c6, c7, c8, c9 = st.columns(5)
         c5.metric(
-            "Gesetzl. Rente (brutto)", f"{_de(ergebnis.brutto_gesetzlich)} €/Mon.",
+            "Gesetzl. Rente (brutto, Eintritt)", f"{_de(ergebnis.brutto_gesetzlich)} €/Mon.",
             help=f"Rentenabschlag: {ergebnis.rentenabschlag:.1%}".replace(".", ",") + " (§ 77 SGB VI)"
                  if ergebnis.rentenabschlag > 0 else None,
         )
-        c6.metric("Steuerabzug / Monat", f"{_de(ergebnis.steuer_monatlich)} €")
+        c6.metric(f"Steuer {_sel_j_dash} / Mon.", f"{_de(_d_steuer)} €")
         c7.metric(
-            _kv_label, f"{_de(gkv_mono)} €",
+            f"{_kv_label} {_sel_j_dash}", f"{_de(gkv_mono)} €",
             help="Krankenversicherungsbeitrag (eigener Anteil).",
         )
         if profil.krankenversicherung == "GKV":
@@ -186,24 +444,24 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         st.divider()
 
         # ── Wasserfall Brutto → Netto ─────────────────────────────────────────
-        st.subheader("Brutto → Netto (monatlich)")
+        st.subheader(f"Brutto → Netto {_sel_j_dash} (monatlich)")
         fig_wf = go.Figure(go.Waterfall(
             orientation="v",
             measure=["absolute", "relative", "relative", "relative", "total"],
             x=["Bruttorente", "− Einkommensteuer", "− KV", "− PV", "Nettorente"],
             y=[
-                ergebnis.brutto_monatlich,
-                -ergebnis.steuer_monatlich,
+                _d_brutto,
+                -_d_steuer,
                 -gkv_mono,
                 -pv_mono,
-                ergebnis.netto_monatlich,
+                _d_netto,
             ],
             text=[
-                f"{_de(ergebnis.brutto_monatlich)} €",
-                f"−{_de(ergebnis.steuer_monatlich)} €",
+                f"{_de(_d_brutto)} €",
+                f"−{_de(_d_steuer)} €",
                 f"−{_de(gkv_mono)} €",
                 f"−{_de(pv_mono)} €",
-                f"{_de(ergebnis.netto_monatlich)} €",
+                f"{_de(_d_netto)} €",
             ],
             textposition="outside",
             connector=dict(line=dict(color="#888")),
@@ -246,18 +504,19 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 st.plotly_chart(fig_pie, use_container_width=True)
 
         with right:
-            st.subheader("Kaufkraft heute vs. Rente")
+            st.subheader(f"Kaufkraft heute vs. {_sel_j_dash}")
             inflation = 0.02
-            kaufkraft = ergebnis.netto_monatlich / (1 + inflation) ** profil.jahre_bis_rente
-            verlust = ergebnis.netto_monatlich - kaufkraft
+            jahre_inflation = _sel_j_dash - profil.eintritt_jahr + profil.jahre_bis_rente
+            kaufkraft = _d_netto / (1 + inflation) ** max(0, jahre_inflation)
+            verlust = _d_netto - kaufkraft
             st.metric(
-                "Nettorente in heutiger Kaufkraft (2 % Inflation)",
+                f"Nettorente {_sel_j_dash} in heutiger Kaufkraft (2 % Inflation)",
                 f"{_de(kaufkraft)} €",
                 delta=f"−{_de(verlust)} € Kaufkraftverlust",
                 delta_color="inverse",
             )
             st.caption(
-                f"Die Nettorente von **{_de(ergebnis.netto_monatlich)} €** in {profil.eintritt_jahr} "
+                f"Die Nettorente von **{_de(_d_netto)} €** im Jahr {_sel_j_dash} "
                 f"entspricht bei 2 % Inflation der heutigen Kaufkraft von nur **{_de(kaufkraft)} €**. "
                 f"Die eigene Rentenanpassungs-Annahme von "
                 f"{profil.rentenanpassung_pa:.0%}".replace(".", ",") + " p.a. "
@@ -266,8 +525,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         st.divider()
 
-        zvE_mit_miete = ergebnis.zvE_jahres + mieteinnahmen * 12
-        _steuerampel(zvE_mit_miete)
+        _steuerampel(_d_zvE + mieteinnahmen * 12)
 
         st.divider()
 
