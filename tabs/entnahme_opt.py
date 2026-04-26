@@ -14,7 +14,7 @@ import streamlit as st
 from engine import (
     Profil, RentenErgebnis, VorsorgeProdukt,
     optimiere_auszahlungen, besteuerungsanteil, ertragsanteil,
-    BAV_FREIBETRAG_MONATLICH,
+    BAV_FREIBETRAG_MONATLICH, BBG_KV_MONATLICH, _pv_satz,
 )
 from tabs import auszahlung
 from tabs.vorsorge import _run_optimierung
@@ -137,6 +137,9 @@ def _analyse_schenkungspotenzial(
     produkte: list[dict],
     profil: Profil,
     profil2: Profil | None,
+    ergebnis: "RentenErgebnis | None" = None,
+    ergebnis2: "RentenErgebnis | None" = None,
+    mieteinnahmen_monatlich: float = 0.0,
 ) -> dict | None:
     """Analysiert Schenkungspotenzial zwischen GKV- und PKV-Person.
 
@@ -153,12 +156,13 @@ def _analyse_schenkungspotenzial(
 
     if p1_gkv:
         gkv_label, pkv_label, gkv_profil = "Person 1", "Person 2", profil
+        gkv_ergebnis = ergebnis
     else:
         gkv_label, pkv_label, gkv_profil = "Person 2", "Person 1", profil2
+        gkv_ergebnis = ergebnis2
 
     gkv_ist_freiwillig = not gkv_profil.kvdr_pflicht
-    pv_voll = 0.034 if gkv_profil.kinder else 0.040
-    pv_halb = 0.017 if gkv_profil.kinder else 0.023
+    pv_voll, pv_halb = _pv_satz(gkv_profil.kinder_anzahl if gkv_profil.kinder else 0)
     kv_rate_voll = 0.146 + gkv_profil.gkv_zusatzbeitrag + pv_voll
     kv_rate_halb = 0.073 + gkv_profil.gkv_zusatzbeitrag / 2 + pv_halb
 
@@ -168,6 +172,22 @@ def _analyse_schenkungspotenzial(
         max(0.0, BAV_FREIBETRAG_MONATLICH - bav_mono_sum)
         if not gkv_ist_freiwillig else 0.0
     )
+
+    # Verbleibendes BBG-Kontingent für übertragbare Produkte (freiwillig GKV)
+    # Basis: Festeinkommen das bereits KV-pflichtig ist und nicht übertragbar ist
+    if gkv_ist_freiwillig and gkv_ergebnis is not None:
+        ruerup_mono_sum = sum(
+            p.get("max_monatsrente", 0.0) for p in gkv_prods if p.get("typ") == "Rürup"
+        )
+        _base_mono = (
+            gkv_ergebnis.brutto_monatlich   # GRV/Pension + Profil.zusatz_monatlich
+            + bav_mono_sum                   # bAV (nicht übertragbar)
+            + ruerup_mono_sum                # Rürup (nicht übertragbar)
+            + mieteinnahmen_monatlich / 2    # Mietanteil (50 %, konservativ)
+        )
+        _bbg_rest_mono = max(0.0, BBG_KV_MONATLICH - _base_mono)
+    else:
+        _bbg_rest_mono = BBG_KV_MONATLICH
 
     zu_verschieben: list[dict] = []
     nicht_verschiebbar: list[dict] = []
@@ -200,7 +220,12 @@ def _analyse_schenkungspotenzial(
             })
 
         elif typ == "Riester":
-            kv_j = mono * 12 * kv_rate_voll if gkv_ist_freiwillig else 0.0
+            if gkv_ist_freiwillig:
+                kv_relevant = min(mono, _bbg_rest_mono)
+                kv_j = kv_relevant * 12 * kv_rate_voll
+                _bbg_rest_mono = max(0.0, _bbg_rest_mono - kv_relevant)
+            else:
+                kv_j = 0.0
             gesamt_ersparnis_pa += kv_j
             zu_verschieben.append({
                 "Vertrag": name, "Typ": typ, "Von": gkv_label, "An": pkv_label,
@@ -211,11 +236,13 @@ def _analyse_schenkungspotenzial(
         elif typ in ("PrivateRente", "LV"):
             if gkv_ist_freiwillig:
                 if mono > 0:
-                    kv_j = mono * 12 * kv_rate_voll
+                    kv_relevant = min(mono, _bbg_rest_mono)
+                    kv_j = kv_relevant * 12 * kv_rate_voll
+                    _bbg_rest_mono = max(0.0, _bbg_rest_mono - kv_relevant)
                     hinweis = ""
                 else:
                     kv_j = 0.0
-                    einmal_ersparnis = min(einmal, 5_175 * 12) * kv_rate_voll
+                    einmal_ersparnis = min(einmal, _bbg_rest_mono * 12) * kv_rate_voll
                     hinweis = f"Einmalauszahlung: einmalige KV-Ersparnis ca. {_de(einmal_ersparnis)} €"
             else:
                 kv_j = 0.0
@@ -228,7 +255,12 @@ def _analyse_schenkungspotenzial(
             })
 
         elif typ == "ETF":
-            kv_j = lfd_kap * 12 * kv_rate_voll if gkv_ist_freiwillig and lfd_kap > 0 else 0.0
+            if gkv_ist_freiwillig and lfd_kap > 0:
+                kv_relevant = min(lfd_kap, _bbg_rest_mono)
+                kv_j = kv_relevant * 12 * kv_rate_voll
+                _bbg_rest_mono = max(0.0, _bbg_rest_mono - kv_relevant)
+            else:
+                kv_j = 0.0
             hinweis = (
                 "" if kv_j > 0
                 else "Keine lfd. Kapitalerträge erfasst – KV-Ersparnis nicht berechenbar"
@@ -418,7 +450,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         # ── Schenkungsanalyse (nur bei gemischter GKV/PKV-Konstellation) ────────
         if eo_person == "Zusammen" and hat_partner:
-            _analyse = _analyse_schenkungspotenzial(produkte_dicts, profil, profil2)
+            _analyse = _analyse_schenkungspotenzial(
+                produkte_dicts, profil, profil2, ergebnis, ergebnis2, mieteinnahmen)
             if _analyse is not None:
                 _render_schenkungsanalyse(_analyse)
                 st.divider()
