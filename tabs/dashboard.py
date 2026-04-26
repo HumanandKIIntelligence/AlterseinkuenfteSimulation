@@ -3,7 +3,10 @@
 import plotly.graph_objects as go
 import streamlit as st
 
-from engine import Profil, RentenErgebnis, GRUNDFREIBETRAG_2024, berechne_haushalt, _netto_ueber_horizont
+from engine import (
+    Profil, RentenErgebnis, GRUNDFREIBETRAG_2024, AKTUELLES_JAHR,
+    berechne_haushalt, _netto_ueber_horizont, einkommensteuer, solidaritaetszuschlag,
+)
 from tabs import steuern
 
 
@@ -91,15 +94,20 @@ def _steuerampel(zvE: float, titel: str = "") -> None:
     if titel:
         _header = f"{farbe} {titel} – {zone}"
     st.subheader(_header)
-    zc1, zc2, zc3 = st.columns(3)
+    zc1, zc2, zc3, zc4 = st.columns(4)
     zc1.metric("Grenzsteuersatz", f"{gst:.1%}".replace(".", ","),
                help="Steuersatz auf jeden zusätzlichen Euro Einkommen.")
     zc2.metric("zvE aktuell", f"{_de(zvE)} €/Jahr")
+    _est = einkommensteuer(zvE)
+    _soli = solidaritaetszuschlag(_est)
+    zc3.metric("Jahressteuer (ESt + Soli)",
+               f"{_de(_est + _soli)} €",
+               help=f"ESt: {_de(_est)} € + Soli: {_de(_soli, 2)} € (5,5 % ab 17.543 € ESt)")
     if freiraum > 0:
-        zc3.metric(f"Freiraum bis {naechste}", f"{_de(freiraum)} €",
+        zc4.metric(f"Freiraum bis {naechste}", f"{_de(freiraum)} €",
                    help="Um diesen Betrag kann das zvE noch steigen, bevor der nächste Steuersatz greift.")
     else:
-        zc3.metric("Nächste Zone", "–")
+        zc4.metric("Nächste Zone", "–")
     st.info(f"💡 **Handlungshinweis:** {tipp}")
 
 
@@ -109,6 +117,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
            profil2: Profil | None = None,
            ergebnis2: RentenErgebnis | None = None,
            veranlagung: str = "Getrennt") -> None:
+    _rc = st.session_state.get("_rc", 0)
     with T["Dashboard"]:
         st.header("📊 Rentenübersicht")
 
@@ -116,7 +125,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         wahl = "Person 1"
         if hat_partner:
             wahl = st.radio("Ansicht", ["Person 1", "Person 2", "Zusammen"],
-                            horizontal=True, key="dash_person")
+                            horizontal=True, key=f"rc{_rc}_dash_person")
 
         zusammen_modus = wahl == "Zusammen"
 
@@ -130,19 +139,25 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             hh = berechne_haushalt(ergebnis, ergebnis2, veranlagung, mieteinnahmen)
 
             # Jahressimulationen für Slider (HH kombiniert + Einzelpersonen)
-            _start_hh = min(
-                profil.rentenbeginn_jahr if profil.bereits_rentner else profil.eintritt_jahr,
-                profil2.rentenbeginn_jahr if profil2.bereits_rentner else profil2.eintritt_jahr,
-            )
+            _g_p1 = 0.0 if profil.ist_pensionaer  or profil.bereits_rentner  else profil.aktuelles_brutto_monatlich
+            _g_p2 = 0.0 if profil2.ist_pensionaer or profil2.bereits_rentner else profil2.aktuelles_brutto_monatlich
+            _start_p1_ret = profil.rentenbeginn_jahr  if profil.bereits_rentner  else profil.eintritt_jahr
+            _start_p2_ret = profil2.rentenbeginn_jahr if profil2.bereits_rentner else profil2.eintritt_jahr
+            _start_hh     = min(_start_p1_ret, _start_p2_ret)
+            _end_hh       = _start_hh + 30
+            _start_slider_hh = AKTUELLES_JAHR if (_g_p1 > 0 or _g_p2 > 0) else _start_hh
+            _hz_p1 = _end_hh - _start_p1_ret + 1
+            _hz_p2 = _end_hh - _start_p2_ret + 1
             _, _jd_dash    = _netto_ueber_horizont(
-                profil, ergebnis, [], 31, mieteinnahmen, mietsteigerung,
+                profil, ergebnis, [], _hz_p1, mieteinnahmen, mietsteigerung,
                 profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
+                gehalt_monatlich=_g_p1,
             )
-            _, _jd_dash_p1 = _netto_ueber_horizont(profil,  ergebnis,  [], 31, 0.0, 0.0)
-            _, _jd_dash_p2 = _netto_ueber_horizont(profil2, ergebnis2, [], 31, 0.0, 0.0)
-            _end_hh = _start_hh + 30
+            _, _jd_dash_p1 = _netto_ueber_horizont(profil,  ergebnis,  [], _hz_p1, 0.0, 0.0, gehalt_monatlich=_g_p1)
+            _, _jd_dash_p2 = _netto_ueber_horizont(profil2, ergebnis2, [], _hz_p2, 0.0, 0.0, gehalt_monatlich=_g_p2)
             _sel_j_dash = st.slider(
-                "Betrachtungsjahr", _start_hh, _end_hh, _start_hh, key="dash_jahr",
+                "Betrachtungsjahr", _start_slider_hh, _end_hh,
+                min(_end_hh, max(_start_slider_hh, _start_hh)), key=f"rc{_rc}_dash_jahr",
                 help="Zeigt projizierte Haushaltswerte mit Rentenanpassung für das gewählte Jahr.",
             )
             _row_dash    = next((r for r in _jd_dash    if r["Jahr"] == _sel_j_dash), None)
@@ -304,19 +319,25 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
             with right:
                 st.subheader(f"Kaufkraft Haushalt heute vs. {_sel_j_dash}")
-                inflation = 0.02
+                _inf_pct_hh = st.number_input(
+                    "Inflation p.a. (%)", 0.0, 5.0, 2.0, 0.1,
+                    key=f"rc{_rc}_dash_inflation_hh",
+                    help="Angenommene jährliche Inflationsrate für die Kaufkraftberechnung.",
+                )
+                inflation = _inf_pct_hh / 100
                 jahre_max = _sel_j_dash - _start_hh + max(profil.jahre_bis_rente, profil2.jahre_bis_rente)
                 kaufkraft = _hh_netto / (1 + inflation) ** max(0, jahre_max)
                 verlust = _hh_netto - kaufkraft
                 st.metric(
-                    f"Haushaltsnetto {_sel_j_dash} in heutiger Kaufkraft (2 % Inflation)",
+                    f"Haushaltsnetto {_sel_j_dash} in heutiger Kaufkraft ({_inf_pct_hh:.1f} % Inflation)".replace(".", ","),
                     f"{_de(kaufkraft)} €",
                     delta=f"−{_de(verlust)} € Kaufkraftverlust",
                     delta_color="inverse",
                 )
                 st.caption(
                     f"Das Haushaltsnetto von **{_de(_hh_netto)} €** im Jahr {_sel_j_dash} "
-                    f"entspricht bei 2 % Inflation der heutigen Kaufkraft von nur **{_de(kaufkraft)} €**."
+                    f"entspricht bei {_inf_pct_hh:.1f} % Inflation".replace(".", ",") +
+                    f" der heutigen Kaufkraft von nur **{_de(kaufkraft)} €**."
                 )
 
             st.divider()
@@ -354,11 +375,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         # Jahressimulation für Slider (keine Produkte)
         _start_einzel = profil.rentenbeginn_jahr if profil.bereits_rentner else profil.eintritt_jahr
-        _, _jd_dash = _netto_ueber_horizont(profil, ergebnis, [], 31, mieteinnahmen, mietsteigerung)
+        _g_einzel = 0.0 if profil.ist_pensionaer or profil.bereits_rentner else profil.aktuelles_brutto_monatlich
+        _start_slider_einzel = AKTUELLES_JAHR if _g_einzel > 0 else _start_einzel
         _end_einzel = _start_einzel + 30
+        _, _jd_dash = _netto_ueber_horizont(profil, ergebnis, [], 31, mieteinnahmen, mietsteigerung, gehalt_monatlich=_g_einzel)
         _sel_j_dash = st.slider(
-            "Betrachtungsjahr", _start_einzel, _end_einzel, _start_einzel, key="dash_jahr",
-            help="Zeigt projizierte Rentenwerte mit Rentenanpassung für das gewählte Jahr.",
+            "Betrachtungsjahr", _start_slider_einzel, _end_einzel,
+            min(_end_einzel, max(_start_slider_einzel, _start_einzel)), key=f"rc{_rc}_dash_jahr",
+            help="Zeigt projizierte Jahreswerte mit Rentenanpassung für das gewählte Jahr.",
         )
         _row_dash = next((r for r in _jd_dash if r["Jahr"] == _sel_j_dash), None)
         _d_brutto = _row_dash["Brutto"] / 12 if _row_dash else ergebnis.brutto_monatlich
@@ -505,19 +529,25 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         with right:
             st.subheader(f"Kaufkraft heute vs. {_sel_j_dash}")
-            inflation = 0.02
+            _inf_pct = st.number_input(
+                "Inflation p.a. (%)", 0.0, 5.0, 2.0, 0.1,
+                key=f"rc{_rc}_dash_inflation",
+                help="Angenommene jährliche Inflationsrate für die Kaufkraftberechnung.",
+            )
+            inflation = _inf_pct / 100
             jahre_inflation = _sel_j_dash - profil.eintritt_jahr + profil.jahre_bis_rente
             kaufkraft = _d_netto / (1 + inflation) ** max(0, jahre_inflation)
             verlust = _d_netto - kaufkraft
             st.metric(
-                f"Nettorente {_sel_j_dash} in heutiger Kaufkraft (2 % Inflation)",
+                f"Nettorente {_sel_j_dash} in heutiger Kaufkraft ({_inf_pct:.1f} % Inflation)".replace(".", ","),
                 f"{_de(kaufkraft)} €",
                 delta=f"−{_de(verlust)} € Kaufkraftverlust",
                 delta_color="inverse",
             )
             st.caption(
                 f"Die Nettorente von **{_de(_d_netto)} €** im Jahr {_sel_j_dash} "
-                f"entspricht bei 2 % Inflation der heutigen Kaufkraft von nur **{_de(kaufkraft)} €**. "
+                f"entspricht bei {_inf_pct:.1f} % Inflation".replace(".", ",") +
+                f" der heutigen Kaufkraft von nur **{_de(kaufkraft)} €**. "
                 f"Die eigene Rentenanpassungs-Annahme von "
                 f"{profil.rentenanpassung_pa:.0%}".replace(".", ",") + " p.a. "
                 f"{'federt dies ab' if profil.rentenanpassung_pa >= inflation else 'deckt dies nicht vollständig ab'}."

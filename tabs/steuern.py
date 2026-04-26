@@ -11,6 +11,7 @@ from engine import (
     RentenErgebnis,
     besteuerungsanteil,
     einkommensteuer,
+    solidaritaetszuschlag,
 )
 
 
@@ -31,6 +32,8 @@ def render_section(profil: Profil, ergebnis: RentenErgebnis,
     abzuege = WERBUNGSKOSTEN_PAUSCHBETRAG + SONDERAUSGABEN_PAUSCHBETRAG
     zvE_gesamt = max(0.0, besteuerter_anteil + miet_jahres - abzuege)
     jahressteuer_gesamt = einkommensteuer(zvE_gesamt)
+    soli_gesamt = solidaritaetszuschlag(jahressteuer_gesamt)
+    kist_gesamt = profil.kirchensteuer_satz * jahressteuer_gesamt if profil.kirchensteuer else 0.0
 
     col1, col2 = st.columns([1, 1])
 
@@ -48,10 +51,21 @@ def render_section(profil: Profil, ergebnis: RentenErgebnis,
             "− Sonderausgaben-Pauschbetrag":        f"−{SONDERAUSGABEN_PAUSCHBETRAG} €",
             "− Grundfreibetrag":                    f"−{_de(GRUNDFREIBETRAG_2024)} €",
             "**= Zu versteuerndes Einkommen**":     f"**{_de(zvE_gesamt)} €**",
-            "**Jahressteuer**":                     f"**{_de(jahressteuer_gesamt)} €**",
-            "**Steuer / Monat**":                   f"**{_de(jahressteuer_gesamt / 12)} €**",
+            "**Jahressteuer (ESt)**":               f"**{_de(jahressteuer_gesamt)} €**",
+        })
+        if soli_gesamt > 0:
+            rows["+ Solidaritätszuschlag (5,5 %)"] = f"+{_de(soli_gesamt, 2)} €"
+        else:
+            rows["Solidaritätszuschlag"] = "0 € (unter Freigrenze)"
+        if kist_gesamt > 0:
+            rows[f"+ Kirchensteuer ({profil.kirchensteuer_satz:.0%})".replace(".", ",")] = f"+{_de(kist_gesamt)} €"
+        _gesamt_steuerlast = jahressteuer_gesamt + soli_gesamt + kist_gesamt
+        if soli_gesamt > 0 or kist_gesamt > 0:
+            rows["**= Gesamte Steuerlast**"] = f"**{_de(_gesamt_steuerlast)} €**"
+        rows.update({
+            "**Steuer / Monat**":      f"**{_de(_gesamt_steuerlast / 12)} €**",
             "**Effektiver Steuersatz**":
-                f"**{jahressteuer_gesamt / (jahresbrutto + miet_jahres):.1%}**".replace(".", ",")
+                f"**{_gesamt_steuerlast / (jahresbrutto + miet_jahres):.1%}**".replace(".", ",")
                 if (jahresbrutto + miet_jahres) > 0 else "**0,0 %**",
         })
         for label, value in rows.items():

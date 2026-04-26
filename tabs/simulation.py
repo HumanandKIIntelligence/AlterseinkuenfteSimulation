@@ -1,12 +1,15 @@
 """Simulation-Tab – Szenarien-Vergleich und Kapitalentwicklung."""
 
+from dataclasses import replace as _dc_replace
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from engine import (
     AKTUELLES_JAHR, Profil, RentenErgebnis,
-    berechne_haushalt, kapitalwachstum, simuliere_szenarien,
+    berechne_haushalt, berechne_rente, kapitalwachstum,
+    simuliere_szenarien, _netto_ueber_horizont,
 )
 
 _FARBEN = {
@@ -32,6 +35,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
            ergebnis2: RentenErgebnis | None = None,
            veranlagung: str = "Getrennt",
            mieteinnahmen: float = 0.0) -> None:
+    _rc = st.session_state.get("_rc", 0)
     with T["Simulation"]:
         st.header("🔮 Szenarien-Simulation")
 
@@ -39,7 +43,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         wahl = "Person 1"
         if hat_partner:
             wahl = st.radio("Ansicht", ["Person 1", "Person 2", "Zusammen"],
-                            horizontal=True, key="sim_person")
+                            horizontal=True, key=f"rc{_rc}_sim_person")
 
         zusammen_modus = wahl == "Zusammen"
 
@@ -49,38 +53,84 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         if zusammen_modus:
             sz1 = simuliere_szenarien(profil)
             sz2 = simuliere_szenarien(profil2)
-            szenarien = sz1   # nur als Fallback für Kapitalchart
+            szenarien = sz1
         else:
             szenarien = simuliere_szenarien(profil)
 
+        # ── Jahresslider ─────────────────────────────────────────────────────
+        _start_p1_ret = profil.rentenbeginn_jahr if profil.bereits_rentner else profil.eintritt_jahr
+        if zusammen_modus:
+            _start_p2_ret = profil2.rentenbeginn_jahr if profil2.bereits_rentner else profil2.eintritt_jahr
+            _start_ret = min(_start_p1_ret, _start_p2_ret)
+        else:
+            _start_p2_ret = _start_p1_ret
+            _start_ret = _start_p1_ret
+        _end_sim = _start_ret + 30
+        _g_sim = 0.0 if profil.ist_pensionaer or profil.bereits_rentner else profil.aktuelles_brutto_monatlich
+        _start_slider_sim = AKTUELLES_JAHR if _g_sim > 0 else _start_ret
+        betrachtungsjahr = st.slider(
+            "Betrachtungsjahr", _start_slider_sim, _end_sim,
+            min(_end_sim, max(_start_slider_sim, _start_ret)), key=f"rc{_rc}_sim_jahr",
+            help="Zeigt projizierte Werte mit Rentenanpassung für das gewählte Jahr.",
+        )
+
+        # ── Genaue Jahressimulation je Szenario ──────────────────────────────
+        # Ersetzt die bisherige Näherung netto_eintritt × (1+anp)^n durch
+        # vollständige Jahressimulation mit korrekter Steuerprogression.
+        _sz_jd: dict[str, dict[int, dict]] = {}
+        for _nm in ["Pessimistisch", "Neutral", "Optimistisch"]:
+            _rpa, _kpa = _PARAMS[_nm]
+            if _rpa is None:
+                _rpa = profil.rentenanpassung_pa
+                _kpa = profil.rendite_pa
+            if zusammen_modus and profil2 is not None:
+                _p1_n = _dc_replace(profil, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
+                _e1_n = berechne_rente(_p1_n)
+                _p2_n = _dc_replace(profil2, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
+                _e2_n = berechne_rente(_p2_n)
+                _, _jd_n = _netto_ueber_horizont(
+                    _p1_n, _e1_n, [], 32, mieteinnahmen, 0.0,
+                    profil2=_p2_n, ergebnis2=_e2_n, veranlagung=veranlagung,
+                )
+            else:
+                _p_n = _dc_replace(profil, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
+                _e_n = berechne_rente(_p_n)
+                _, _jd_n = _netto_ueber_horizont(_p_n, _e_n, [], 32, 0.0, 0.0)
+            _sz_jd[_nm] = {r["Jahr"]: r for r in _jd_n}
+
         # ── Szenario-Vergleich Tabelle ────────────────────────────────────────
-        st.subheader("Vergleich der drei Szenarien")
+        st.subheader(f"Vergleich der drei Szenarien – {betrachtungsjahr}")
         rows = []
-        for name in ["Pessimistisch", "Neutral", "Optimistisch"]:
+        namen = ["Pessimistisch", "Neutral", "Optimistisch"]
+        for name in namen:
             ren_pa, kap_pa = _PARAMS[name]
             if ren_pa is None:
                 ren_pa = profil.rentenanpassung_pa
                 kap_pa = profil.rendite_pa
+            _row_n = _sz_jd[name].get(betrachtungsjahr)
             if zusammen_modus:
-                hh = berechne_haushalt(sz1[name], sz2[name], veranlagung, mieteinnahmen)
                 kapital = (sz1[name].kapital_bei_renteneintritt
                            + sz2[name].kapital_bei_renteneintritt)
+                _brutto_hh = _row_n["Brutto"] / 12 if _row_n else (sz1[name].brutto_monatlich + sz2[name].brutto_monatlich)
+                _netto_hh  = _row_n["Netto"]  / 12 if _row_n else (sz1[name].netto_monatlich  + sz2[name].netto_monatlich)
                 rows.append({
                     "Szenario": name,
                     "Rentenanpassung p.a.": f"{ren_pa:.1%}".replace(".", ","),
                     "Kapitalrendite p.a.": f"{kap_pa:.1%}".replace(".", ","),
-                    "Brutto Haushalt (€/Mon.)": _de(hh["brutto_gesamt"]),
-                    "Netto Haushalt (€/Mon.)": _de(hh["netto_gesamt"]),
+                    "Brutto Haushalt (€/Mon.)": _de(_brutto_hh),
+                    "Netto Haushalt (€/Mon.)": _de(_netto_hh),
                     "Kapital gesamt (€)": _de(kapital),
                 })
             else:
                 erg = szenarien[name]
+                _brutto_val = _row_n["Brutto"] / 12 if _row_n else erg.brutto_monatlich
+                _netto_val  = _row_n["Netto"]  / 12 if _row_n else erg.netto_monatlich
                 rows.append({
                     "Szenario": name,
                     "Rentenanpassung p.a.": f"{ren_pa:.1%}".replace(".", ","),
                     "Kapitalrendite p.a.": f"{kap_pa:.1%}".replace(".", ","),
-                    "Brutto (€/Mon.)": _de(erg.brutto_monatlich),
-                    "Netto (€/Mon.)": _de(erg.netto_monatlich),
+                    "Brutto (€/Mon.)": _de(_brutto_val),
+                    "Netto (€/Mon.)": _de(_netto_val),
                     "Kapital bei Eintritt (€)": _de(erg.kapital_bei_renteneintritt),
                     "Rentenpunkte": f"{erg.gesamtpunkte:.1f}".replace(".", ","),
                 })
@@ -88,6 +138,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             pd.DataFrame(rows).set_index("Szenario"),
             use_container_width=True,
         )
+        st.caption("Brutto/Netto: vollständige Jahressimulation mit korrekter Steuerprogression.")
 
         st.divider()
 
@@ -96,18 +147,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         with col_l:
             if zusammen_modus:
-                st.subheader("Netto Haushalt im Vergleich")
-                netto_vals = [
-                    berechne_haushalt(sz1[n], sz2[n], veranlagung, mieteinnahmen)["netto_gesamt"]
-                    for n in ["Pessimistisch", "Neutral", "Optimistisch"]
-                ]
+                st.subheader(f"Netto Haushalt {betrachtungsjahr}")
                 y_title = "Netto Haushalt (€/Monat)"
             else:
-                st.subheader("Nettorente im Vergleich")
-                netto_vals = [szenarien[n].netto_monatlich
-                              for n in ["Pessimistisch", "Neutral", "Optimistisch"]]
+                st.subheader(f"Nettorente {betrachtungsjahr}")
                 y_title = "Nettorente (€/Monat)"
-            namen = ["Pessimistisch", "Neutral", "Optimistisch"]
+            netto_vals = []
+            for n in namen:
+                _row_n = _sz_jd[n].get(betrachtungsjahr)
+                if _row_n:
+                    netto_vals.append(_row_n["Netto"] / 12)
+                else:
+                    netto_vals.append(szenarien[n].netto_monatlich)
             fig_bar = go.Figure(go.Bar(
                 x=namen,
                 y=netto_vals,
@@ -179,6 +230,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 line=dict(color=_FARBEN[name], width=2),
                 hovertemplate=f"{name}<br>%{{x}}: %{{y:,.0f}} €<extra></extra>",
             ))
+        if jahre_labels and AKTUELLES_JAHR <= betrachtungsjahr <= _start_p1_ret:
+            fig_k.add_vline(
+                x=betrachtungsjahr, line_width=1, line_dash="dot", line_color="#FF9800",
+                annotation_text=str(betrachtungsjahr), annotation_position="top right",
+            )
         fig_k.update_layout(
             template="plotly_white",
             height=380,
@@ -194,16 +250,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         # ── Renteneintrittsalter-Sensitivität ────────────────────────────────
         if not zusammen_modus:
-            st.subheader("Nettorente nach Renteneintrittsalter")
+            _person_label = wahl if hat_partner else ""
+            st.subheader(
+                f"Nettorente nach Renteneintrittsalter"
+                + (f" – {_person_label}" if _person_label else "")
+            )
             st.caption("Wie stark beeinflusst das Renteneintrittsalter die Nettorente?")
-
-            from dataclasses import replace
-            from engine import berechne_rente
 
             alter_range = list(range(60, 71))
             netto_alter = []
             for a in alter_range:
-                p_var = replace(profil, renteneintritt_alter=a)
+                p_var = _dc_replace(profil, renteneintritt_alter=a)
                 netto_alter.append(berechne_rente(p_var).netto_monatlich)
 
             fig_alter = go.Figure(go.Scatter(
@@ -214,11 +271,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 marker=dict(size=8),
                 hovertemplate="Alter %{x}: %{y:,.0f} €/Mon.<extra></extra>",
             ))
+            _vline_label = (
+                f"{wahl}: Alter {profil.renteneintritt_alter}"
+                if hat_partner
+                else f"Ihr Alter: {profil.renteneintritt_alter}"
+            )
             fig_alter.add_vline(
                 x=profil.renteneintritt_alter,
                 line_dash="dash",
                 line_color="#FF9800",
-                annotation_text=f"Ihr Alter: {profil.renteneintritt_alter}",
+                annotation_text=_vline_label,
                 annotation_position="top right",
             )
             fig_alter.update_layout(

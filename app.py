@@ -9,7 +9,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR
+from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR, einkommensteuer, BBG_KV_MONATLICH
 from session_io import save_session, load_session, list_saves
 from tabs import dashboard, simulation, vorsorge, haushalt, dokumentation, entnahme_opt
 
@@ -75,6 +75,9 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
     buv_monatlich = float(_get(pfx, "buv", 0.0))
     buv_endjahr   = int(_get(pfx, "buv_end", AKTUELLES_JAHR + 10))
 
+    kirchensteuer      = bool(_get(pfx, "kist", False))
+    kirchensteuer_satz = float(_get(pfx, "kist_satz", 9.0)) / 100
+
     return Profil(
         geburtsjahr=geburtsjahr,
         renteneintritt_alter=renteneintritt_alter,
@@ -99,6 +102,8 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         buv_monatlich=buv_monatlich,
         buv_endjahr=buv_endjahr,
         kvdr_pflicht=kvdr_pflicht,
+        kirchensteuer=kirchensteuer,
+        kirchensteuer_satz=kirchensteuer_satz,
     )
 
 
@@ -139,6 +144,8 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
         f"rc{_RC}_{pfx}_buv":        p.buv_monatlich,
         f"rc{_RC}_{pfx}_buv_end":    p.buv_endjahr,
         f"rc{_RC}_{pfx}_kvdr":       p.kvdr_pflicht,
+        f"rc{_RC}_{pfx}_kist":       p.kirchensteuer,
+        f"rc{_RC}_{pfx}_kist_satz":  p.kirchensteuer_satz * 100,
     }
     st.session_state.update(updates)
 
@@ -347,6 +354,28 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                 ),
             )
 
+    st.markdown("**Kirchensteuer**")
+    kist_col1, kist_col2 = st.columns([1, 2])
+    with kist_col1:
+        kirchensteuer_cb = st.checkbox(
+            "Kirchensteuerpflichtig",
+            value=bool(_get(pfx, "kist", False)),
+            key=f"rc{_RC}_{pfx}_kist",
+            help="Kirchensteuer (§ 51a EStG): 8 % der ESt in Bayern und Baden-Württemberg, "
+                 "9 % in allen anderen Bundesländern.",
+        )
+    with kist_col2:
+        if kirchensteuer_cb:
+            _kist_opts = ["9 % (alle anderen Bundesländer)", "8 % (Bayern, Baden-Württemberg)"]
+            _kist_def  = 0 if float(_get(pfx, "kist_satz", 9.0)) >= 9.0 else 1
+            _kist_sel  = st.radio(
+                "Kirchensteuersatz", _kist_opts,
+                index=_kist_def, horizontal=True,
+                key=f"rc{_RC}_{pfx}_kist_radio",
+            )
+            _kist_val = 8.0 if "8 %" in _kist_sel else 9.0
+            st.session_state[f"rc{_RC}_{pfx}_kist_satz"] = _kist_val
+
     if ist_pensionaer:
         with st.expander("🛡 Dienstunfähigkeitsversicherung (DUV)"):
             ca, cb = st.columns(2)
@@ -438,8 +467,13 @@ def render_profil_tab(T: dict) -> None:
                 "Netto-Mieteinnahmen (€/Mon.)", 0.0, 50_000.0,
                 value=float(st.session_state.get(_gkey("hh_miet"), 0.0)),
                 step=50.0, key=_gkey("hh_miet"),
-                help="Nettomieteinnahmen nach abzugsfähigen Werbungskosten (§ 21 EStG). "
-                     "Voll steuerpflichtig, keine KV-Pflicht.",
+                help=(
+                    "Nettomieteinnahmen nach abzugsfähigen Werbungskosten (§ 21 EStG). "
+                    "Voll steuerpflichtig, keine KV-Pflicht.\n\n"
+                    "**Abzugsfähige Werbungskosten:** Abschreibung (AfA), Schuldzinsen, "
+                    "Reparaturen/Instandhaltung, Hausverwaltung, Grundsteuer, Versicherungen, "
+                    "Werbungskosten-Pauschale. Bitte den Nettobetrag nach eigener Berechnung eintragen."
+                ),
             )
         with mc2:
             st.slider(
@@ -539,17 +573,84 @@ haushalt_daten = berechne_haushalt(ergebnis1, ergebnis2, veranlagung, mieteinnah
 # Sidebar unten: Speichern (braucht Profil-Objekte)
 _sidebar_save(profil1, profil2, veranlagung, mieteinnahmen, mietsteigerung)
 
-# M4: Schnell-Übersicht Nettorente in Sidebar
+# M4: Schnell-Übersicht Einkommen in Sidebar
 st.sidebar.divider()
+
 def _de_sidebar(v: float) -> str:
     s = f"{v:,.0f}"
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
-st.sidebar.metric("Nettorente P1", f"{_de_sidebar(ergebnis1.netto_monatlich)} €/Mon.",
-                  help="Nettorente Person 1 nach Steuer und KV.")
+def _approx_netto_gehalt(p: Profil) -> float:
+    """Approximate net salary (AN-KV + simplified ESt) for sidebar."""
+    if p.aktuelles_brutto_monatlich <= 0 or p.bereits_rentner or p.ist_pensionaer:
+        return 0.0
+    brutto = p.aktuelles_brutto_monatlich
+    if p.krankenversicherung == "GKV":
+        basis = min(brutto, BBG_KV_MONATLICH)
+        an_kv = basis * (0.073 + p.gkv_zusatzbeitrag / 2)
+        an_pv = basis * (0.017 if p.kinder else 0.023)
+    else:
+        an_kv = an_pv = 0.0
+    zvE_j = max(0.0, brutto * 12 - (an_kv + an_pv) * 12)
+    return max(0.0, brutto - einkommensteuer(zvE_j) / 12 - an_kv - an_pv)
+
+def _aktive_zusatzrenten(person_label: str) -> float:
+    """Sum of monthly payouts from currently active contracts for this person."""
+    total = 0.0
+    for vp in st.session_state.get("vp_produkte", []):
+        if vp.get("person", "Person 1") != person_label:
+            continue
+        startjahr = int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR + 5))
+        laufzeit = int(vp.get("laufzeit_jahre", 0))
+        mono = float(vp.get("max_monatsrente", 0.0))
+        if mono > 0 and startjahr <= AKTUELLES_JAHR:
+            if laufzeit == 0 or startjahr + laufzeit > AKTUELLES_JAHR:
+                total += mono
+    return total
+
+def _sidebar_person_metrics(label: str, p: Profil, erg, miete_anteil: float) -> None:
+    st.sidebar.markdown(f"**{label}**")
+    netto_g = _approx_netto_gehalt(p)
+    zusatz = _aktive_zusatzrenten(label)
+    if netto_g > 0:
+        st.sidebar.metric("Nettogehalt (ca.)", f"{_de_sidebar(netto_g)} €/Mon.",
+                          help="Geschätztes Nettogehalt (AN-KV + vereinfachte ESt).")
+    st.sidebar.metric("Nettorente (Eintritt)", f"{_de_sidebar(erg.netto_monatlich)} €/Mon.",
+                      help="Projizierte Nettorente zum Renteneintritt nach Steuer und KV.")
+    if zusatz > 0:
+        st.sidebar.metric("Zusatzrenten (laufend)", f"{_de_sidebar(zusatz)} €/Mon.",
+                          help="Monatliche Vertragsauszahlungen, die bereits aktiv sind.")
+    if miete_anteil > 0:
+        st.sidebar.metric("Mieteinnahmen", f"{_de_sidebar(miete_anteil)} €/Mon.",
+                          help="Netto-Mieteinnahmen zu gleichen Teilen je Person.")
+
+_miete_pp = mieteinnahmen / (2 if ergebnis2 else 1)
+_sidebar_person_metrics("Person 1", profil1, ergebnis1, _miete_pp)
 if ergebnis2:
-    st.sidebar.metric("Nettorente P2", f"{_de_sidebar(ergebnis2.netto_monatlich)} €/Mon.",
-                      help="Nettorente Person 2 nach Steuer und KV.")
+    _sidebar_person_metrics("Person 2", profil2, ergebnis2, _miete_pp)
+
+# Vertragsauszahlungen aus Entnahme-Optimierung für ausgewähltes Slider-Jahr
+_eo_jd = st.session_state.get("_sb_eo_jd", [])
+if _eo_jd:
+    _slider_jahre = [
+        st.session_state.get(f"rc{_RC}_dash_jahr"),
+        st.session_state.get(f"rc{_RC}_hh_jahr"),
+        st.session_state.get(f"rc{_RC}_sim_jahr"),
+        st.session_state.get(f"rc{_RC}_eo_sel_jahr"),
+    ]
+    _sel_sb_j = next((j for j in _slider_jahre if j is not None), None)
+    if _sel_sb_j:
+        _jrow_sb = next((r for r in _eo_jd if r["Jahr"] == _sel_sb_j), None)
+        if _jrow_sb:
+            _vers_p1 = _jrow_sb.get("Src_Versorgung", 0) / 12
+            _einm_p1 = _jrow_sb.get("Src_Einmal", 0) / 12
+            if _vers_p1 + _einm_p1 > 0:
+                st.sidebar.divider()
+                st.sidebar.caption(f"Vertragsauszahlungen {_sel_sb_j}")
+                if _vers_p1 > 0:
+                    st.sidebar.metric("Versorgungsrenten", f"{_de_sidebar(_vers_p1)} €/Mon.")
+                if _einm_p1 > 0:
+                    st.sidebar.metric("Einmalerträge", f"{_de_sidebar(_einm_p1)} €/Mon.")
 
 # O3d: 6 Tabs (Steuern → Dashboard-Expander; Auszahlung → Entnahme-Expander)
 tab_labels = ["⚙️ Profil", "📊 Dashboard", "🔮 Simulation",

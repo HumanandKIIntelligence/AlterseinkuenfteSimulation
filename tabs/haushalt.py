@@ -1,12 +1,14 @@
 """Haushalt-Tab – Gemeinsame Einkommensübersicht für Ehepaare."""
 
+from dataclasses import replace as _dc_replace
+
 import plotly.graph_objects as go
 import pandas as pd
 import streamlit as st
 
 from engine import (
     AKTUELLES_JAHR, Profil, RentenErgebnis,
-    berechne_haushalt, einkommensteuer_splitting,
+    berechne_haushalt, berechne_rente, einkommensteuer_splitting,
     simuliere_szenarien, _netto_ueber_horizont,
 )
 
@@ -27,6 +29,7 @@ def render(
     mieteinnahmen: float = 0.0,
     mietsteigerung: float = 0.0,
 ) -> None:
+    _rc = st.session_state.get("_rc", 0)
     with T["Haushalt"]:
         st.header("👥 Haushalts-Übersicht")
 
@@ -50,7 +53,7 @@ def render(
             ansicht = st.radio(
                 "Ansicht",
                 ["Haushalt gesamt", "Person 1", "Person 2"],
-                horizontal=True, key="hh_ansicht",
+                horizontal=True, key=f"rc{_rc}_hh_ansicht",
             )
         with fil2:
             # Arbeits- und Renteneinkommen pro Person
@@ -68,7 +71,7 @@ def render(
             _default_j = min(_end_j, max(_start_j, AKTUELLES_JAHR))
             betrachtungsjahr = st.slider(
                 "Betrachtungsjahr", _start_j, _end_j, _default_j,
-                key="hh_jahr",
+                key=f"rc{_rc}_hh_jahr",
                 help="Zeigt projizierte Einkommenswerte für das gewählte Jahr (mit Rentenanpassung).",
             )
 
@@ -342,12 +345,30 @@ def render(
         _st_get = _row_get["Steuer"] / 12 if _row_get else hh_getrennt["steuer_gesamt"]
         _nt_zus = _row_zus["Netto"]  / 12 if _row_zus else hh_zusammen["netto_gesamt"]
         _nt_get = _row_get["Netto"]  / 12 if _row_get else hh_getrennt["netto_gesamt"]
+        _kv_zus = _row_zus["KV_PV"]  / 12 if _row_zus else hh_zusammen["kv_gesamt"]
+        _kv_get = _row_get["KV_PV"]  / 12 if _row_get else hh_getrennt["kv_gesamt"]
 
+        # Individuelle P1/P2 Werte (aus Einzelsimulationen)
+        _st_p1 = _row_p1["Steuer"] / 12 if _row_p1 else e1.steuer_monatlich
+        _nt_p1 = _row_p1["Netto"]  / 12 if _row_p1 else e1.netto_monatlich
+        _kv_p1 = _row_p1["KV_PV"]  / 12 if _row_p1 else e1.kv_monatlich
+        _st_p2 = _row_p2["Steuer"] / 12 if _row_p2 else e2.steuer_monatlich
+        _nt_p2 = _row_p2["Netto"]  / 12 if _row_p2 else e2.netto_monatlich
+        _kv_p2 = _row_p2["KV_PV"]  / 12 if _row_p2 else e2.kv_monatlich
+
+        # Zeile 1: Steuer
         sv1, sv2, sv3, sv4 = st.columns(4)
         sv1.metric("Steuer Zusammen (Mon.)", f"{_de(_st_zus)} €")
         sv2.metric("Steuer Getrennt (Mon.)", f"{_de(_st_get)} €")
-        sv3.metric("Netto Zusammen (Mon.)", f"{_de(_nt_zus)} €")
-        sv4.metric("Netto Getrennt (Mon.)", f"{_de(_nt_get)} €")
+        sv3.metric("Steuer P1 (Mon.)", f"{_de(_st_p1)} €")
+        sv4.metric("Steuer P2 (Mon.)", f"{_de(_st_p2)} €")
+
+        # Zeile 2: Netto
+        sv5, sv6, sv7, sv8 = st.columns(4)
+        sv5.metric("Netto Zusammen (Mon.)", f"{_de(_nt_zus)} €")
+        sv6.metric("Netto Getrennt (Mon.)", f"{_de(_nt_get)} €")
+        sv7.metric("Netto P1 (Mon.)", f"{_de(_nt_p1)} €")
+        sv8.metric("Netto P2 (Mon.)", f"{_de(_nt_p2)} €")
 
         ersparnis_monatlich = _nt_zus - _nt_get
         if ersparnis_monatlich > 1:
@@ -359,19 +380,36 @@ def render(
             st.info("In diesem Fall ergibt sich kein Splitting-Vorteil "
                     "(ähnlich hohe Einkommen beider Partner).")
 
-        fig_st = go.Figure(go.Bar(
-            x=["Zusammenveranlagung\n(Splitting)", "Getrennte\nVeranlagung"],
-            y=[_st_zus * 12, _st_get * 12],
-            marker_color=["#A5D6A7", "#EF9A9A"],
-            text=[f"{_de(v)} €/Jahr" for v in [_st_zus * 12, _st_get * 12]],
-            textposition="outside",
+        # Stacked bar: Netto + Steuer + KV für Zusammen, Getrennt, P1, P2
+        _szv_x = ["Zusammen\n(Splitting)", "Getrennt", "Person 1\n(allein)", "Person 2\n(allein)"]
+        fig_st = go.Figure()
+        fig_st.add_trace(go.Bar(
+            name="Netto", x=_szv_x, y=[_nt_zus, _nt_get, _nt_p1, _nt_p2],
+            marker_color="#A5D6A7",
+            text=[f"{_de(v)} €" for v in [_nt_zus, _nt_get, _nt_p1, _nt_p2]],
+            textposition="inside",
+        ))
+        fig_st.add_trace(go.Bar(
+            name="− Steuer", x=_szv_x, y=[_st_zus, _st_get, _st_p1, _st_p2],
+            marker_color="#EF9A9A",
+            text=[f"{_de(v)} €" for v in [_st_zus, _st_get, _st_p1, _st_p2]],
+            textposition="inside",
+        ))
+        fig_st.add_trace(go.Bar(
+            name="− KV/PV", x=_szv_x, y=[_kv_zus, _kv_get, _kv_p1, _kv_p2],
+            marker_color="#FFF176",
+            text=[f"{_de(v)} €" for v in [_kv_zus, _kv_get, _kv_p1, _kv_p2]],
+            textposition="inside",
         ))
         fig_st.update_layout(
-            template="plotly_white", height=300,
-            yaxis=dict(title=f"Jahressteuer {betrachtungsjahr} (€)", tickformat=",.0f"),
-            margin=dict(l=10, r=10, t=10, b=10),
+            barmode="stack",
+            template="plotly_white", height=340,
+            yaxis=dict(title=f"€ / Monat {betrachtungsjahr} (Brutto = Gesamthöhe)", tickformat=",.0f"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(l=10, r=10, t=40, b=10),
             separators=",.",
         )
+        st.caption("Zusammen/Getrennt = Haushalt gesamt (beide Personen); P1/P2 = Einzelwerte je Person.")
         st.plotly_chart(fig_st, use_container_width=True)
 
         st.divider()
@@ -381,24 +419,44 @@ def render(
 
         sz1 = simuliere_szenarien(p1)
         sz2 = simuliere_szenarien(p2)
-        _anp_sz = {"Pessimistisch": 0.01, "Neutral": max(p1.rentenanpassung_pa, 0.0), "Optimistisch": 0.03}
-        _ry1 = max(0, betrachtungsjahr - _start_p1)
-        _ry2 = max(0, betrachtungsjahr - _start_p2)
+        _sz_params = {
+            "Pessimistisch": (0.01, 0.03),
+            "Neutral":       (p1.rentenanpassung_pa, p1.rendite_pa),
+            "Optimistisch":  (0.03, 0.07),
+        }
+        # Genaue Jahressimulation je Szenario (korrekte Steuerprogression)
+        _hh_sz_jd: dict[str, dict[int, dict]] = {}
+        _p1_sz_jd: dict[str, dict[int, dict]] = {}
+        _p2_sz_jd: dict[str, dict[int, dict]] = {}
+        for _nm, (_rpa, _kpa) in _sz_params.items():
+            _p1_n = _dc_replace(p1, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
+            _e1_n = berechne_rente(_p1_n)
+            _p2_n = _dc_replace(p2, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
+            _e2_n = berechne_rente(_p2_n)
+            _, _jd_hh = _netto_ueber_horizont(
+                _p1_n, _e1_n, [], _horizont_hh, mieteinnahmen, mietsteigerung,
+                profil2=_p2_n, ergebnis2=_e2_n, veranlagung=veranlagung,
+            )
+            _, _jd_p1 = _netto_ueber_horizont(_p1_n, _e1_n, [], _horizont_p1, 0.0, 0.0)
+            _, _jd_p2 = _netto_ueber_horizont(_p2_n, _e2_n, [], _horizont_p2, 0.0, 0.0)
+            _hh_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_hh}
+            _p1_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_p1}
+            _p2_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_p2}
+
         rows = []
         for name in ["Pessimistisch", "Neutral", "Optimistisch"]:
-            hh_sz = berechne_haushalt(sz1[name], sz2[name], veranlagung)
-            _fak1 = (1 + _anp_sz[name]) ** _ry1
-            _fak2 = (1 + _anp_sz[name]) ** _ry2
-            _fak_hh = (1 + _anp_sz[name]) ** max(_ry1, _ry2)
+            _row_hh = _hh_sz_jd[name].get(betrachtungsjahr)
+            _row_p1 = _p1_sz_jd[name].get(betrachtungsjahr)
+            _row_p2 = _p2_sz_jd[name].get(betrachtungsjahr)
             rows.append({
                 "Szenario": name,
-                "Brutto gesamt (€/Mon.)": _de(hh_sz["brutto_gesamt"] * _fak_hh),
-                "Netto gesamt (€/Mon.)": _de(hh_sz["netto_gesamt"] * _fak_hh),
-                "Netto Person 1": _de(sz1[name].netto_monatlich * _fak1),
-                "Netto Person 2": _de(sz2[name].netto_monatlich * _fak2),
+                "Brutto gesamt (€/Mon.)": _de(_row_hh["Brutto"] / 12 if _row_hh else (sz1[name].brutto_monatlich + sz2[name].brutto_monatlich)),
+                "Netto gesamt (€/Mon.)":  _de(_row_hh["Netto"]  / 12 if _row_hh else (sz1[name].netto_monatlich  + sz2[name].netto_monatlich)),
+                "Netto Person 1":         _de(_row_p1["Netto"]  / 12 if _row_p1 else sz1[name].netto_monatlich),
+                "Netto Person 2":         _de(_row_p2["Netto"]  / 12 if _row_p2 else sz2[name].netto_monatlich),
             })
         st.dataframe(pd.DataFrame(rows).set_index("Szenario"), use_container_width=True)
-        st.caption("Werte mit Rentenanpassung hochgerechnet (Näherung; Steuerprogression nicht neu berechnet).")
+        st.caption("Vollständige Jahressimulation mit korrekter Steuerprogression (keine Näherung).")
 
         st.divider()
 

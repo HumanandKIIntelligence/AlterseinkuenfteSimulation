@@ -50,6 +50,8 @@ _PROFIL_LADE_DEFAULTS: dict = {
     "buv_monatlich":             0.0,
     "buv_endjahr":               2040,
     "kvdr_pflicht":              True,
+    "kirchensteuer":             False,
+    "kirchensteuer_satz":        0.09,
 }
 
 

@@ -104,6 +104,7 @@ Profil-Tab (app.py) + Mieteinnahmen
 | Funktion | Beschreibung |
 |---|---|
 | `einkommensteuer(zvE)` | §32a EStG Grundtarif 2024 |
+| `solidaritaetszuschlag(est)` | §51a EStG: Freigrenze 17.543 €, Gleitzone bis 33.912 €, dann 5,5 % |
 | `einkommensteuer_splitting(zvE_gesamt)` | §32a Abs. 5: 2× ESt(zvE/2) |
 | `besteuerungsanteil(eintritt_jahr)` | §22 EStG / JStG 2022: ab 2023 +0,5 %/Jahr |
 | `versorgungsfreibetrag(ruhestand_jahr, pension_jahres)` | §19 Abs. 2 EStG: Freibetrag für Beamtenpensionen; 0 ab 2040 |
@@ -205,16 +206,35 @@ Wenn `gehalt_monatlich > 0` und nicht `bereits_rentner`:
 ## Profil – neue Felder
 
 - **`kvdr_pflicht`** (bool, default True): Ob Person KVdR-Pflichtmitglied ist. Steuert KV-Berechnungslogik in Rente. UI: Checkbox im Profil-Tab bei GKV.
+- **`kirchensteuer`** (bool, default False): Ob Person kirchensteuerpflichtig ist. UI: Checkbox im Profil-Tab mit Rate-Radio (8 %/9 %).
+- **`kirchensteuer_satz`** (float, default 0.09): Kirchensteuersatz (0.09 für alle Länder außer Bayern/Baden-Württemberg, 0.08 dort).
+
+## RentenErgebnis – neue Felder
+
+- **`kirchensteuer_monatlich`** (float, default 0.0): Monatliche Kirchensteuer; in `steuer_monatlich` bereits enthalten.
 
 ## Progressionszone-Ampel (dashboard.py)
 
-`_steuerampel(zvE)` bestimmt Zone (steuerfrei/Zone1/Zone2/42%/45%), den analytischen Grenzsteuersatz, den Freiraum bis zur nächsten Zone und einen Handlungshinweis. Aufgerufen mit `ergebnis.zvE_jahres + mieteinnahmen * 12`.
+`_steuerampel(zvE)` bestimmt Zone (steuerfrei/Zone1/Zone2/42%/45%), den analytischen Grenzsteuersatz, den Freiraum bis zur nächsten Zone und einen Handlungshinweis. Aufgerufen mit `ergebnis.zvE_jahres + mieteinnahmen * 12`. Zeigt 4 Spalten: Zone/Farbe, Grenzsteuersatz, Jahressteuer (ESt + Soli), Handlungshinweis.
+
+## Szenario-Simulation (simulation.py, haushalt.py)
+
+Szenarien verwenden seit dem Refactor **exakte `_netto_ueber_horizont`-Simulation** statt Näherungsformel `netto × (1+anp)^n`. Pro Szenario wird `dataclasses.replace(profil, rentenanpassung_pa=rpa, rendite_pa=kpa)` erstellt und `berechne_rente()` + `_netto_ueber_horizont()` aufgerufen. Ergebnis: Dict `{jahr: row}` je Szenario; Tabelle schlägt Betrachtungsjahr nach.
+
+## Inflationsrate (dashboard.py)
+
+Im Kaufkraft-Abschnitt des Dashboards gibt es ein konfigurierbares `number_input` für die Inflation p.a. (0–5 %, Default 2 %). Keys: `f"rc{_rc}_dash_inflation"` (Einzelperson) und `f"rc{_rc}_dash_inflation_hh"` (Haushalt/Zusammen).
+
+## Widget-Key-Namensraum
+
+Alle Slider/Radio-Keys in Tabs sind mit `f"rc{_rc}_"` präfixiert (`_rc = st.session_state.get("_rc", 0)`). app.py verwendet `_RC` (Modul-Level, einmalig aus session_state gelesen). Verhindert stale-state-Bugs nach Reset (Reset inkrementiert `_rc`).
 
 ## Bekannte Vereinfachungen
 
 - Rentenabschlag bei Frühverrentung: 0,3 %/Monat vor Regelaltersgrenze 67 (§ 77 SGB VI) implementiert; feste RAG 67 für alle Jahrgänge (Übergangsregelung 1947–1963 nicht berücksichtigt)
 - LV-Altvertrag (vor 2005): steuerfrei pauschal angenommen (5-J.-Beitragspflicht und 60%-Todesfallschutz werden nicht geprüft)
-- Abgeltungsteuer auf LV/PrivateRV: vereinfacht 25 % (ohne Soli/KiSt)
+- Abgeltungsteuer auf LV/PrivateRV: vereinfacht 25 % (ohne Soli/KiSt auf Abgeltungsteuer)
+- Kirchensteuer auf Abgeltungsteuer (Kapitalerträge): nicht berücksichtigt
 - Private RV Einmalauszahlung: gleiche Regeln wie LV (§ 20 Abs. 1 Nr. 6 EStG); korrekt implementiert
 - Private RV Monatsrente: Ertragsanteil § 22 Nr. 1 S. 3a bb EStG; korrekt implementiert
 - Keine Rentenerhöhung durch Aufschub-Bonus (Zugangsfaktor) berücksichtigt

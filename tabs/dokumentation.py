@@ -32,7 +32,7 @@ def render(T: dict) -> None:
         - Beamtenpension mit Versorgungsfreibetrag (§ 19 Abs. 2 EStG)
         - Vorsorgeprodukte: bAV, Riester, Rürup, Lebensversicherung, ETF-Depot, private RV
         - Sparkapital und monatlicher Sparrate bis zum Renteneintritt
-        - Einkommensteuer nach § 32a EStG (Grundtarif 2024) inkl. Progressionszone-Ampel
+        - Einkommensteuer nach § 32a EStG (Grundtarif 2024) inkl. Solidaritätszuschlag, Kirchensteuer und Progressionszone-Ampel
         - Kranken- und Pflegeversicherung in der Rente (GKV/PKV/Beihilfe)
         - Dienstunfähigkeitsversicherung (DUV) und Berufsunfähigkeitsversicherung (BUV)
         - Mieteinnahmen als Haushaltseinkommen (§ 21 EStG)
@@ -143,9 +143,30 @@ def render(T: dict) -> None:
             | 66.760 – 277.825 € | 42 % × zvE − 9.972,98 € | 42 % |
             | > 277.825 € | 45 % × zvE − 18.307,73 € | 45 % |
 
+            **Solidaritätszuschlag (§ 51a EStG):**
+
+            | Jahressteuer (ESt) | Soli |
+            |---|---|
+            | ≤ 17.543 € | 0 € (unter Freigrenze) |
+            | 17.543 – 33.912 € | Gleitzone: min(5,5 % × ESt ; 20 % × (ESt − 17.543 €)) |
+            | > 33.912 € | 5,5 % × ESt |
+
+            Für die meisten Rentner mit ESt unter der Freigrenze fällt kein Soli an.
+
+            **Kirchensteuer (§ 51a EStG):**
+
+            | Bundesland | Satz |
+            |---|---|
+            | Bayern, Baden-Württemberg | 8 % der Einkommensteuer |
+            | alle anderen Bundesländer | 9 % der Einkommensteuer |
+
+            Kirchensteuer wird nur berechnet, wenn die Checkbox „Kirchensteuerpflichtig"
+            im Profil-Tab aktiviert ist. Bei Ehegatten-Splitting: jeder Partner zahlt
+            Kirchensteuer auf seinen Anteil der Splitting-ESt.
+
             **Progressionszone-Ampel im Dashboard:** Zeigt die aktuelle Steuerzone,
-            den analytischen Grenzsteuersatz und den Freiraum bis zur nächsten Zone
-            mit einem konkreten Handlungshinweis.
+            den analytischen Grenzsteuersatz, die Jahressteuer (ESt + Soli) und den
+            Freiraum bis zur nächsten Zone mit einem konkreten Handlungshinweis.
             """)
 
         # ── Besteuerungsanteil ─────────────────────────────────────────────────
@@ -339,6 +360,11 @@ def render(T: dict) -> None:
             | Neutral | Eigene Eingabe | Eigene Eingabe |
             | Optimistisch | 3,0 % | 7,0 % |
 
+            **Exakte Jahres-Simulation:** Jedes Szenario wird mit vollständiger
+            `_netto_ueber_horizont`-Simulation berechnet (nicht Näherungsformel).
+            Dabei werden szenariospezifische `rentenanpassung_pa` und `rendite_pa`
+            verwendet – Steuer und KV werden Jahr für Jahr korrekt ermittelt.
+
             Die Renteneintrittsalter-Sensitivitätsanalyse zeigt, wie sich eine Verschiebung
             des Renteneintritts (60–70 Jahre) auf Nettorente und Kapital auswirkt.
 
@@ -365,10 +391,9 @@ def render(T: dict) -> None:
             - Versorgungsfreibetrag: feste RAG 67; Übergangsregelungen für Jahrgänge vor 1964 nicht implementiert
 
             **Steuer:**
-            - Kein Solidaritätszuschlag (entfällt ab 2021 für die meisten Rentner)
-            - Keine Kirchensteuer
             - Keine Günstigerprüfung bei Kapitalerträgen
             - Abgeltungsteuer LV/PrivateRV: 25 % ohne Soli/KiSt
+            - Kirchensteuer auf Abgeltungsteuer (Kapitalerträge) nicht berücksichtigt
             """)
         with col2:
             st.markdown("""
@@ -378,10 +403,10 @@ def render(T: dict) -> None:
             - Beihilfesatz fix 70 % (landesspezifische Abweichungen nicht modelliert)
 
             **Allgemein:**
-            - Keine Inflation auf Auszahlungswerte (Realwert im Dashboard: 2 % Inflation)
+            - Inflation konfigurierbar im Dashboard (Default 2 % p.a.; gilt nur für Kaufkraft-Anzeige)
             - Keine Erbschafts-/Schenkungssteuer
             - Keine anderen Einkunftsarten (Wertpapiererträge, Selbständigkeit)
-            - Steueroptimierung ohne Soli, Kirchensteuer und individuelle Freibeträge
+            - Steueroptimierung ohne individuelle Freibeträge (Soli und KiSt werden berücksichtigt)
             """)
 
         # ── Rechtlicher Hinweis ────────────────────────────────────────────────

@@ -98,12 +98,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         )
 
         # ── Personenfilter ────────────────────────────────────────────────────
+        _rc = st.session_state.get("_rc", 0)
         hat_partner = profil2 is not None and ergebnis2 is not None
         eo_person = "Zusammen"
         if hat_partner:
             eo_person = st.radio(
                 "Optimierung für", ["Person 1", "Person 2", "Zusammen"],
-                horizontal=True, key="eo_person", index=2,
+                horizontal=True, key=f"rc{_rc}_eo_person", index=2,
                 help="Person 1/2: nur deren Produkte + einzelne Steuerberechnung. "
                      "Zusammen: alle Produkte, gemeinsame Steuer (Splitting falls aktiv).",
             )
@@ -158,7 +159,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         oc1, oc2, oc3 = st.columns(3)
         with oc1:
             horizon = st.slider("Planungshorizont ab Renteneintritt (Jahre)",
-                                10, 40, 25, key="eo_horizon")
+                                10, 40, 25, key=f"rc{_rc}_eo_horizon")
             from engine import AKTUELLES_JAHR as _AJ_EO
             _pre_eo = max(0, _profil_eo.eintritt_jahr - _AJ_EO) if not _profil_eo.bereits_rentner else 0
             if _pre_eo > 0:
@@ -193,6 +194,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         if not opt:
             st.info("Keine Produkte für Optimierung vorhanden.")
             return
+
+        # Jahresdaten für Sidebar-Vertragsanzeige speichern
+        st.session_state["_sb_eo_jd"] = opt["jahresdaten"]
 
         # Kennzahlen
         _df_kc = pd.DataFrame(opt["jahresdaten"])
@@ -339,9 +343,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             hovertemplate="%{x}: %{y:,.0f} € Netto<extra></extra>",
         ))
         if not _profil_eo.bereits_rentner:
+            _vline_label_src = "P1 Renteneintritt" if _profil2_eo else "Renteneintritt"
             fig_src.add_vline(
                 x=_profil_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#5C6BC0",
-                annotation_text="Renteneintritt", annotation_position="top right",
+                annotation_text=_vline_label_src, annotation_position="top right",
+            )
+        if _profil2_eo and not _profil2_eo.bereits_rentner:
+            fig_src.add_vline(
+                x=_profil2_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#E91E63",
+                annotation_text="P2 Renteneintritt", annotation_position="top left",
             )
         fig_src.update_layout(
             barmode="stack", template="plotly_white", height=400,
@@ -359,7 +369,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _max_j_jd = int(df_jd.index.max())
         _def_j_jd = min(_max_j_jd, max(_min_j_jd, _profil_eo.eintritt_jahr))
         _sel_j = st.slider(
-            "Betrachtungsjahr", _min_j_jd, _max_j_jd, _def_j_jd, key="eo_sel_jahr",
+            "Betrachtungsjahr", _min_j_jd, _max_j_jd, _def_j_jd, key=f"rc{_rc}_eo_sel_jahr",
             help="Zeigt Monatswerte aus dem optimalen Auszahlungsplan für das gewählte Jahr.",
         )
         if _sel_j in df_jd.index:
@@ -416,9 +426,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             hovertemplate="%{x}: %{y:,.0f} € zvE<extra></extra>",
         ))
         if not _profil_eo.bereits_rentner:
+            _vline_label_tax = "P1 Renteneintritt" if _profil2_eo else "Renteneintritt"
             fig_tax.add_vline(
                 x=_profil_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#5C6BC0",
-                annotation_text="Renteneintritt", annotation_position="top right",
+                annotation_text=_vline_label_tax, annotation_position="top right",
+            )
+        if _profil2_eo and not _profil2_eo.bereits_rentner:
+            fig_tax.add_vline(
+                x=_profil2_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#E91E63",
+                annotation_text="P2 Renteneintritt", annotation_position="top left",
             )
         fig_tax.update_layout(
             barmode="stack", template="plotly_white", height=380,
@@ -431,6 +447,42 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             separators=",.",
         )
         st.plotly_chart(fig_tax, use_container_width=True)
+
+        # ── Gesamtbelastung Steuer + KV über Planungshorizont ─────────────────
+        st.subheader(f"Gesamtbelastung über {horizon} Rentenjahre")
+        _steuer_ges = df_jd["Steuer"].sum()
+        _kv_ges     = df_jd["KV_PV"].sum()
+
+        _ist_splitting = _ver_eo == "Zusammen"
+        _steuer_p1_ges = _steuer_ges / 2 if (_ist_splitting and _profil2_eo) else _steuer_ges
+        _steuer_p2_ges = _steuer_ges / 2 if (_ist_splitting and _profil2_eo) else 0.0
+
+        if "KV_P1" in df_jd.columns and df_jd["KV_P1"].sum() > 0:
+            _kv_p1_ges = df_jd["KV_P1"].sum()
+            _kv_p2_ges = df_jd["KV_P2"].sum() if "KV_P2" in df_jd.columns else 0.0
+        elif _profil2_eo:
+            _kv_p1_ges = _kv_ges / 2
+            _kv_p2_ges = _kv_ges / 2
+        else:
+            _kv_p1_ges = _kv_ges
+            _kv_p2_ges = 0.0
+
+        gb1, gb2, gb3 = st.columns(3)
+        gb1.metric("Steuer P1 gesamt", f"{_de(_steuer_p1_ges)} €",
+                   help="Progressiv- + Abgeltungsteuer Person 1 über den Planungshorizont.")
+        gb2.metric("Steuer P2 gesamt", f"{_de(_steuer_p2_ges)} €",
+                   help="Progressiv- + Abgeltungsteuer Person 2 über den Planungshorizont.")
+        gb3.metric("Steuer gesamt", f"{_de(_steuer_ges)} €",
+                   help="Progressiv- + Abgeltungsteuer gesamt über den Planungshorizont.")
+        gb4, gb5, gb6 = st.columns(3)
+        gb4.metric("KV/PV P1 gesamt", f"{_de(_kv_p1_ges)} €",
+                   help="Kranken- + Pflegeversicherung Person 1 über den Planungshorizont.")
+        gb5.metric("KV/PV P2 gesamt", f"{_de(_kv_p2_ges)} €",
+                   help="Kranken- + Pflegeversicherung Person 2 über den Planungshorizont.")
+        gb6.metric("KV/PV gesamt", f"{_de(_kv_ges)} €",
+                   help="Kranken- + Pflegeversicherung gesamt über den Planungshorizont.")
+        if _ist_splitting and _profil2_eo:
+            st.caption("Steueraufteilung P1/P2: halbiert (Splitting; Steuerprogression nicht neu berechnet).")
 
         st.divider()
 

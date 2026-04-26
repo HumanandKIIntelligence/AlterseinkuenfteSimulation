@@ -103,6 +103,16 @@ def einkommensteuer(zvE: float) -> float:
     return 0.45 * zvE - 18_307.73
 
 
+def solidaritaetszuschlag(est: float) -> float:
+    """Solidaritätszuschlag 2024. Freigrenze 17.543 € ESt; Gleitzone bis 33.912 €."""
+    if est <= 17_543:
+        return 0.0
+    soli_voll = 0.055 * est
+    if est <= 33_912:
+        return min(soli_voll, 0.20 * (est - 17_543))
+    return soli_voll
+
+
 def besteuerungsanteil(eintritt_jahr: int) -> float:
     """Besteuerungsanteil der gesetzlichen Rente nach § 22 Nr. 1 Satz 3 EStG (JStG 2022)."""
     if eintritt_jahr <= 2005:
@@ -158,6 +168,10 @@ class Profil:
     # False = freiwillig GKV: ALLE Einnahmen inkl. Kapitalerträge/Mieten beitragspflichtig
     kvdr_pflicht: bool = True
 
+    # Kirchensteuer (§ 51a EStG)
+    kirchensteuer: bool = False         # Kirchensteuerpflicht
+    kirchensteuer_satz: float = 0.09    # 9 % allgemein; 8 % Bayern + Baden-Württemberg
+
     @property
     def aktuelles_alter(self) -> int:
         return AKTUELLES_JAHR - self.geburtsjahr
@@ -187,9 +201,10 @@ class RentenErgebnis:
     rentenwert_angepasst: float
     zvE_jahres: float
     jahressteuer: float
-    rentenabschlag: float = 0.0   # Kürzungsfaktor gesetzl. Rente (0 = kein Abschlag)
-    kv_gkv_monatlich: float = 0.0  # GKV-Anteil (Krankenkasse, ohne PV)
-    kv_pv_monatlich: float = 0.0   # PV-Anteil (Pflegekasse)
+    rentenabschlag: float = 0.0            # Kürzungsfaktor gesetzl. Rente (0 = kein Abschlag)
+    kv_gkv_monatlich: float = 0.0         # GKV-Anteil (Krankenkasse, ohne PV)
+    kv_pv_monatlich: float = 0.0          # PV-Anteil (Pflegekasse)
+    kirchensteuer_monatlich: float = 0.0  # Kirchensteuer (in steuer_monatlich enthalten)
 
 
 # ── Kernberechnungen ──────────────────────────────────────────────────────────
@@ -290,7 +305,8 @@ def berechne_rente(p: Profil) -> RentenErgebnis:  # noqa: C901
                   - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG)
 
     jahressteuer     = einkommensteuer(zvE)
-    steuer_monatlich = jahressteuer / 12
+    kist_j           = p.kirchensteuer_satz * jahressteuer if p.kirchensteuer else 0.0
+    steuer_monatlich = (jahressteuer + kist_j) / 12
 
     # ── Krankenversicherung ────────────────────────────────────────────────────
     if p.krankenversicherung == "PKV":
@@ -345,6 +361,7 @@ def berechne_rente(p: Profil) -> RentenErgebnis:  # noqa: C901
         rentenabschlag=abschlag,
         kv_gkv_monatlich=kv_gkv,
         kv_pv_monatlich=kv_pv,
+        kirchensteuer_monatlich=kist_j / 12,
     )
 
 
@@ -753,6 +770,17 @@ def _netto_ueber_horizont(
         else:
             steuer_progr = einkommensteuer(zvE_p1)
         steuer = steuer_progr + steuer_abgelt
+        # Kirchensteuer § 51a EStG (auf die progressive Einkommensteuer)
+        if zusammen:
+            # Splitting: KiSt je Ehegatte auf die ihm zuzurechnende Hälfte
+            _kist = 0.0
+            if profil.kirchensteuer:
+                _kist += profil.kirchensteuer_satz * steuer_progr * 0.5
+            if profil2 is not None and profil2.kirchensteuer:
+                _kist += profil2.kirchensteuer_satz * steuer_progr * 0.5
+            steuer += _kist
+        elif profil.kirchensteuer:
+            steuer += profil.kirchensteuer_satz * steuer_progr
 
         # ── KV / PV ───────────────────────────────────────────────────────────
         if ist_pkv:

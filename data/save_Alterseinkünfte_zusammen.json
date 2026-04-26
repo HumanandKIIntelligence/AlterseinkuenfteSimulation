@@ -1,5 +1,5 @@
 {
-  "saved_at": "2026-04-25T12:56",
+  "saved_at": "2026-04-25T14:37",
   "profil1": {
     "geburtsjahr": 1965,
     "renteneintritt_alter": 63,
@@ -203,8 +203,65 @@
       "laufende_kapitalertraege_mono": 0.0,
       "erzwungener_anteil": null,
       "startjahr_fix": false
+    },
+    {
+      "id": "60a7d04c-f524-4b72-b2a9-57376babba4e",
+      "typ": "PrivateRente",
+      "typ_label": "Private Rentenversicherung",
+      "name": "Debeka Vertrag I",
+      "person": "Person 2",
+      "max_einmalzahlung": 12887.0,
+      "max_monatsrente": 200.0,
+      "laufzeit_jahre": 0,
+      "fruehestes_startjahr": 2035,
+      "spaetestes_startjahr": 2035,
+      "aufschub_rendite": 0.02,
+      "vertragsbeginn": 2010,
+      "einzahlungen_gesamt": 0.0,
+      "teilfreistellung": 0.3,
+      "laufende_kapitalertraege_mono": 0.0,
+      "erzwungener_anteil": null,
+      "startjahr_fix": false
+    },
+    {
+      "id": "ea0d5cfe-0041-4112-af42-6f6e79da227d",
+      "typ": "PrivateRente",
+      "typ_label": "Private Rentenversicherung",
+      "name": "Debeka Vertrag II",
+      "person": "Person 2",
+      "max_einmalzahlung": 29490.0,
+      "max_monatsrente": 0.0,
+      "laufzeit_jahre": 0,
+      "fruehestes_startjahr": 2035,
+      "spaetestes_startjahr": 2035,
+      "aufschub_rendite": 0.02,
+      "vertragsbeginn": 2010,
+      "einzahlungen_gesamt": 0.0,
+      "teilfreistellung": 0.3,
+      "laufende_kapitalertraege_mono": 0.0,
+      "erzwungener_anteil": null,
+      "startjahr_fix": false
+    },
+    {
+      "id": "de5e08c2-c207-4d33-bd4d-5ab87dadf96e",
+      "typ": "PrivateRente",
+      "typ_label": "Private Rentenversicherung",
+      "name": "Debeka Vertrag III",
+      "person": "Person 2",
+      "max_einmalzahlung": 130323.0,
+      "max_monatsrente": 0.0,
+      "laufzeit_jahre": 0,
+      "fruehestes_startjahr": 2036,
+      "spaetestes_startjahr": 2036,
+      "aufschub_rendite": 0.02,
+      "vertragsbeginn": 2010,
+      "einzahlungen_gesamt": 0.0,
+      "teilfreistellung": 0.3,
+      "laufende_kapitalertraege_mono": 0.0,
+      "erzwungener_anteil": null,
+      "startjahr_fix": false
     }
   ],
-  "mieteinnahmen": 300.0,
+  "mieteinnahmen": 600.0,
   "mietsteigerung": 0.0
 }
