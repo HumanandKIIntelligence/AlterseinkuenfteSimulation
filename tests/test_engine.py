@@ -22,6 +22,7 @@ from engine import (
     AKTUELLES_JAHR,
     einkommensteuer,
     einkommensteuer_splitting,
+    solidaritaetszuschlag,
     besteuerungsanteil,
     ertragsanteil,
     versorgungsfreibetrag,
@@ -33,6 +34,8 @@ from engine import (
     _annuitaet,
     _wert_bei_start,
     _netto_ueber_horizont,
+    vergleiche_produkt,
+    optimiere_auszahlungen,
     Profil,
     RentenErgebnis,
     VorsorgeProdukt,
@@ -1506,3 +1509,296 @@ class TestP2Produkte:
         _, jd_mit  = _netto_ueber_horizont(p1, e1, [(etf, sj, 1.0)], 5, profil2=p2, ergebnis2=e2)
         # Ertrag 50.000 €; TF 30 % → abgeltungspfl. 35.000 € >> 2 × Sparerpauschbetrag
         assert jd_mit[0]["Steuer_Abgeltung"] > jd_ohne[0]["Steuer_Abgeltung"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Solidaritätszuschlag – § 51a EStG (Freigrenze, Gleitzone, Volltarif)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSolidaritaetszuschlag:
+    def test_unterhalb_freigrenze_null(self):
+        assert solidaritaetszuschlag(0.0) == 0.0
+        assert solidaritaetszuschlag(17_543.0) == 0.0
+
+    def test_gleitzone_formel_greift_bei_kleiner_est(self):
+        # est=18.000: 5,5 %×18.000=990; 20 %×(18.000−17.543)=91,40 → min=91,40
+        soli = solidaritaetszuschlag(18_000.0)
+        assert soli == pytest.approx(0.20 * (18_000 - 17_543), abs=0.01)
+
+    def test_gleitzone_volltarif_wird_deckel_bei_hoeherer_est(self):
+        # est=28.000: 5,5 %×28.000=1.540; 20 %×10.457=2.091,40 → min=1.540
+        soli = solidaritaetszuschlag(28_000.0)
+        assert soli == pytest.approx(0.055 * 28_000, abs=0.01)
+
+    def test_ab_33912_voller_satz_55_prozent(self):
+        for est in [33_912.0, 50_000.0, 100_000.0]:
+            assert solidaritaetszuschlag(est) == pytest.approx(0.055 * est, rel=1e-9)
+
+    def test_kein_sprung_an_freigrenze(self):
+        # Kein Soli-Sprung beim Übergang 17.543 → 17.544
+        assert solidaritaetszuschlag(17_543.0) == 0.0
+        assert solidaritaetszuschlag(17_544.0) == pytest.approx(0.20 * 1, abs=0.01)
+
+    def test_monoton_steigend(self):
+        werte = [solidaritaetszuschlag(e * 1_000) for e in range(0, 60)]
+        for i in range(1, len(werte)):
+            assert werte[i] >= werte[i - 1], f"Nicht monoton bei ESt={i * 1000}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# vergleiche_produkt – Einmal / Monatlich / Kombiniert
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVergleichProdukt:
+    def _bav(self, **kw) -> VorsorgeProdukt:
+        defaults = dict(
+            id="vp", typ="bAV", name="Test", person="Person 1",
+            max_einmalzahlung=50_000.0, max_monatsrente=400.0,
+            laufzeit_jahre=0, fruehestes_startjahr=2030,
+            spaetestes_startjahr=2030, aufschub_rendite=0.0,
+        )
+        defaults.update(kw)
+        return VorsorgeProdukt(**defaults)
+
+    def test_lv_nur_einmal(self):
+        lv = self._bav(typ="LV", max_monatsrente=0.0)
+        erg = vergleiche_produkt(lv, 0.04, 20)
+        assert erg["bestes"] == "einmal"
+
+    def test_ruerup_nur_monatsrente(self):
+        # Rürup = ist_nur_monatsrente → kein Kapitalwahlrecht
+        rr = self._bav(typ="Rürup", max_einmalzahlung=50_000.0)
+        erg = vergleiche_produkt(rr, 0.04, 20)
+        assert erg["bestes"] == "monatlich"
+
+    def test_kein_einmalbetrag_erzwingt_monatsrente(self):
+        prod = self._bav(max_einmalzahlung=0.0)
+        erg = vergleiche_produkt(prod, 0.04, 20)
+        assert erg["bestes"] == "monatlich"
+
+    def test_monatsrente_einzel_konsistent(self):
+        prod = self._bav()
+        erg = vergleiche_produkt(prod, 0.0, 20)
+        # Null-Rendite: Gesamtauszahlung Monatlich = Monatsrente × 12 × Laufzeit
+        assert erg["monatlich"]["total"] == pytest.approx(400.0 * 12 * 20)
+
+    def test_einmal_total_konsistent_bei_null_rendite(self):
+        prod = self._bav()
+        erg = vergleiche_produkt(prod, 0.0, 20)
+        # Null-Rendite: Annuität = Kapital / (Jahre × 12)
+        expected_rate = 50_000.0 / (20 * 12)
+        assert erg["einmal"]["monatlich"] == pytest.approx(expected_rate, rel=1e-9)
+        assert erg["einmal"]["total"] == pytest.approx(expected_rate * 12 * 20, rel=1e-9)
+
+    def test_kombiniert_anteil_zwischen_null_und_eins(self):
+        prod = self._bav()
+        erg = vergleiche_produkt(prod, 0.04, 20)
+        assert 0.0 <= erg["kombiniert"]["anteil"] <= 1.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# optimiere_auszahlungen – Vollsuche und Koordinaten-Abstieg
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOptimiereAuszahlungen:
+    def _profil_und_ergebnis(self):
+        p = _profil(geburtsjahr=1958, renteneintritt_alter=67,
+                    aktuelle_punkte=35.0, punkte_pro_jahr=0.0,
+                    rentenanpassung_pa=0.0)
+        return p, berechne_rente(p)
+
+    def _bav(self, p: Profil, mono: float = 500.0) -> VorsorgeProdukt:
+        sj = p.eintritt_jahr
+        return VorsorgeProdukt(
+            id="bav", typ="bAV", name="bAV-Test", person="Person 1",
+            max_einmalzahlung=60_000.0, max_monatsrente=mono,
+            laufzeit_jahre=0, fruehestes_startjahr=sj,
+            spaetestes_startjahr=sj, aufschub_rendite=0.0,
+        )
+
+    def test_leere_produktliste_leeres_dict(self):
+        p, e = self._profil_und_ergebnis()
+        assert optimiere_auszahlungen(p, e, [], 20) == {}
+
+    def test_pflichtfelder_im_ergebnis(self):
+        p, e = self._profil_und_ergebnis()
+        erg = optimiere_auszahlungen(p, e, [self._bav(p)], 20)
+        for key in ("bestes_netto", "beste_entscheidungen", "jahresdaten",
+                    "top10", "netto_alle_monatlich", "netto_alle_einmal",
+                    "anzahl_kombinationen"):
+            assert key in erg, f"Pflichtfeld '{key}' fehlt"
+
+    def test_bestes_netto_nicht_schlechter_als_referenz(self):
+        """Optimizer darf nie schlechter als alle-monatlich oder alle-einmal sein."""
+        p, e = self._profil_und_ergebnis()
+        erg = optimiere_auszahlungen(p, e, [self._bav(p)], 20)
+        assert erg["bestes_netto"] >= erg["netto_alle_monatlich"] - 1.0
+        assert erg["bestes_netto"] >= erg["netto_alle_einmal"] - 1.0
+
+    def test_etf_immer_einmal(self):
+        """ETF-Produkte haben kein Monatsrentenrecht → Optimizer wählt immer Einmal."""
+        p, e = self._profil_und_ergebnis()
+        sj = p.eintritt_jahr
+        etf = VorsorgeProdukt(
+            id="etf", typ="ETF", name="ETF", person="Person 1",
+            max_einmalzahlung=80_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj,
+            spaetestes_startjahr=sj, aufschub_rendite=0.0,
+            einzahlungen_gesamt=50_000.0, teilfreistellung=0.30,
+        )
+        erg = optimiere_auszahlungen(p, e, [etf], 20)
+        _, startjahr, anteil = erg["beste_entscheidungen"][0]
+        assert anteil == 1.0
+
+    def test_anzahl_kombinationen_korrekt(self):
+        """1 bAV, 1 Startjahr, 3 Auszahlungsarten → 3 Kombinationen."""
+        p, e = self._profil_und_ergebnis()
+        erg = optimiere_auszahlungen(p, e, [self._bav(p)], 20)
+        assert erg["anzahl_kombinationen"] == 3
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# bereits_rentner – direkte Eingabe, keine Ansparbasis
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBereitsRentner:
+    def _rentner(self, **kw) -> Profil:
+        # geburtsjahr=1953, Alter=67 → eintritt_jahr=2020 == rentenbeginn_jahr
+        defaults = dict(
+            geburtsjahr=1953, renteneintritt_alter=67,
+            bereits_rentner=True, rentenbeginn_jahr=2020,
+            aktuelles_brutto_monatlich=1_800.0,
+            sparkapital=30_000.0, sparrate=0.0, rendite_pa=0.0,
+            aktuelle_punkte=0.0, punkte_pro_jahr=0.0,
+            rentenanpassung_pa=0.0,
+        )
+        defaults.update(kw)
+        return Profil(**defaults)
+
+    def test_brutto_gleich_direkteingabe(self):
+        p = self._rentner(aktuelles_brutto_monatlich=2_200.0)
+        e = berechne_rente(p)
+        assert e.brutto_gesetzlich == pytest.approx(2_200.0)
+
+    def test_kapital_unveraendert_kein_ansparen(self):
+        """Bereits-Rentner-Profil: kein weiteres Ansparen → Kapital = sparkapital."""
+        p = self._rentner(sparkapital=45_000.0, sparrate=500.0)
+        e = berechne_rente(p)
+        assert e.kapital_bei_renteneintritt == pytest.approx(45_000.0)
+
+    def test_simulation_startet_bei_rentenbeginn_jahr(self):
+        p = self._rentner()
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 10)
+        assert jd[0]["Jahr"] == 2020
+
+    def test_simulation_keine_pre_retirement_jahre(self):
+        """Gehalt wird ignoriert wenn bereits_rentner=True: kein Pre-Retirement-Vorlauf."""
+        p = self._rentner()
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 10, gehalt_monatlich=5_000.0)
+        assert len(jd) == 10
+        assert all(r["Src_Gehalt"] == 0 for r in jd)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Kirchensteuer – § 51a EStG auf progressive Einkommensteuer
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestKirchensteuer:
+    def _profil_kist(self, satz: float = 0.09) -> Profil:
+        return _profil(geburtsjahr=1958, renteneintritt_alter=67,
+                       aktuelle_punkte=40.0, punkte_pro_jahr=0.0,
+                       kirchensteuer=True, kirchensteuer_satz=satz)
+
+    def test_kist_erhoetht_steuer_in_berechne_rente(self):
+        p_ohne = _profil(geburtsjahr=1958, renteneintritt_alter=67,
+                         aktuelle_punkte=40.0, punkte_pro_jahr=0.0)
+        p_mit  = self._profil_kist()
+        e_ohne = berechne_rente(p_ohne)
+        e_mit  = berechne_rente(p_mit)
+        assert e_mit.steuer_monatlich > e_ohne.steuer_monatlich
+        assert e_mit.kirchensteuer_monatlich > 0.0
+
+    def test_kist_satz_8_vs_9_unterschied(self):
+        """Bayern/BW (8 %) zahlt weniger Kirchensteuer als andere Länder (9 %)."""
+        p8 = self._profil_kist(satz=0.08)
+        p9 = self._profil_kist(satz=0.09)
+        e8 = berechne_rente(p8)
+        e9 = berechne_rente(p9)
+        assert e9.kirchensteuer_monatlich > e8.kirchensteuer_monatlich
+
+    def test_kist_in_netto_ueber_horizont(self):
+        """KiSt erhöht die Jahressteuer in der Simulation."""
+        p_ohne = _profil(geburtsjahr=1958, renteneintritt_alter=67,
+                         aktuelle_punkte=40.0, punkte_pro_jahr=0.0)
+        p_mit  = self._profil_kist()
+        e_ohne = berechne_rente(p_ohne)
+        e_mit  = berechne_rente(p_mit)
+        _, jd_ohne = _netto_ueber_horizont(p_ohne, e_ohne, [], 5)
+        _, jd_mit  = _netto_ueber_horizont(p_mit, e_mit, [], 5)
+        assert jd_mit[0]["Steuer"] > jd_ohne[0]["Steuer"]
+
+    def test_kist_zusammen_mit_vs_ohne_kist(self):
+        """Zusammenveranlagung: KiSt aktiviert erhöht Steuer gegenüber ohne KiSt."""
+        p1_kist = self._profil_kist()
+        p2_kist = _profil(geburtsjahr=1960, renteneintritt_alter=67,
+                          aktuelle_punkte=25.0, punkte_pro_jahr=0.0,
+                          kirchensteuer=True, kirchensteuer_satz=0.09)
+        p1_kein = _profil(geburtsjahr=1958, renteneintritt_alter=67,
+                          aktuelle_punkte=40.0, punkte_pro_jahr=0.0)
+        p2_kein = _profil(geburtsjahr=1960, renteneintritt_alter=67,
+                          aktuelle_punkte=25.0, punkte_pro_jahr=0.0)
+        e1k, e2k = berechne_rente(p1_kist), berechne_rente(p2_kist)
+        e1n, e2n = berechne_rente(p1_kein), berechne_rente(p2_kein)
+        _, jd_mit  = _netto_ueber_horizont(p1_kist, e1k, [], 5,
+                                            profil2=p2_kist, ergebnis2=e2k, veranlagung="Zusammen")
+        _, jd_ohne = _netto_ueber_horizont(p1_kein, e1n, [], 5,
+                                            profil2=p2_kein, ergebnis2=e2n, veranlagung="Zusammen")
+        assert jd_mit[0]["Steuer"] > jd_ohne[0]["Steuer"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mieteinnahmen-Split – Getrennt 50/50 vs. Zusammen voll
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestMieteinnahmenSplit:
+    def _paar(self):
+        p1 = _profil(geburtsjahr=1958, renteneintritt_alter=67,
+                     aktuelle_punkte=35.0, punkte_pro_jahr=0.0, rentenanpassung_pa=0.0)
+        p2 = _profil(geburtsjahr=1960, renteneintritt_alter=67,
+                     aktuelle_punkte=25.0, punkte_pro_jahr=0.0, rentenanpassung_pa=0.0)
+        return p1, p2, berechne_rente(p1), berechne_rente(p2)
+
+    def test_getrennt_haelfte_miet_in_p1_steuer(self):
+        """Getrennt + Partner: P1 versteuert nur 50 % der Mieteinnahmen."""
+        p1, p2, e1, e2 = self._paar()
+        miete = 1_200.0    # 1.200 €/Mon = 14.400 €/J
+        _, jd_basis    = _netto_ueber_horizont(p1, e1, [], 5, 0.0, 0.0,
+                                                profil2=p2, ergebnis2=e2, veranlagung="Getrennt")
+        _, jd_getrennt = _netto_ueber_horizont(p1, e1, [], 5, miete, 0.0,
+                                                profil2=p2, ergebnis2=e2, veranlagung="Getrennt")
+        zvE_diff = jd_getrennt[0]["zvE"] - jd_basis[0]["zvE"]
+        # zvE_display ist im Getrennt-Modus nur P1-zvE; Miete geht mit 50 % ein
+        assert zvE_diff == pytest.approx(miete * 12 / 2, abs=10.0)
+
+    def test_zusammen_volle_miet_im_gemeinsamen_zvE(self):
+        """Zusammen: volle Mieteinnahmen im gemeinsamen zvE (kein 50/50-Split)."""
+        p1, p2, e1, e2 = self._paar()
+        miete = 1_200.0
+        _, jd_basis    = _netto_ueber_horizont(p1, e1, [], 5, 0.0, 0.0,
+                                                profil2=p2, ergebnis2=e2, veranlagung="Zusammen")
+        _, jd_zusammen = _netto_ueber_horizont(p1, e1, [], 5, miete, 0.0,
+                                                profil2=p2, ergebnis2=e2, veranlagung="Zusammen")
+        zvE_diff = jd_zusammen[0]["zvE"] - jd_basis[0]["zvE"]
+        # Im Zusammen-Modus enthält zvE_display P1-zvE(+volle Miete) + P2-zvE
+        assert zvE_diff == pytest.approx(miete * 12, abs=10.0)
+
+    def test_getrennt_weniger_p1_steuer_als_einzelperson(self):
+        """Getrennt mit Partner: P1 zahlt auf halbe Miete weniger Steuer als allein."""
+        p1, p2, e1, e2 = self._paar()
+        miete = 2_000.0
+        _, jd_allein   = _netto_ueber_horizont(p1, e1, [], 5, miete, 0.0)
+        _, jd_getrennt = _netto_ueber_horizont(p1, e1, [], 5, miete, 0.0,
+                                                profil2=p2, ergebnis2=e2, veranlagung="Getrennt")
+        assert jd_getrennt[0]["Steuer_Progressiv"] < jd_allein[0]["Steuer_Progressiv"]
