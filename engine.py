@@ -580,10 +580,21 @@ def _netto_ueber_horizont(
     # Person 2: feste Basiswerte für die Haushaltssimulation
     zusammen      = veranlagung == "Zusammen" and profil2 is not None and ergebnis2 is not None
     hat_partner   = profil2 is not None and ergebnis2 is not None
-    p2_zvE_0      = ergebnis2.zvE_jahres      if hat_partner else 0.0
-    p2_brutto_mo0 = ergebnis2.brutto_monatlich if hat_partner else 0.0
-    p2_kv_mo0     = ergebnis2.kv_monatlich     if hat_partner else 0.0
-    p2_anp        = profil2.rentenanpassung_pa  if hat_partner else 0.0
+    p2_zvE_0         = ergebnis2.zvE_jahres       if hat_partner else 0.0
+    p2_brutto_mo0    = ergebnis2.brutto_monatlich if hat_partner else 0.0
+    p2_gesetzl_mono0 = ergebnis2.brutto_gesetzlich if hat_partner else 0.0
+    p2_anp           = profil2.rentenanpassung_pa  if hat_partner else 0.0
+
+    # P2 KV-Status für dynamische Berechnung je Jahr
+    _p2_ist_pkv        = profil2.krankenversicherung == "PKV" if hat_partner else True
+    _p2_ist_freiwillig = (profil2.krankenversicherung == "GKV" and not profil2.kvdr_pflicht) if hat_partner else False
+    if hat_partner and not _p2_ist_pkv:
+        _p2_pv_halb      = 0.017 if profil2.kinder else 0.023
+        _p2_pv_voll      = 0.034 if profil2.kinder else 0.040
+        _p2_kv_rate_halb = (0.073 + profil2.gkv_zusatzbeitrag / 2) + _p2_pv_halb
+    else:
+        _p2_pv_voll      = 0.0
+        _p2_kv_rate_halb = 0.0
 
     # Sidebar-Zusatzrente: Initialwerte je nach Typ (einmalig vor dem Loop berechnen)
     _z = profil.zusatz_monatlich * 12
@@ -642,11 +653,12 @@ def _netto_ueber_horizont(
 
         miet_j = mieteinnahmen_monatlich * 12 * (1 + mietsteigerung_pa) ** y
 
-        # Person 2: wächst ab Renteneintritt
-        p2_fak      = (1 + p2_anp) ** _r_y
-        p2_zvE_j    = p2_zvE_0      * p2_fak
-        p2_brutto_j = p2_brutto_mo0 * 12 * p2_fak
-        p2_kv_j     = p2_kv_mo0     * 12         # KV konstant (vereinfacht)
+        # Person 2: wächst ab Renteneintritt (Basis GRV/Pension)
+        p2_fak             = (1 + p2_anp) ** _r_y
+        p2_zvE_j           = p2_zvE_0      * p2_fak
+        p2_gesetzl_mono_fak = p2_gesetzl_mono0 * p2_fak
+        p2_brutto_j        = p2_brutto_mo0 * 12 * p2_fak
+        p2_kv_j            = 0.0   # dynamisch nach Produkt-Loop berechnet
 
         # Mieteinnahmen-Anteil für P1-Steuer:
         # Getrenntveranlagung mit Partner → 50/50; sonst voller Betrag
@@ -674,15 +686,34 @@ def _netto_ueber_horizont(
         priv_brutto_j   = _s_priv_brutto_j    # PrivRV: ertragsanteil, nicht KVdR
         priv_zvE_j      = _s_priv_zvE_j
 
-        # Einmalauszahlungen
-        bav_einmal_kv_j = 0.0    # bAV-Einmal KV-Basis §229 SGB V
-        einmal_brutto_j = 0.0    # alle sonstigen Einmal brutto
-        einmal_progr_j  = 0.0    # → zvE progressiv (bAV 100 %, Halbeink. 50 % Ertrag, Rürup BA)
-        einmal_abgelt_j = 0.0    # LV/PrivRV → Abgeltungsteuer (voller Ertrag)
-        etf_brutto_j    = 0.0    # ETF-Entnahme brutto
-        etf_abgelt_j    = 0.0    # ETF → Abgeltungsteuer (Ertrag × (1 – TF))
-        # Laufende Kapitalerträge aus allen Produkten (Zinsen, Dividenden, Ausschüttungen)
-        lfd_kap_j = sum(p.laufende_kapitalertraege_mono * 12 for p, _, _ in entscheidungen)
+        # P1-Einmalauszahlungen und KV-Akkumulatoren
+        bav_einmal_kv_j = 0.0    # bAV-Einmal KV-Basis §229 SGB V (P1)
+        einmal_brutto_j = 0.0    # alle sonstigen Einmal brutto (P1)
+        einmal_progr_j  = 0.0    # → zvE progressiv (P1)
+        einmal_abgelt_j = 0.0    # LV/PrivRV → Abgeltungsteuer (P1)
+        etf_brutto_j    = 0.0    # ETF-Entnahme brutto (P1)
+        etf_abgelt_j    = 0.0    # ETF → Abgeltungsteuer (P1)
+        lfd_kap_j = sum(
+            p.laufende_kapitalertraege_mono * 12 for p, _, _ in entscheidungen
+            if not (hat_partner and p.person == "Person 2")
+        )
+        # P2-Akkumulatoren (getrennte KV-Berechnung je Personenstatus)
+        p2_bav_lfd_j       = 0.0
+        p2_bav_einmal_kv_j = 0.0
+        p2_riester_j       = 0.0
+        p2_ruerup_brutto_j = 0.0
+        p2_ruerup_zvE_j    = 0.0
+        p2_priv_brutto_j   = 0.0
+        p2_priv_zvE_j      = 0.0
+        p2_einmal_brutto_j = 0.0
+        p2_einmal_progr_j  = 0.0
+        p2_einmal_abgelt_j = 0.0
+        p2_etf_brutto_j    = 0.0
+        p2_etf_abgelt_j    = 0.0
+        p2_lfd_kap_j = sum(
+            p.laufende_kapitalertraege_mono * 12 for p, _, _ in entscheidungen
+            if hat_partner and p.person == "Person 2"
+        )
 
         for prod, startjahr, anteil in entscheidungen:
             if jahr < startjahr:
@@ -693,6 +724,8 @@ def _netto_ueber_horizont(
             ist_ruerup  = prod.typ == "Rürup"
             ist_etf     = prod.typ == "ETF"
             lz = prod.laufzeit_jahre if prod.laufzeit_jahre > 0 else horizont_jahre
+            _is_p2 = hat_partner and prod.person == "Person 2"
+            _gbj   = profil2.geburtsjahr if _is_p2 else profil.geburtsjahr
 
             # ── Einmalauszahlung ──────────────────────────────────────────────
             if anteil > 0:
@@ -703,14 +736,25 @@ def _netto_ueber_horizont(
                             max(0.0, 1.0 - prod.einzahlungen_gesamt / einmal_wert)
                             if einmal_wert > 0 else 0.0
                         )
-                        etf_brutto_j   += betrag
-                        etf_abgelt_j   += betrag * gain_ratio * (1.0 - prod.teilfreistellung)
+                        _abgelt = betrag * gain_ratio * (1.0 - prod.teilfreistellung)
+                        if _is_p2:
+                            p2_etf_brutto_j += betrag
+                            p2_etf_abgelt_j += _abgelt
+                        else:
+                            etf_brutto_j += betrag
+                            etf_abgelt_j += _abgelt
                     else:
-                        einmal_brutto_j += betrag
+                        if _is_p2:
+                            p2_einmal_brutto_j += betrag
+                        else:
+                            einmal_brutto_j += betrag
                         if ist_bav or ist_riester:
-                            einmal_progr_j += betrag           # 100 % steuerpflichtig
+                            if _is_p2: p2_einmal_progr_j += betrag
+                            else: einmal_progr_j += betrag
                         elif ist_ruerup:
-                            einmal_progr_j += betrag * besteuerungsanteil(startjahr)
+                            _bp = betrag * besteuerungsanteil(startjahr)
+                            if _is_p2: p2_einmal_progr_j += _bp
+                            else: einmal_progr_j += _bp
                         else:
                             # LV / PrivateRente: § 20 Abs. 1 Nr. 6 EStG
                             ertrag = max(0.0, betrag - prod.einzahlungen_gesamt * anteil)
@@ -719,37 +763,89 @@ def _netto_ueber_horizont(
                             else:
                                 laufzeit_vtr = max(0, startjahr - prod.vertragsbeginn)
                                 min_alter_hb = 60 if prod.vertragsbeginn <= 2011 else 62
-                                alter_az = startjahr - profil.geburtsjahr
+                                alter_az = startjahr - _gbj
                                 if laufzeit_vtr >= 12 and alter_az >= min_alter_hb:
-                                    einmal_progr_j += ertrag * 0.5   # Halbeinkünfte
+                                    if _is_p2: p2_einmal_progr_j += ertrag * 0.5
+                                    else: einmal_progr_j += ertrag * 0.5
                                 else:
-                                    einmal_abgelt_j += ertrag        # Abgeltungsteuer
+                                    if _is_p2: p2_einmal_abgelt_j += ertrag
+                                    else: einmal_abgelt_j += ertrag
 
                 # KV-Verteilung bAV-Einmal über 10 Jahre (§ 229 Abs. 1 S. 3 SGB V)
                 if ist_bav and 0 <= jahr - startjahr < 10:
-                    bav_einmal_kv_j += betrag / 10
+                    if _is_p2: p2_bav_einmal_kv_j += betrag / 10
+                    else: bav_einmal_kv_j += betrag / 10
 
             # ── Laufende Monatsrente ──────────────────────────────────────────
             if 0 <= jahr - startjahr < lz and anteil < 1.0:
                 mono = mono_wert * (1 - anteil) * 12
                 if ist_bav:
-                    bav_lfd_j += mono
+                    if _is_p2: p2_bav_lfd_j += mono
+                    else: bav_lfd_j += mono
                 elif ist_riester:
-                    riester_lfd_j += mono
+                    if _is_p2: p2_riester_j += mono
+                    else: riester_lfd_j += mono
                 elif ist_ruerup:
                     ba_r = besteuerungsanteil(startjahr)
-                    ruerup_brutto_j += mono
-                    ruerup_zvE_j    += mono * ba_r
+                    if _is_p2:
+                        p2_ruerup_brutto_j += mono
+                        p2_ruerup_zvE_j    += mono * ba_r
+                    else:
+                        ruerup_brutto_j += mono
+                        ruerup_zvE_j    += mono * ba_r
                 elif not ist_etf:
                     # PrivateRente: nur Ertragsanteil steuerpflichtig
-                    alter_start = startjahr - profil.geburtsjahr
+                    alter_start = startjahr - _gbj
                     ea = ertragsanteil(alter_start)
-                    priv_brutto_j += mono
-                    priv_zvE_j    += mono * ea
+                    if _is_p2:
+                        p2_priv_brutto_j += mono
+                        p2_priv_zvE_j    += mono * ea
+                    else:
+                        priv_brutto_j += mono
+                        priv_zvE_j    += mono * ea
 
         # DUV und BUV gehen in privaten Renten-Tracker (nicht KVdR)
         priv_brutto_j += duv_j + buv_j
         priv_zvE_j    += duv_zvE_j + buv_zvE_j
+
+        # P2 Produkteinkommen zum P2-zvE addieren (für Splitting-Steuer)
+        p2_zvE_j += (
+            p2_bav_lfd_j + p2_riester_j + p2_ruerup_zvE_j
+            + p2_priv_zvE_j + p2_einmal_progr_j
+        )
+
+        # P2 KV dynamisch je Versicherungsstatus
+        if not hat_partner:
+            p2_kv_j = 0.0
+        elif _p2_ist_pkv:
+            p2_kv_j = profil2.pkv_beitrag * 12
+        elif _p2_ist_freiwillig:
+            _p2_grv_mono     = p2_gesetzl_mono_fak
+            _p2_non_grv_mono = (
+                p2_bav_lfd_j / 12
+                + (p2_riester_j + p2_ruerup_brutto_j + p2_priv_brutto_j) / 12
+                + p2_einmal_brutto_j / 12
+                + p2_etf_brutto_j / 12
+                + p2_lfd_kap_j / 12
+                + (miet_j / 12 / 2 if not zusammen else 0.0)
+            )
+            _p2_grv_kv_basis = min(_p2_grv_mono, BBG_KV_MONATLICH)
+            _p2_non_grv_kv   = min(_p2_non_grv_mono, max(0.0, BBG_KV_MONATLICH - _p2_grv_kv_basis))
+            _p2_total_kv     = _p2_grv_kv_basis + _p2_non_grv_kv
+            if _p2_total_kv < MINDEST_BMG_FREIWILLIG_MONO:
+                _p2_non_grv_kv += MINDEST_BMG_FREIWILLIG_MONO - _p2_total_kv
+                _p2_total_kv    = MINDEST_BMG_FREIWILLIG_MONO
+            _p2_kv_gkv = (
+                _p2_grv_kv_basis * (0.073 + profil2.gkv_zusatzbeitrag / 2)
+                + _p2_non_grv_kv * (0.146 + profil2.gkv_zusatzbeitrag)
+            )
+            p2_kv_j = (_p2_kv_gkv + _p2_total_kv * _p2_pv_voll) * 12
+        else:
+            # KVdR §229 SGB V
+            _p2_bav_kv_mono  = (p2_bav_lfd_j + p2_bav_einmal_kv_j) / 12
+            _p2_bav_kv_basis = max(0.0, _p2_bav_kv_mono - BAV_FREIBETRAG_MONATLICH)
+            _p2_kv_basis_mono = min(p2_gesetzl_mono_fak + _p2_bav_kv_basis, BBG_KV_MONATLICH)
+            p2_kv_j = _p2_kv_basis_mono * 12 * _p2_kv_rate_halb
 
         # ── Einkommensteuer ───────────────────────────────────────────────────
         zvE_p1 = max(
@@ -762,9 +858,11 @@ def _netto_ueber_horizont(
             + miet_tax_j
             - WERBUNGSKOSTEN_PAUSCHBETRAG - SONDERAUSGABEN_PAUSCHBETRAG,
         )
-        # Laufende Kapitalerträge: Abgeltungsteuer (zusätzlich zu Einmal/ETF)
-        abgelt_pool   = einmal_abgelt_j + etf_abgelt_j + lfd_kap_j
-        steuer_abgelt = max(0.0, abgelt_pool - SPARERPAUSCHBETRAG) * 0.25
+        # Laufende Kapitalerträge: Abgeltungsteuer (P1 + P2, je 1.000 € Sparerpauschbetrag)
+        abgelt_pool   = (einmal_abgelt_j + etf_abgelt_j + lfd_kap_j
+                         + p2_einmal_abgelt_j + p2_etf_abgelt_j + p2_lfd_kap_j)
+        _spe = SPARERPAUSCHBETRAG * (2 if hat_partner else 1)
+        steuer_abgelt = max(0.0, abgelt_pool - _spe) * 0.25
         if zusammen:
             steuer_progr = einkommensteuer_splitting(zvE_p1 + p2_zvE_j)
         else:
@@ -824,7 +922,9 @@ def _netto_ueber_horizont(
             gesetzl_j + bav_lfd_j + riester_lfd_j
             + ruerup_brutto_j + priv_brutto_j
             + einmal_brutto_j + etf_brutto_j + miet_j
-            + p2_brutto_j   # P2-Rente/Pension im Haushaltsbrutto
+            + p2_brutto_j   # P2-Rente/Pension (Basis)
+            + p2_bav_lfd_j + p2_riester_j + p2_ruerup_brutto_j + p2_priv_brutto_j
+            + p2_einmal_brutto_j + p2_etf_brutto_j
         )
         netto = brutto - steuer - kv
         total_netto += netto
@@ -840,8 +940,10 @@ def _netto_ueber_horizont(
             "Src_Gehalt":     round(gesetzl_j if not in_rente else 0.0),
             "Src_GesRente":   round(gesetzl_j if in_rente else 0.0),
             "Src_P2_Rente":   round(p2_brutto_j),
-            "Src_Versorgung": round(bav_lfd_j + riester_lfd_j + ruerup_brutto_j + priv_brutto_j),
-            "Src_Einmal":     round(einmal_brutto_j + etf_brutto_j),
+            "Src_Versorgung": round(bav_lfd_j + riester_lfd_j + ruerup_brutto_j + priv_brutto_j
+                                    + p2_bav_lfd_j + p2_riester_j + p2_ruerup_brutto_j + p2_priv_brutto_j),
+            "Src_Einmal":     round(einmal_brutto_j + etf_brutto_j
+                                    + p2_einmal_brutto_j + p2_etf_brutto_j),
             "Src_Miete":      round(miet_j),
             "zvE":            round(zvE_display),
             "Steuer_Progressiv": round(steuer_progr),
