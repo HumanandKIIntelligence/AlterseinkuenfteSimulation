@@ -568,16 +568,30 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         # ── Strategievergleich ────────────────────────────────────────────────
         st.subheader("Strategievergleich")
+        _vgl_labels = [
+            "Optimal",
+            "Alles Monatlich\n(frühest möglich)",
+            "Alles Monatlich\n(spätestens)",
+            "Alles Einmal\n(frühest möglich)",
+            "Alles Einmal\n(spätestens)",
+        ]
+        _vgl_werte = [
+            opt["bestes_netto"],
+            opt["netto_alle_monatlich"],
+            opt["netto_alle_monatlich_spaet"],
+            opt["netto_alle_einmal"],
+            opt["netto_alle_einmal_spaet"],
+        ]
+        _vgl_farben = ["#4CAF50", "#2196F3", "#64B5F6", "#FF9800", "#FFB74D"]
         fig_vgl = go.Figure(go.Bar(
-            x=["Optimal", "Alles Monatlich\n(frühest möglich)", "Alles Einmal\n(frühest möglich)"],
-            y=[opt["bestes_netto"], opt["netto_alle_monatlich"], opt["netto_alle_einmal"]],
-            marker_color=["#4CAF50", "#2196F3", "#FF9800"],
-            text=[f"{_de(v)} €" for v in [
-                opt["bestes_netto"], opt["netto_alle_monatlich"], opt["netto_alle_einmal"]]],
+            x=_vgl_labels,
+            y=_vgl_werte,
+            marker_color=_vgl_farben,
+            text=[f"{_de(v)} €" for v in _vgl_werte],
             textposition="outside",
         ))
         fig_vgl.update_layout(
-            template="plotly_white", height=340,
+            template="plotly_white", height=380,
             yaxis=dict(title=f"Gesamt-Netto über {horizon} Jahre (€)", tickformat=",.0f"),
             margin=dict(l=10, r=10, t=20, b=10),
             separators=",.",

@@ -1161,21 +1161,29 @@ def optimiere_auszahlungen(
     _, jahresdaten = _netto_ueber_horizont(profil, ergebnis, beste_entscheidungen, horizont_jahre,
                                            mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
 
-    ref_mono   = [(p, p.fruehestes_startjahr, 0.0) for p in produkte]
-    ref_einmal = [(p, p.fruehestes_startjahr, 1.0) for p in produkte]
-    netto_mono,   _ = _netto_ueber_horizont(profil, ergebnis, ref_mono,   horizont_jahre,
-                                            mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
-    netto_einmal, _ = _netto_ueber_horizont(profil, ergebnis, ref_einmal, horizont_jahre,
-                                            mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
+    ref_mono        = [(p, p.fruehestes_startjahr, 0.0) for p in produkte]
+    ref_einmal      = [(p, p.fruehestes_startjahr, 1.0) for p in produkte]
+    ref_mono_spaet  = [(p, p.spaetestes_startjahr, 0.0) for p in produkte]
+    ref_einmal_spaet = [(p, p.spaetestes_startjahr, 1.0) for p in produkte]
+    netto_mono,        _ = _netto_ueber_horizont(profil, ergebnis, ref_mono,        horizont_jahre,
+                                                 mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
+    netto_einmal,      _ = _netto_ueber_horizont(profil, ergebnis, ref_einmal,      horizont_jahre,
+                                                 mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
+    netto_mono_spaet,  _ = _netto_ueber_horizont(profil, ergebnis, ref_mono_spaet,  horizont_jahre,
+                                                 mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
+    netto_einmal_spaet,_ = _netto_ueber_horizont(profil, ergebnis, ref_einmal_spaet,horizont_jahre,
+                                                 mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
 
     return {
-        "bestes_netto":          bestes_netto,
-        "beste_entscheidungen":  beste_entscheidungen,
-        "jahresdaten":           jahresdaten,
-        "top10":                 alle_ergebnisse[:10],
-        "netto_alle_monatlich":  netto_mono,
-        "netto_alle_einmal":     netto_einmal,
-        "anzahl_kombinationen":  len(alle_ergebnisse),
+        "bestes_netto":               bestes_netto,
+        "beste_entscheidungen":       beste_entscheidungen,
+        "jahresdaten":                jahresdaten,
+        "top10":                      alle_ergebnisse[:10],
+        "netto_alle_monatlich":       netto_mono,
+        "netto_alle_einmal":          netto_einmal,
+        "netto_alle_monatlich_spaet": netto_mono_spaet,
+        "netto_alle_einmal_spaet":    netto_einmal_spaet,
+        "anzahl_kombinationen":       len(alle_ergebnisse),
     }
 
 
