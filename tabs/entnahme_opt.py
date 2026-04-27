@@ -31,7 +31,8 @@ except ImportError:
         return 0.0
     def get_hyp_info():
         return None
-    def get_ausgaben_plan_optimierung(markt_zins_pa: float, anschluss_laufzeit: int) -> dict:
+    def get_ausgaben_plan_optimierung(markt_zins_pa: float, anschluss_laufzeit: int,
+                                      als_einmaltilgung: bool = False) -> dict:
         return {}
 
 
@@ -524,7 +525,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "🏠 Hypothek in Optimierung berücksichtigen",
                 value=True,
                 key=f"rc{_rc}_eo_hyp_aktiv",
-                help="Berücksichtigt laufende Hypothekraten und Anschlussfinanzierung "
+                help="Berücksichtigt laufende Hypothekraten und Restschuld-Behandlung "
                      "im Ausgaben-Plan der Optimierung.",
             )
             if _hyp_checkbox:
@@ -538,25 +539,44 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 )
                 _markt_zins_pa = _hyp_info["anschluss_zins_pa"]
                 _anschluss_lz  = _hyp_info["anschluss_laufzeit"]
-                if _hyp_info["restschuld_end"] > 0:
-                    hc1, hc2 = st.columns(2)
-                    with hc1:
-                        _markt_zins_pct = st.number_input(
-                            "Marktaktueller Anschluss-Zinssatz (%)", 0.0, 20.0,
-                            value=round(_hyp_info["anschluss_zins_pa"] * 100, 2),
-                            step=0.05, format="%.2f",
-                            key=f"rc{_rc}_eo_hyp_markt_zins",
-                            help="Anschlussfinanzierung nach Ablauf der Zinsbindung. "
-                                 "Default: in Hypothek-Tab eingestellter Anschlusszins.",
+                _vorsorge_tilgung = False
+                if _rs > 0:
+                    _vorsorge_tilgung = st.checkbox(
+                        "💰 Restschuld aus Vorsorgevertrag tilgen (Einmalauszahlung)",
+                        value=False,
+                        key=f"rc{_rc}_eo_hyp_vorsorge_tilgung",
+                        help="Der Optimizer prüft, ob eine Einmalauszahlung aus einem "
+                             "Vorsorgevertrag im Endjahr der Hypothek die Restschuld deckt "
+                             "und ob ein früherer Auszahlungszeitpunkt vorteilhafter ist.",
+                    )
+                    if not _vorsorge_tilgung:
+                        hc1, hc2 = st.columns(2)
+                        with hc1:
+                            _markt_zins_pct = st.number_input(
+                                "Marktaktueller Anschluss-Zinssatz (%)", 0.0, 20.0,
+                                value=round(_hyp_info["anschluss_zins_pa"] * 100, 2),
+                                step=0.05, format="%.2f",
+                                key=f"rc{_rc}_eo_hyp_markt_zins",
+                                help="Anschlussfinanzierung nach Ablauf der Zinsbindung. "
+                                     "Default: in Hypothek-Tab eingestellter Anschlusszins.",
+                            )
+                            _markt_zins_pa = _markt_zins_pct / 100.0
+                        with hc2:
+                            _anschluss_lz = int(st.number_input(
+                                "Laufzeit Anschlussfinanzierung (Jahre)", 1, 30,
+                                value=_hyp_info["anschluss_laufzeit"], step=1,
+                                key=f"rc{_rc}_eo_hyp_anschl_lz",
+                            ))
+                    else:
+                        st.info(
+                            f"Restschuld **{_de_h(_rs)} €** wird als Einmalbetrag im Jahr "
+                            f"**{_hyp_info['endjahr']}** geplant. Der Optimizer bewertet, "
+                            "ob eine frühere Einmalauszahlung aus einem Vorsorgevertrag "
+                            "die Restschuld vorteilhafter deckt."
                         )
-                        _markt_zins_pa = _markt_zins_pct / 100.0
-                    with hc2:
-                        _anschluss_lz = int(st.number_input(
-                            "Laufzeit Anschlussfinanzierung (Jahre)", 1, 30,
-                            value=_hyp_info["anschluss_laufzeit"], step=1,
-                            key=f"rc{_rc}_eo_hyp_anschl_lz",
-                        ))
-                _ausgaben_plan = get_ausgaben_plan_optimierung(_markt_zins_pa, _anschluss_lz)
+                _ausgaben_plan = get_ausgaben_plan_optimierung(
+                    _markt_zins_pa, _anschluss_lz, als_einmaltilgung=_vorsorge_tilgung
+                )
 
         # ── Optimierung ausführen ─────────────────────────────────────────────
         st.subheader("🔍 Optimale Auszahlungsstrategie")

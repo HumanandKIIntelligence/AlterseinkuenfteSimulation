@@ -157,11 +157,17 @@ def get_hyp_info() -> dict | None:
     }
 
 
-def get_ausgaben_plan_optimierung(markt_zins_pa: float, anschluss_laufzeit: int) -> dict[int, float]:
+def get_ausgaben_plan_optimierung(
+    markt_zins_pa: float,
+    anschluss_laufzeit: int,
+    als_einmaltilgung: bool = False,
+) -> dict[int, float]:
     """
     Ausgaben-Plan für Entnahme-Optimierung:
     - Laufende Jahresraten aus dem Tilgungsplan (bestehender Nominalzins)
-    - Anschlussfinanzierung nach Endjahr mit markt_zins_pa (Ratenkredit)
+    - Restschuld-Behandlung nach Endjahr:
+        als_einmaltilgung=True  → Einmalbetrag im Endjahr (aus Vorsorgevertrag)
+        als_einmaltilgung=False → Ratenkredit mit markt_zins_pa über anschluss_laufzeit
     """
     d = st.session_state.get("hyp_daten", {})
     if not d.get("aktiv", False):
@@ -173,11 +179,14 @@ def get_ausgaben_plan_optimierung(markt_zins_pa: float, anschluss_laufzeit: int)
         plan[row["Jahr"]] = plan.get(row["Jahr"], 0.0) + row["Jahresausgabe"]
 
     restschuld = get_restschuld_end()
-    if restschuld > 0.0 and anschluss_laufzeit > 0:
+    if restschuld > 0.0:
         endjahr = int(d.get("endjahr", AKTUELLES_JAHR + 20))
-        rate = _annuitaet_rate(restschuld, markt_zins_pa, anschluss_laufzeit)
-        for i in range(anschluss_laufzeit):
-            plan[endjahr + 1 + i] = plan.get(endjahr + 1 + i, 0.0) + rate
+        if als_einmaltilgung:
+            plan[endjahr] = plan.get(endjahr, 0.0) + restschuld
+        elif anschluss_laufzeit > 0:
+            rate = _annuitaet_rate(restschuld, markt_zins_pa, anschluss_laufzeit)
+            for i in range(anschluss_laufzeit):
+                plan[endjahr + 1 + i] = plan.get(endjahr + 1 + i, 0.0) + rate
 
     return plan
 
