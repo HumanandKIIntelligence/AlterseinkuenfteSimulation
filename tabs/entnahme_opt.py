@@ -671,9 +671,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _cd_versorg = _hover_lines(_versorg_info, _jahre)
 
         fig_src = go.Figure()
-        # Detect multi-pool pids for individual breakdown in source chart
-        _src_pool_pids = [c[len("Src_Kap_"):] for c in df_jd.columns if c.startswith("Src_Kap_")]
-        _multi_pool_src = len(_src_pool_pids) > 1
         src_cols = [
             ("Src_Gehalt",       "Bruttogehalt (aktiv)",    "#78909C", None),
             ("Src_GesRente",     "Gesetzl. Rente P1",       "#4CAF50", None),
@@ -681,9 +678,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             ("Src_Versorgung",   "Betriebliche Versorgung", "#2196F3", _cd_versorg),
             ("Src_Einmal",       "Einmalauszahlungen",      "#FF9800", _cd_einmal),
             ("Src_Miete",        "Mieteinnahmen",           "#9C27B0", None),
+            ("Src_Kapitalverzehr", "Kapitalverzehr (Pool)", "#9E9D24", None),
         ]
-        if not _multi_pool_src:
-            src_cols.append(("Src_Kapitalverzehr", "Kapitalverzehr (Pool)", "#9E9D24", None))
         for col, label, color, customdata in src_cols:
             if col in df_jd.columns and df_jd[col].sum() > 0:
                 if customdata is not None:
@@ -707,18 +703,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         name=label, x=df_jd.index, y=df_jd[col],
                         marker_color=color,
                         hovertemplate="%{x}: %{y:,.0f} €<extra>" + label + "</extra>",
-                    ))
-        if _multi_pool_src:
-            _pool_src_colors = ["#9E9D24", "#558B2F", "#E65100", "#6A1B9A", "#00838F"]
-            _prod_names_src = {p.id: p.name for p in produkte_obj}
-            for _i, _pid in enumerate(_src_pool_pids):
-                _col = f"Src_Kap_{_pid}"
-                if _col in df_jd.columns and df_jd[_col].sum() > 0:
-                    _lbl = f"Pool {_prod_names_src.get(_pid, _pid)}"
-                    fig_src.add_trace(go.Bar(
-                        name=_lbl, x=df_jd.index, y=df_jd[_col],
-                        marker_color=_pool_src_colors[_i % len(_pool_src_colors)],
-                        hovertemplate="%{x}: %{y:,.0f} €<extra>" + _lbl + "</extra>",
                     ))
         fig_src.add_trace(go.Scatter(
             name="Netto", x=df_jd.index, y=df_jd["Netto"],
@@ -860,44 +844,22 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 + (" (inflationsbereinigt)" if _real_toggle else "") + "."
             )
 
-        # ── Multi-Pool Kapitalanlage-Verlauf ─────────────────────────────────
-        _pool_pids = [c[len("Kap_Pool_"):] for c in df_jd.columns if c.startswith("Kap_Pool_")]
-        if _pool_pids:
+        # ── Kapitalanlage-Pool Verlauf ─────────────────────────────────────────
+        if "Kap_Pool" in df_jd.columns and df_jd["Kap_Pool"].sum() > 0:
             st.subheader("Kapitalanlage-Pool Verlauf")
-            # Product name lookup
-            _prod_names = {p.id: p.name for p in produkte_obj}
             fig_pool = go.Figure()
-            # Individual pool lines (only when multiple pools)
-            if len(_pool_pids) > 1:
-                _pool_colors = ["#1565C0", "#2E7D32", "#E65100", "#6A1B9A", "#00838F"]
-                for _i, _pid in enumerate(_pool_pids):
-                    _col = f"Kap_Pool_{_pid}"
-                    if _col in df_jd.columns and df_jd[_col].sum() > 0:
-                        _lbl = _prod_names.get(_pid, _pid)
-                        fig_pool.add_trace(go.Scatter(
-                            name=_lbl, x=df_jd.index, y=df_jd[_col],
-                            mode="lines", line=dict(color=_pool_colors[_i % len(_pool_colors)], width=2),
-                            hovertemplate=f"%{{x}}: %{{y:,.0f}} €<extra>{_lbl}</extra>",
-                        ))
-            # Total pool line
-            if "Kap_Pool" in df_jd.columns:
-                fig_pool.add_trace(go.Scatter(
-                    name="Pool gesamt", x=df_jd.index, y=df_jd["Kap_Pool"],
-                    mode="lines", line=dict(color="#000000", width=2.5, dash="dash"),
-                    hovertemplate="%{x}: %{y:,.0f} € gesamt<extra></extra>",
+            fig_pool.add_trace(go.Scatter(
+                name="Poolwert", x=df_jd.index, y=df_jd["Kap_Pool"],
+                mode="lines+markers", line=dict(color="#1565C0", width=2.5),
+                hovertemplate="%{x}: %{y:,.0f} € Poolwert<extra></extra>",
+            ))
+            if "Src_Kapitalverzehr" in df_jd.columns and df_jd["Src_Kapitalverzehr"].sum() > 0:
+                fig_pool.add_trace(go.Bar(
+                    name="Entnahme", x=df_jd.index, y=df_jd["Src_Kapitalverzehr"],
+                    marker_color="#42A5F5", opacity=0.7,
+                    yaxis="y2",
+                    hovertemplate="%{x}: %{y:,.0f} € Entnahme<extra></extra>",
                 ))
-            # Individual pool withdrawals as bars
-            _src_colors = ["#42A5F5", "#66BB6A", "#FFA726", "#AB47BC", "#26C6DA"]
-            for _i, _pid in enumerate(_pool_pids):
-                _src_col = f"Src_Kap_{_pid}"
-                if _src_col in df_jd.columns and df_jd[_src_col].sum() > 0:
-                    _lbl = _prod_names.get(_pid, _pid)
-                    fig_pool.add_trace(go.Bar(
-                        name=f"Entnahme {_lbl}", x=df_jd.index, y=df_jd[_src_col],
-                        marker_color=_src_colors[_i % len(_src_colors)], opacity=0.7,
-                        yaxis="y2",
-                        hovertemplate=f"%{{x}}: %{{y:,.0f}} € Entnahme<extra>{_lbl}</extra>",
-                    ))
             fig_pool.update_layout(
                 barmode="stack", template="plotly_white", height=360,
                 xaxis=dict(title="Jahr", dtick=2),
