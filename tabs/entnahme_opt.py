@@ -20,12 +20,19 @@ from engine import (
 from tabs import auszahlung
 from tabs.vorsorge import _run_optimierung
 try:
-    from tabs.hypothek import get_ausgaben_plan, get_restschuld_end
+    from tabs.hypothek import (
+        get_ausgaben_plan, get_restschuld_end,
+        get_hyp_info, get_ausgaben_plan_optimierung,
+    )
 except ImportError:
     def get_ausgaben_plan() -> dict:
         return {}
     def get_restschuld_end() -> float:
         return 0.0
+    def get_hyp_info():
+        return None
+    def get_ausgaben_plan_optimierung(markt_zins_pa: float, anschluss_laufzeit: int) -> dict:
+        return {}
 
 
 def _aus_dict(d: dict) -> VorsorgeProdukt:
@@ -509,10 +516,51 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             else:
                 gehalt = 0.0
 
+        # ── Hypothek ──────────────────────────────────────────────────────────
+        _hyp_info = get_hyp_info()
+        _ausgaben_plan: dict[int, float] = {}
+        if _hyp_info:
+            _hyp_checkbox = st.checkbox(
+                "🏠 Hypothek in Optimierung berücksichtigen",
+                value=True,
+                key=f"rc{_rc}_eo_hyp_aktiv",
+                help="Berücksichtigt laufende Hypothekraten und Anschlussfinanzierung "
+                     "im Ausgaben-Plan der Optimierung.",
+            )
+            if _hyp_checkbox:
+                _de_h = lambda v: f"{v:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                _rs = _hyp_info["restschuld_end"]
+                st.caption(
+                    f"Hypothek {_hyp_info['startjahr']}–{_hyp_info['endjahr']} · "
+                    f"Rate {_de_h(_hyp_info['jaehrl_rate'])} €/Jahr · "
+                    f"Nominalzins {_hyp_info['zins_pa']*100:.2f} % · "
+                    f"Restschuld Endjahr: **{_de_h(_rs)} €**"
+                )
+                _markt_zins_pa = _hyp_info["anschluss_zins_pa"]
+                _anschluss_lz  = _hyp_info["anschluss_laufzeit"]
+                if _hyp_info["restschuld_end"] > 0:
+                    hc1, hc2 = st.columns(2)
+                    with hc1:
+                        _markt_zins_pct = st.number_input(
+                            "Marktaktueller Anschluss-Zinssatz (%)", 0.0, 20.0,
+                            value=round(_hyp_info["anschluss_zins_pa"] * 100, 2),
+                            step=0.05, format="%.2f",
+                            key=f"rc{_rc}_eo_hyp_markt_zins",
+                            help="Anschlussfinanzierung nach Ablauf der Zinsbindung. "
+                                 "Default: in Hypothek-Tab eingestellter Anschlusszins.",
+                        )
+                        _markt_zins_pa = _markt_zins_pct / 100.0
+                    with hc2:
+                        _anschluss_lz = int(st.number_input(
+                            "Laufzeit Anschlussfinanzierung (Jahre)", 1, 30,
+                            value=_hyp_info["anschluss_laufzeit"], step=1,
+                            key=f"rc{_rc}_eo_hyp_anschl_lz",
+                        ))
+                _ausgaben_plan = get_ausgaben_plan_optimierung(_markt_zins_pa, _anschluss_lz)
+
         # ── Optimierung ausführen ─────────────────────────────────────────────
         st.subheader("🔍 Optimale Auszahlungsstrategie")
         produkte_obj = [_aus_dict(p) for p in produkte_dicts]
-        _ausgaben_plan = get_ausgaben_plan()
         with st.spinner("Optimierung läuft …"):
             opt = _run_optimierung("eo", _profil_eo, _ergebnis_eo, produkte_obj, produkte_dicts,
                                    horizon, mieteinnahmen, mietsteigerung,

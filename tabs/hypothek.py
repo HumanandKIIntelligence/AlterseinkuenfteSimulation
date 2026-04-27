@@ -140,6 +140,48 @@ def get_ausgaben_plan() -> dict[int, float]:
     return plan
 
 
+def get_hyp_info() -> dict | None:
+    """Gibt Hypothek-Metadaten zurück (None wenn nicht konfiguriert/inaktiv)."""
+    d = st.session_state.get("hyp_daten", {})
+    if not d.get("aktiv", False):
+        return None
+    return {
+        "startjahr":        int(d.get("startjahr", AKTUELLES_JAHR)),
+        "endjahr":          int(d.get("endjahr", AKTUELLES_JAHR + 20)),
+        "betrag":           float(d.get("betrag", 0.0)),
+        "jaehrl_rate":      float(d.get("jaehrl_rate", 0.0)),
+        "zins_pa":          float(d.get("zins_pa", 0.035)),
+        "restschuld_end":   get_restschuld_end(),
+        "anschluss_zins_pa":  float(d.get("anschluss_zins_pa", 0.04)),
+        "anschluss_laufzeit": int(d.get("anschluss_laufzeit", 10)),
+    }
+
+
+def get_ausgaben_plan_optimierung(markt_zins_pa: float, anschluss_laufzeit: int) -> dict[int, float]:
+    """
+    Ausgaben-Plan für Entnahme-Optimierung:
+    - Laufende Jahresraten aus dem Tilgungsplan (bestehender Nominalzins)
+    - Anschlussfinanzierung nach Endjahr mit markt_zins_pa (Ratenkredit)
+    """
+    d = st.session_state.get("hyp_daten", {})
+    if not d.get("aktiv", False):
+        return {}
+
+    plan: dict[int, float] = {}
+
+    for row in get_hyp_schedule():
+        plan[row["Jahr"]] = plan.get(row["Jahr"], 0.0) + row["Jahresausgabe"]
+
+    restschuld = get_restschuld_end()
+    if restschuld > 0.0 and anschluss_laufzeit > 0:
+        endjahr = int(d.get("endjahr", AKTUELLES_JAHR + 20))
+        rate = _annuitaet_rate(restschuld, markt_zins_pa, anschluss_laufzeit)
+        for i in range(anschluss_laufzeit):
+            plan[endjahr + 1 + i] = plan.get(endjahr + 1 + i, 0.0) + rate
+
+    return plan
+
+
 def _restschuld_vergleich_ui(restschuld: float, endjahr: int, d: dict, _rc: int) -> None:
     """Zeigt Vergleich Kapitalanlage vs. Ratenkredit, inkl. Mindest-Netto-Check."""
     st.subheader("⚖️ Restschuld-Behandlung")
