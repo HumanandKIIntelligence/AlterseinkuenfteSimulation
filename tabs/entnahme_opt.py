@@ -811,16 +811,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 x=_profil2_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#E91E63",
                 annotation_text="P2 Renteneintritt", annotation_position="top left",
             )
-        # Hypothek-Tilgung als eigener Balken auf sekundärer Achse
+        # Sonderausgaben (Hypothek-Raten / Einmaltilgung) als Annotationen unterhalb der Balken
         _hat_sonder = "Sonderausgabe" in df_jd.columns and df_jd["Sonderausgabe"].sum() > 0
         if _hat_sonder:
-            fig_src.add_trace(go.Bar(
-                name="Hypothek-Tilgung",
-                x=df_jd.index, y=df_jd["Sonderausgabe"],
-                marker_color="#D32F2F", opacity=0.65,
-                yaxis="y2",
-                hovertemplate="%{x}: %{y:,.0f} € Tilgung/Rate<extra>Hypothek</extra>",
-            ))
+            for _sj in df_jd[df_jd["Sonderausgabe"] > 0].index:
+                _sa = df_jd.loc[_sj, "Sonderausgabe"]
+                fig_src.add_annotation(
+                    x=_sj, y=0,
+                    text=f"Hyp. {_de(_sa / 1000, 0)}k€",
+                    showarrow=True, arrowhead=2, arrowcolor="#D32F2F",
+                    font=dict(color="#D32F2F", size=11),
+                    ax=0, ay=35,
+                )
         # Pool-Injektion-Annotationen
         if "Kap_Injektion" in df_jd.columns:
             for _ij in df_jd[df_jd["Kap_Injektion"] > 0].index:
@@ -837,8 +839,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             barmode="stack", template="plotly_white", height=400,
             xaxis=dict(title="Jahr", dtick=2),
             yaxis=dict(title="€ / Jahr (brutto)", tickformat=",.0f"),
-            yaxis2=dict(title="Tilgung/Rate (€/Jahr)", overlaying="y", side="right",
-                        tickformat=",.0f", showgrid=False) if _hat_sonder else {},
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=10, r=10, t=50, b=10),
             separators=",.",
