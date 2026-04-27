@@ -14,10 +14,17 @@ import streamlit as st
 from engine import (
     Profil, RentenErgebnis, VorsorgeProdukt,
     optimiere_auszahlungen, besteuerungsanteil, ertragsanteil,
-    BAV_FREIBETRAG_MONATLICH, BBG_KV_MONATLICH, _pv_satz,
+    BAV_FREIBETRAG_MONATLICH, BBG_KV_MONATLICH, _pv_satz, AKTUELLES_JAHR,
 )
 from tabs import auszahlung
 from tabs.vorsorge import _run_optimierung
+try:
+    from tabs.hypothek import get_ausgaben_plan, get_restschuld_end
+except ImportError:
+    def get_ausgaben_plan() -> dict:
+        return {}
+    def get_restschuld_end() -> float:
+        return 0.0
 
 
 def _aus_dict(d: dict) -> VorsorgeProdukt:
@@ -504,11 +511,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # ── Optimierung ausführen ─────────────────────────────────────────────
         st.subheader("🔍 Optimale Auszahlungsstrategie")
         produkte_obj = [_aus_dict(p) for p in produkte_dicts]
+        _ausgaben_plan = get_ausgaben_plan()
         with st.spinner("Optimierung läuft …"):
             opt = _run_optimierung("eo", _profil_eo, _ergebnis_eo, produkte_obj, produkte_dicts,
                                    horizon, mieteinnahmen, mietsteigerung,
                                    profil2=_profil2_eo, ergebnis2=_ergebnis2_eo,
-                                   veranlagung=_ver_eo, gehalt=gehalt)
+                                   veranlagung=_ver_eo, gehalt=gehalt,
+                                   ausgaben_plan=_ausgaben_plan if _ausgaben_plan else None)
 
         if not opt:
             st.info("Keine Produkte für Optimierung vorhanden.")
@@ -637,15 +646,19 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _cd_versorg = _hover_lines(_versorg_info, _jahre)
 
         fig_src = go.Figure()
+        # Detect multi-pool pids for individual breakdown in source chart
+        _src_pool_pids = [c[len("Src_Kap_"):] for c in df_jd.columns if c.startswith("Src_Kap_")]
+        _multi_pool_src = len(_src_pool_pids) > 1
         src_cols = [
             ("Src_Gehalt",       "Bruttogehalt (aktiv)",    "#78909C", None),
             ("Src_GesRente",     "Gesetzl. Rente P1",       "#4CAF50", None),
             ("Src_P2_Rente",     "Gesetzl. Rente P2",       "#81C784", None),
             ("Src_Versorgung",   "Betriebliche Versorgung", "#2196F3", _cd_versorg),
             ("Src_Einmal",       "Einmalauszahlungen",      "#FF9800", _cd_einmal),
-            ("Src_Kapitalverzehr", "Kapitalverzehr (Pool)", "#9E9D24", None),
             ("Src_Miete",        "Mieteinnahmen",           "#9C27B0", None),
         ]
+        if not _multi_pool_src:
+            src_cols.append(("Src_Kapitalverzehr", "Kapitalverzehr (Pool)", "#9E9D24", None))
         for col, label, color, customdata in src_cols:
             if col in df_jd.columns and df_jd[col].sum() > 0:
                 if customdata is not None:
@@ -670,6 +683,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         marker_color=color,
                         hovertemplate="%{x}: %{y:,.0f} €<extra>" + label + "</extra>",
                     ))
+        if _multi_pool_src:
+            _pool_src_colors = ["#9E9D24", "#558B2F", "#E65100", "#6A1B9A", "#00838F"]
+            _prod_names_src = {p.id: p.name for p in produkte_obj}
+            for _i, _pid in enumerate(_src_pool_pids):
+                _col = f"Src_Kap_{_pid}"
+                if _col in df_jd.columns and df_jd[_col].sum() > 0:
+                    _lbl = f"Pool {_prod_names_src.get(_pid, _pid)}"
+                    fig_src.add_trace(go.Bar(
+                        name=_lbl, x=df_jd.index, y=df_jd[_col],
+                        marker_color=_pool_src_colors[_i % len(_pool_src_colors)],
+                        hovertemplate="%{x}: %{y:,.0f} €<extra>" + _lbl + "</extra>",
+                    ))
         fig_src.add_trace(go.Scatter(
             name="Netto", x=df_jd.index, y=df_jd["Netto"],
             mode="lines+markers",
@@ -687,6 +712,19 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 x=_profil2_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#E91E63",
                 annotation_text="P2 Renteneintritt", annotation_position="top left",
             )
+        # Sonderausgaben (Hypothek) als Annotationen im Chart
+        if "Sonderausgabe" in df_jd.columns:
+            _sonder_jahre = df_jd[df_jd["Sonderausgabe"] > 0].index
+            for _sj in _sonder_jahre:
+                _sa = df_jd.loc[_sj, "Sonderausgabe"]
+                fig_src.add_annotation(
+                    x=_sj, y=0,
+                    text=f"Hyp. {_de(_sa / 1000, 0)}k€",
+                    showarrow=True, arrowhead=2, arrowcolor="#D32F2F",
+                    font=dict(color="#D32F2F", size=10),
+                    ax=0, ay=30,
+                )
+
         fig_src.update_layout(
             barmode="stack", template="plotly_white", height=400,
             xaxis=dict(title="Jahr", dtick=2),
@@ -696,6 +734,215 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             separators=",.",
         )
         st.plotly_chart(fig_src, use_container_width=True)
+
+        # ── Hypothek-Fehlbetrag Warnungen ────────────────────────────────────
+        if "Kap_Fehlbetrag" in df_jd.columns and df_jd["Kap_Fehlbetrag"].sum() > 0:
+            _fehlbetrag_jahre = df_jd[df_jd["Kap_Fehlbetrag"] > 0]
+            st.error(
+                "**Kapitalanlage-Pool unzureichend für Restschuld-Tilgung!**\n\n"
+                + "\n".join(
+                    f"- {int(j)}: Fehlbetrag **{_de(row['Kap_Fehlbetrag'])} €** "
+                    f"— verfügbares Netto um {_de(row['Kap_Fehlbetrag'] / 12)} €/Mon. reduziert"
+                    for j, row in _fehlbetrag_jahre.iterrows()
+                )
+                + "\n\nEmpfehlung: Anschlussfinanzierung oder Sondertilgung erhöhen.",
+            )
+        elif "Sonderausgabe" in df_jd.columns and df_jd["Sonderausgabe"].sum() > 0:
+            _sa_total = df_jd["Sonderausgabe"].sum()
+            st.success(
+                f"✅ Restschuld-Tilgung ({_de(_sa_total)} €) vollständig durch Kapitalanlage-Pool gedeckt."
+            )
+
+        # ── Multi-Pool Kapitalanlage-Verlauf ─────────────────────────────────
+        _pool_pids = [c[len("Kap_Pool_"):] for c in df_jd.columns if c.startswith("Kap_Pool_")]
+        if _pool_pids:
+            st.subheader("Kapitalanlage-Pool Verlauf")
+            # Product name lookup
+            _prod_names = {p.id: p.name for p in produkte_obj}
+            fig_pool = go.Figure()
+            # Individual pool lines (only when multiple pools)
+            if len(_pool_pids) > 1:
+                _pool_colors = ["#1565C0", "#2E7D32", "#E65100", "#6A1B9A", "#00838F"]
+                for _i, _pid in enumerate(_pool_pids):
+                    _col = f"Kap_Pool_{_pid}"
+                    if _col in df_jd.columns and df_jd[_col].sum() > 0:
+                        _lbl = _prod_names.get(_pid, _pid)
+                        fig_pool.add_trace(go.Scatter(
+                            name=_lbl, x=df_jd.index, y=df_jd[_col],
+                            mode="lines", line=dict(color=_pool_colors[_i % len(_pool_colors)], width=2),
+                            hovertemplate=f"%{{x}}: %{{y:,.0f}} €<extra>{_lbl}</extra>",
+                        ))
+            # Total pool line
+            if "Kap_Pool" in df_jd.columns:
+                fig_pool.add_trace(go.Scatter(
+                    name="Pool gesamt", x=df_jd.index, y=df_jd["Kap_Pool"],
+                    mode="lines", line=dict(color="#000000", width=2.5, dash="dash"),
+                    hovertemplate="%{x}: %{y:,.0f} € gesamt<extra></extra>",
+                ))
+            # Individual pool withdrawals as bars
+            _src_colors = ["#42A5F5", "#66BB6A", "#FFA726", "#AB47BC", "#26C6DA"]
+            for _i, _pid in enumerate(_pool_pids):
+                _src_col = f"Src_Kap_{_pid}"
+                if _src_col in df_jd.columns and df_jd[_src_col].sum() > 0:
+                    _lbl = _prod_names.get(_pid, _pid)
+                    fig_pool.add_trace(go.Bar(
+                        name=f"Entnahme {_lbl}", x=df_jd.index, y=df_jd[_src_col],
+                        marker_color=_src_colors[_i % len(_src_colors)], opacity=0.7,
+                        yaxis="y2",
+                        hovertemplate=f"%{{x}}: %{{y:,.0f}} € Entnahme<extra>{_lbl}</extra>",
+                    ))
+            fig_pool.update_layout(
+                barmode="stack", template="plotly_white", height=360,
+                xaxis=dict(title="Jahr", dtick=2),
+                yaxis=dict(title="Poolwert (€)", tickformat=",.0f"),
+                yaxis2=dict(title="Entnahme (€/Jahr)", overlaying="y", side="right",
+                            tickformat=",.0f", showgrid=False),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=10, r=10, t=50, b=10),
+                separators=",.",
+            )
+            st.plotly_chart(fig_pool, use_container_width=True)
+
+        # ── Hypothek-Vergleich: Kapitalanlage vs. Ratenkredit ────────────────
+        _restschuld = get_restschuld_end()
+        if _restschuld > 0:
+            with st.expander("🏠 Hypothek-Restschuld: Optionsvergleich", expanded=False):
+                st.caption(
+                    f"Restschuld am Hypothek-Endjahr: **{_de(_restschuld)} €**. "
+                    "Vergleich der Behandlungsoptionen unter Einbeziehung von Steuer, KV und Kapitalrendite."
+                )
+                # Mindest-Netto Eingabe
+                _mindest_j = st.number_input(
+                    "Mindest-Haushaltsnetto (€/Jahr) als Zielgröße",
+                    min_value=0, max_value=500_000,
+                    value=int(st.session_state.get(f"rc{_rc}_eo_mindest_netto_j", 24_000)),
+                    step=1_000,
+                    key=f"rc{_rc}_eo_mindest_netto_j",
+                    help="Jahreswert (= Monatswert × 12), der als Mindestversorgung gelten soll.",
+                )
+
+                # Plan für jede Option berechnen
+                hyp_d = st.session_state.get("hyp_daten", {})
+                endjahr_hyp = int(hyp_d.get("endjahr", AKTUELLES_JAHR + 20))
+                anschluss_zins = float(hyp_d.get("anschluss_zins_pa", 0.04))
+                anschluss_lz = int(hyp_d.get("anschluss_laufzeit", 10))
+
+                try:
+                    from tabs.hypothek import _annuitaet_rate as _hyp_annuitaet_rate
+                    rate_rk = _hyp_annuitaet_rate(_restschuld, anschluss_zins, anschluss_lz)
+                except Exception:
+                    rate_rk = _restschuld / max(1, anschluss_lz)
+
+                _plan_ka = {endjahr_hyp: _restschuld}
+                _plan_rk = {endjahr_hyp + 1 + i: rate_rk for i in range(anschluss_lz)}
+                _plan_keine = {}
+
+                with st.spinner("Vergleich wird berechnet …"):
+                    _opt_ka = _run_optimierung(
+                        "eo_ka", _profil_eo, _ergebnis_eo, produkte_obj, produkte_dicts,
+                        horizon, mieteinnahmen, mietsteigerung,
+                        profil2=_profil2_eo, ergebnis2=_ergebnis2_eo,
+                        veranlagung=_ver_eo, gehalt=gehalt,
+                        ausgaben_plan=_plan_ka,
+                    )
+                    _opt_rk = _run_optimierung(
+                        "eo_rk", _profil_eo, _ergebnis_eo, produkte_obj, produkte_dicts,
+                        horizon, mieteinnahmen, mietsteigerung,
+                        profil2=_profil2_eo, ergebnis2=_ergebnis2_eo,
+                        veranlagung=_ver_eo, gehalt=gehalt,
+                        ausgaben_plan=_plan_rk,
+                    )
+                    _opt_keine = _run_optimierung(
+                        "eo_keine", _profil_eo, _ergebnis_eo, produkte_obj, produkte_dicts,
+                        horizon, mieteinnahmen, mietsteigerung,
+                        profil2=_profil2_eo, ergebnis2=_ergebnis2_eo,
+                        veranlagung=_ver_eo, gehalt=gehalt,
+                        ausgaben_plan=None,
+                    )
+
+                def _min_netto_j(opt_res: dict) -> float:
+                    if not opt_res.get("jahresdaten"):
+                        return float("inf")
+                    return min(r["Netto"] for r in opt_res["jahresdaten"])
+
+                def _min_netto_rente_j(opt_res: dict) -> float:
+                    if not opt_res.get("jahresdaten"):
+                        return float("inf")
+                    renten_jahre = [
+                        r for r in opt_res["jahresdaten"]
+                        if r.get("Src_Gehalt", 0) == 0
+                    ]
+                    return min((r["Netto"] for r in renten_jahre), default=float("inf"))
+
+                _netto_ka   = _opt_ka.get("bestes_netto", 0.0)
+                _netto_rk   = _opt_rk.get("bestes_netto", 0.0)
+                _netto_kein = _opt_keine.get("bestes_netto", 0.0)
+                _min_ka     = _min_netto_rente_j(_opt_ka)
+                _min_rk     = _min_netto_rente_j(_opt_rk)
+
+                # Tabelle
+                import pandas as _pd_cmp
+                df_cmp = _pd_cmp.DataFrame({
+                    "Option": [
+                        "Keine Planung (Restschuld offen)",
+                        "Kapitalanlage-Tilgung",
+                        f"Ratenkredit ({anschluss_zins*100:.1f}%, {anschluss_lz}J.)",
+                    ],
+                    "Netto gesamt (€)": [
+                        round(_netto_kein), round(_netto_ka), round(_netto_rk)
+                    ],
+                    "Diff. zu kein Plan (€)": [
+                        0,
+                        round(_netto_ka - _netto_kein),
+                        round(_netto_rk - _netto_kein),
+                    ],
+                    "Min.-Netto Rentenphase (€/J)": [
+                        "–",
+                        _de(_min_ka) if _min_ka < float("inf") else "–",
+                        _de(_min_rk) if _min_rk < float("inf") else "–",
+                    ],
+                    "Mindest-Netto erreicht?": [
+                        "–",
+                        "✅ Ja" if _min_ka >= _mindest_j else "❌ Nein",
+                        "✅ Ja" if _min_rk >= _mindest_j else "❌ Nein",
+                    ],
+                })
+                st.dataframe(df_cmp.set_index("Option"), use_container_width=True)
+
+                # Empfehlung
+                _ka_ok = _min_ka >= _mindest_j
+                _rk_ok = _min_rk >= _mindest_j
+                if _ka_ok and _rk_ok:
+                    if _netto_ka >= _netto_rk:
+                        st.success(
+                            "**Empfehlung: Kapitalanlage-Tilgung.** "
+                            "Beide Optionen erfüllen das Mindest-Netto; "
+                            f"Kapitalanlage erzielt {_de(_netto_ka - _netto_rk)} € mehr über den Planungshorizont."
+                        )
+                    else:
+                        st.success(
+                            "**Empfehlung: Ratenkredit.** "
+                            "Beide Optionen erfüllen das Mindest-Netto; "
+                            f"Ratenkredit erzielt {_de(_netto_rk - _netto_ka)} € mehr "
+                            "(Kapitalanlage erzielt höhere Rendite als Kreditzins)."
+                        )
+                elif _ka_ok and not _rk_ok:
+                    st.success(
+                        "**Empfehlung: Kapitalanlage-Tilgung.** "
+                        "Nur diese Option hält das Mindest-Netto während der Ratenkredit-Laufzeit."
+                    )
+                elif _rk_ok and not _ka_ok:
+                    st.warning(
+                        "**Empfehlung: Ratenkredit.** "
+                        "Die Kapitalanlage ist ggf. nicht groß genug – der Pool würde das verfügbare "
+                        "Netto im Tilgungsjahr stark reduzieren."
+                    )
+                else:
+                    st.error(
+                        "**Keine Option erfüllt das Mindest-Netto.** "
+                        "Mögliche Maßnahmen: Sondertilgungen erhöhen, Sparquote anpassen, "
+                        "Renteneintritt verschieben oder Mindest-Netto reduzieren."
+                    )
 
         # ── Jahresdetails ─────────────────────────────────────────────────────
         st.subheader("Jahresdetails")
@@ -713,6 +960,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             jm2.metric(f"Netto {_sel_j}", f"{_de(_jrow['Netto'] / 12)} €/Mon.")
             jm3.metric(f"Steuer {_sel_j}", f"{_de(_jrow['Steuer'] / 12)} €/Mon.")
             jm4.metric(f"KV/PV {_sel_j}", f"{_de(_jrow['KV_PV'] / 12)} €/Mon.")
+            if _jrow["Netto"] < 0:
+                st.warning(
+                    f"⚠️ Netto in {_sel_j} ist **negativ** ({_de(_jrow['Netto'] / 12)} €/Mon.)! "
+                    "Die Ausgaben (Steuern, KV, Sonderausgaben) übersteigen die Einnahmen. "
+                    "Kapitalanlage-Pool oder Einnahmen erhöhen, oder Ausgaben reduzieren."
+                )
             if "KV_P2" in df_jd.columns and _jrow["KV_P2"] > 0:
                 st.caption(
                     f"KV-Aufteilung: P1 {_de(_jrow['KV_P1'] / 12)} €/Mon. "

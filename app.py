@@ -11,7 +11,7 @@ st.set_page_config(
 
 from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR, einkommensteuer, BBG_KV_MONATLICH, _pv_satz
 from session_io import save_session, load_session, list_saves
-from tabs import dashboard, simulation, vorsorge, haushalt, dokumentation, entnahme_opt
+from tabs import dashboard, simulation, vorsorge, haushalt, dokumentation, entnahme_opt, hypothek
 
 # Reset-Counter: erzwingt neue Widget-Keys nach "Neu anfangen"
 _RC = st.session_state.get("_rc", 0)
@@ -57,7 +57,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         if ist_pensionaer:
             aktuelle_punkte  = 0.0
             punkte_pro_jahr  = 0.0
-            rentenanpassung  = 0.0
+            rentenanpassung  = float(_get(pfx, "ren_anp", 0.0)) / 100
         else:
             aktuelle_punkte  = float(_get(pfx, "punkte", 25.0 if pfx == "p1" else 15.0))
             punkte_pro_jahr  = float(_get(pfx, "ppj", 1.2))
@@ -78,6 +78,10 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
 
     kirchensteuer      = bool(_get(pfx, "kist", False))
     kirchensteuer_satz = float(_get(pfx, "kist_satz", 9.0)) / 100
+
+    grundfreibetrag_wachstum_pa = float(_get(pfx, "gfb_wachstum", 0.0)) / 100
+    _kap_pool_cb = bool(_get(pfx, "kap_pool_cb", False))
+    kap_pool_rendite_pa = float(_get(pfx, "kap_pool_rendite", 5.0)) / 100 if _kap_pool_cb else -1.0
 
     return Profil(
         geburtsjahr=geburtsjahr,
@@ -106,6 +110,8 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         kvdr_pflicht=kvdr_pflicht,
         kirchensteuer=kirchensteuer,
         kirchensteuer_satz=kirchensteuer_satz,
+        grundfreibetrag_wachstum_pa=grundfreibetrag_wachstum_pa,
+        kap_pool_rendite_pa=kap_pool_rendite_pa,
     )
 
 
@@ -147,8 +153,11 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
         f"rc{_RC}_{pfx}_buv":        p.buv_monatlich,
         f"rc{_RC}_{pfx}_buv_end":    p.buv_endjahr,
         f"rc{_RC}_{pfx}_kvdr":       p.kvdr_pflicht,
-        f"rc{_RC}_{pfx}_kist":       p.kirchensteuer,
-        f"rc{_RC}_{pfx}_kist_satz":  p.kirchensteuer_satz * 100,
+        f"rc{_RC}_{pfx}_kist":            p.kirchensteuer,
+        f"rc{_RC}_{pfx}_kist_satz":       p.kirchensteuer_satz * 100,
+        f"rc{_RC}_{pfx}_gfb_wachstum":    p.grundfreibetrag_wachstum_pa * 100,
+        f"rc{_RC}_{pfx}_kap_pool_cb":     p.kap_pool_rendite_pa >= 0.0,
+        f"rc{_RC}_{pfx}_kap_pool_rendite": max(0.0, p.kap_pool_rendite_pa * 100),
     }
     st.session_state.update(updates)
 
@@ -206,22 +215,38 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                 step=0.5, key=f"rc{_RC}_{pfx}_rendite",
             )
     else:
+        _re_alter_val = int(_get(pfx, "re_alter", 67))
         st.slider(
             "Pensionierungsalter" if ist_pensionaer else "Renteneintrittsalter",
             60, 70,
-            value=int(_get(pfx, "re_alter", 67)),
+            value=_re_alter_val,
             key=f"rc{_RC}_{pfx}_re_alter",
             help="Regelaltersgrenze 2025: 67 Jahre." if not ist_pensionaer
                  else "Pensionierungsalter Bund/Länder: i.d.R. 65–67 J.",
         )
+        if not ist_pensionaer and _re_alter_val < 63:
+            st.warning(
+                f"⚠️ Renteneintrittsalter {_re_alter_val}: Das frühestmögliche GRV-Eintrittsalter "
+                "beträgt 63 Jahre (mit 35 Versicherungsjahren, § 36 SGB VI). "
+                "Abschlag: 0,3 % je Monat vor Regelaltersgrenze 67."
+            )
         if ist_pensionaer:
             st.markdown("**Beamtenversorgung**")
-            st.number_input(
-                "Erwartete Bruttopension (€/Mon.)", 0.0, 20_000.0,
-                value=float(_get(pfx, "akt_brutto", 3_000.0)),
-                step=50.0, key=f"rc{_RC}_{pfx}_akt_brutto",
-                help="Besteuerung nach § 19 Abs. 2 EStG (Versorgungsfreibetrag).",
-            )
+            ca_p, cb_p = st.columns(2)
+            with ca_p:
+                st.number_input(
+                    "Erwartete Bruttopension (€/Mon.)", 0.0, 20_000.0,
+                    value=float(_get(pfx, "akt_brutto", 3_000.0)),
+                    step=50.0, key=f"rc{_RC}_{pfx}_akt_brutto",
+                    help="Besteuerung nach § 19 Abs. 2 EStG (Versorgungsfreibetrag).",
+                )
+            with cb_p:
+                st.slider(
+                    "Pensionsanpassung p.a. (%)", 0.0, 3.0,
+                    value=float(_get(pfx, "ren_anp", 0.0)),
+                    step=0.1, key=f"rc{_RC}_{pfx}_ren_anp",
+                    help="Jährliche Anpassung der Bruttopension (Besoldungserhöhung). 0 = konstant.",
+                )
         else:
             st.markdown("**Gesetzliche Rente (DRV)**")
             ca, cb = st.columns(2)
@@ -393,6 +418,33 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
             _kist_val = 8.0 if "8 %" in _kist_sel else 9.0
             st.session_state[f"rc{_RC}_{pfx}_kist_satz"] = _kist_val
 
+    with st.expander("⚙️ Erweiterte Einstellungen"):
+        ea1, ea2 = st.columns(2)
+        with ea1:
+            st.slider(
+                "GFB-Wachstum p.a. (%)", 0.0, 3.0,
+                value=float(_get(pfx, "gfb_wachstum", 0.0)),
+                step=0.1, key=f"rc{_RC}_{pfx}_gfb_wachstum",
+                help=(
+                    "Jährliche Steigerung des Grundfreibetrags (§ 32a EStG) im Planungshorizont. "
+                    "Historisch ca. 1–2 % p.a. Wirkt nur in der Jahressimulation "
+                    "(Entnahme-Optimierung), nicht im Basisdashboard."
+                ),
+            )
+        with ea2:
+            _kap_cb = st.checkbox(
+                "Separate Pool-Rendite",
+                value=bool(_get(pfx, "kap_pool_cb", False)),
+                key=f"rc{_RC}_{pfx}_kap_pool_cb",
+                help="Eigene Rendite für Kapitalanlage-Pool festlegen (überschreibt Anlagerendite p.a.).",
+            )
+            if _kap_cb:
+                st.slider(
+                    "Pool-Rendite p.a. (%)", 0.0, 12.0,
+                    value=float(_get(pfx, "kap_pool_rendite", 5.0)),
+                    step=0.25, key=f"rc{_RC}_{pfx}_kap_pool_rendite",
+                )
+
     if ist_pensionaer:
         with st.expander("🛡 Dienstunfähigkeitsversicherung (DUV)"):
             ca, cb = st.columns(2)
@@ -545,6 +597,8 @@ def _apply_loaded_session(data: dict) -> None:
     st.session_state["vp_produkte"] = data.get("produkte", [])
     st.session_state[_gkey("hh_miet")]     = data.get("mieteinnahmen", 0.0)
     st.session_state[_gkey("hh_miet_stg")] = data.get("mietsteigerung", 0.015) * 100
+    if data.get("hyp_daten"):
+        st.session_state["hyp_daten"] = data["hyp_daten"]
 
 
 def _sidebar_save(profil1: Profil, profil2, veranlagung: str,
@@ -561,6 +615,7 @@ def _sidebar_save(profil1: Profil, profil2, veranlagung: str,
                 produkte=st.session_state.get("vp_produkte", []),
                 mieteinnahmen=mieteinnahmen,
                 mietsteigerung=mietsteigerung,
+                hyp_daten=st.session_state.get("hyp_daten"),
             )
             st.sidebar.success(f"Gespeichert: {pfad}")
 
@@ -672,7 +727,7 @@ if _eo_jd:
 
 # O3d: 6 Tabs (Steuern → Dashboard-Expander; Auszahlung → Entnahme-Expander)
 tab_labels = ["⚙️ Profil", "📊 Dashboard", "🔮 Simulation",
-              "🏦 Vorsorge-Bausteine", "💡 Entnahme-Optimierung",
+              "🏦 Vorsorge-Bausteine", "🏠 Hypothek", "💡 Entnahme-Optimierung",
               "📖 Dokumentation"]
 if profil2:
     tab_labels.insert(2, "👥 Haushalt")
@@ -687,6 +742,7 @@ if profil2:
     T["Haushalt"]  = tabs[idx]; idx += 1
 T["Simulation"]    = tabs[idx]; idx += 1
 T["Vorsorge"]      = tabs[idx]; idx += 1
+T["Hypothek"]      = tabs[idx]; idx += 1
 T["Entnahme"]      = tabs[idx]; idx += 1
 T["Dokumentation"] = tabs[idx]; idx += 1
 
@@ -702,6 +758,7 @@ simulation.render(T, profil1, ergebnis1, profil2=profil2, ergebnis2=ergebnis2,
 vorsorge.render(T, profil1, ergebnis1, profil2=profil2,
                 mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung,
                 ergebnis2=ergebnis2, veranlagung=veranlagung)
+hypothek.render(T, _RC)
 entnahme_opt.render(T, profil1, ergebnis1, profil2=profil2,
                     mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung,
                     ergebnis2=ergebnis2, veranlagung=veranlagung)

@@ -6,6 +6,7 @@ Keine Haftung für steuerliche oder rechtliche Entscheidungen.
 
 from __future__ import annotations
 from dataclasses import dataclass, replace
+from datetime import date as _date
 import numpy as np
 
 # ── Konstanten ────────────────────────────────────────────────────────────────
@@ -13,7 +14,7 @@ RENTENWERT_2024 = 39.32        # €/Punkt West, Stand 01.07.2024
 GRUNDFREIBETRAG_2024 = 11_604  # €
 WERBUNGSKOSTEN_PAUSCHBETRAG = 102   # € Pauschbetrag für Rentner
 SONDERAUSGABEN_PAUSCHBETRAG = 36    # €
-AKTUELLES_JAHR = 2025
+AKTUELLES_JAHR: int = _date.today().year
 REGELALTERSGRENZE = 67         # Jahrgänge ab 1964 (§ 35 SGB VI)
 ABSCHLAG_PRO_MONAT = 0.003     # 0,3 % je Monat Frühverrentung (§ 77 SGB VI)
 
@@ -139,19 +140,27 @@ def _pv_satz(kinder_anzahl: int) -> tuple[float, float]:
 
 # ── Steuerformeln (§ 32a EStG Grundtarif 2024) ────────────────────────────────
 
-def einkommensteuer(zvE: float) -> float:
-    """Einkommensteuer nach Grundtarif 2024. zvE = zu versteuerndes Einkommen."""
-    if zvE <= 11_604:
+def einkommensteuer(zvE: float, grundfreibetrag: float | None = None) -> float:
+    """Einkommensteuer nach Grundtarif 2024.
+
+    zvE = zu versteuerndes Einkommen.
+    grundfreibetrag: optionaler Wert (z.B. für GFB-Wachstum-Simulation).
+    Alle Zonengrenzen verschieben sich um delta = grundfreibetrag - GRUNDFREIBETRAG_2024;
+    Zonenbreiten und Grenzsteuersätze bleiben wie 2024. (Planungsvereinfachung)
+    """
+    gfb = GRUNDFREIBETRAG_2024 if grundfreibetrag is None else grundfreibetrag
+    delta = gfb - GRUNDFREIBETRAG_2024
+    if zvE <= gfb:
         return 0.0
-    if zvE <= 17_005:
-        y = (zvE - 11_604) / 10_000
+    if zvE <= gfb + 5_401:
+        y = (zvE - gfb) / 10_000
         return (928.37 * y + 1_400) * y
-    if zvE <= 66_760:
-        z = (zvE - 17_005) / 10_000
+    if zvE <= gfb + 55_156:
+        z = (zvE - gfb - 5_401) / 10_000
         return (176.64 * z + 2_397) * z + 1_025.38
-    if zvE <= 277_825:
-        return 0.42 * zvE - 9_972.98
-    return 0.45 * zvE - 18_307.73
+    if zvE <= gfb + 266_221:
+        return 0.42 * zvE - (9_972.98 + 0.42 * delta)
+    return 0.45 * zvE - (18_307.73 + 0.45 * delta)
 
 
 def solidaritaetszuschlag(est: float) -> float:
@@ -223,6 +232,12 @@ class Profil:
     # Kirchensteuer (§ 51a EStG)
     kirchensteuer: bool = False         # Kirchensteuerpflicht
     kirchensteuer_satz: float = 0.09    # 9 % allgemein; 8 % Bayern + Baden-Württemberg
+
+    # Steuertarif-Wachstum (Planungsvereinfachung: nur GFB wächst, Zonenbreiten 2024 bleiben)
+    grundfreibetrag_wachstum_pa: float = 0.0   # GFB-Wachstum p.a. (z.B. 0.015 = 1,5 %)
+
+    # Kapitalanlage-Pool: eigene Rendite (-1.0 = wie rendite_pa)
+    kap_pool_rendite_pa: float = -1.0          # Rendite für Pool-Entnahmen p.a.
 
     @property
     def aktuelles_alter(self) -> int:
@@ -442,9 +457,9 @@ def simuliere_szenarien(p: Profil) -> dict[str, RentenErgebnis]:
 
 # ── Ehegatten-Splitting ───────────────────────────────────────────────────────
 
-def einkommensteuer_splitting(zvE_gesamt: float) -> float:
+def einkommensteuer_splitting(zvE_gesamt: float, grundfreibetrag: float | None = None) -> float:
     """Splittingtarif (§ 32a Abs. 5 EStG): 2 × ESt(zvE / 2)."""
-    return 2.0 * einkommensteuer(zvE_gesamt / 2.0)
+    return 2.0 * einkommensteuer(zvE_gesamt / 2.0, grundfreibetrag)
 
 
 def berechne_haushalt(
@@ -545,6 +560,8 @@ class VorsorgeProdukt:
     jaehrl_dynamik: float = 0.0         # Jährl. Beitragssteigerung (z.B. 0.02 = 2 %)
     beitragsbefreiung_jahr: int = 0     # Ab diesem Jahr keine Beiträge mehr (0 = nie)
     als_kapitalanlage: bool = False     # Einmalauszahlung → Kapitalanlage-Pool statt Einkommen
+    kap_rendite_pa: float = -1.0       # Pool-Rendite für dieses Produkt (-1.0 = Profilwert)
+    etf_ausschuettend: bool = False    # Ausschüttender ETF → Teilfreistellung 0 % bei Ausschüttungen
 
     @property
     def ist_lebensversicherung(self) -> bool:
@@ -637,6 +654,15 @@ def vergleiche_produkt(
     }
 
 
+def _resolve_pool_rendite(prod: "VorsorgeProdukt | None", profil: "Profil") -> float:
+    """Gibt die effektive Pool-Rendite für ein Kapitalanlage-Produkt zurück."""
+    if prod is not None and prod.kap_rendite_pa >= 0.0:
+        return prod.kap_rendite_pa
+    if profil.kap_pool_rendite_pa >= 0.0:
+        return profil.kap_pool_rendite_pa
+    return profil.rendite_pa
+
+
 # ── Steueroptimierung Vertragsauszahlungen ────────────────────────────────────
 
 def _netto_ueber_horizont(
@@ -650,6 +676,7 @@ def _netto_ueber_horizont(
     ergebnis2: "RentenErgebnis | None" = None,
     veranlagung: str = "Getrennt",
     gehalt_monatlich: float = 0.0,
+    ausgaben_plan: "dict[int, float] | None" = None,
 ) -> tuple[float, list[dict]]:
     """
     Simuliert das Netto-Einkommen Jahr für Jahr über `horizont_jahre` ab Renteneintritt.
@@ -739,9 +766,13 @@ def _netto_ueber_horizont(
 
     total_netto = 0.0
     jahresdaten: list[dict] = []
-    # Kapitalanlage-Pool: sammelt Netto-Auszahlungen von als_kapitalanlage-Produkten
-    _kap_pool: float = 0.0   # aktueller Poolwert
-    _kap_basis: float = 0.0  # Kostenbasis (eingezahlte Nettosumme)
+    # Kapitalanlage-Pools: je Produkt (id → Poolwert / Kostenbasis)
+    _kap_pools: dict[str, float] = {}
+    _kap_bases: dict[str, float] = {}
+    # Lookup: Produkt-ID → VorsorgeProdukt (nur als_kapitalanlage)
+    _ka_prods: dict[str, "VorsorgeProdukt"] = {
+        prod.id: prod for prod, _, _ in entscheidungen if prod.als_kapitalanlage
+    }
 
     for y in range(_gesamt_jahre):
         jahr = _sim_start + y
@@ -820,18 +851,30 @@ def _netto_ueber_horizont(
             if hat_partner and p.person == "Person 2"
         )
 
-        # ── Kapitalanlage-Pool: Entnahme-Annuität (Jahresbeginn, vor Produkt-Loop) ──
+        # ── Kapitalanlage-Pools: Entnahme-Annuität je Produkt (vor Produkt-Loop) ──
         kap_verzehr_j = 0.0
-        kap_verzehr_gains_j = 0.0
-        if _kap_pool > 0.0:
-            _remaining = _gesamt_jahre - y
-            if _remaining > 0:
-                kap_verzehr_j = _annuitaet(_kap_pool, profil.rendite_pa, _remaining) * 12
-                _gains_ratio = max(0.0, (_kap_pool - _kap_basis) / _kap_pool)
-                kap_verzehr_gains_j = kap_verzehr_j * _gains_ratio
-                _kap_basis = max(0.0, _kap_basis - (kap_verzehr_j - kap_verzehr_gains_j))
-        lfd_kap_j += kap_verzehr_gains_j   # Gewinne → Abgeltungsteuer-Pool
-        kap_injection_gross_j = 0.0        # Tracker für Kapitalanlage-Einzahlungen
+        kap_verzehr_j_per_prod: dict[str, float] = {}
+        _remaining = _gesamt_jahre - y
+        for _pid, _pool in list(_kap_pools.items()):
+            if _pool <= 0.0 or _remaining <= 0:
+                continue
+            _prod_ka = _ka_prods.get(_pid)
+            _pool_r  = _resolve_pool_rendite(_prod_ka, profil)
+            _verzehr = _annuitaet(_pool, _pool_r, _remaining) * 12
+            _gains_ratio = max(0.0, (_pool - _kap_bases[_pid]) / _pool)
+            _gains = _verzehr * _gains_ratio
+            lfd_kap_j += _gains                               # → Abgeltungsteuer-Pool
+            _kap_bases[_pid] = max(0.0, _kap_bases[_pid] - (_verzehr - _gains))
+            kap_verzehr_j_per_prod[_pid] = _verzehr
+            kap_verzehr_j += _verzehr
+        kap_injection_gross_per_prod: dict[str, float] = {}   # Injektionen dieses Jahres
+        kap_injection_gross_j = 0.0
+
+        # ── GFB-Wachstum: wachsender Grundfreibetrag für dieses Simulationsjahr ──
+        _gfb_y = (GRUNDFREIBETRAG_2024
+                  * (1.0 + profil.grundfreibetrag_wachstum_pa) ** y
+                  if profil.grundfreibetrag_wachstum_pa > 0.0
+                  else None)
 
         for prod, startjahr, anteil in entscheidungen:
             if jahr < startjahr:
@@ -851,13 +894,17 @@ def _netto_ueber_horizont(
                 _einz_eff = prod.einzahlungen_effektiv(startjahr)
                 if jahr == startjahr:
                     if prod.als_kapitalanlage:
+                        kap_injection_gross_per_prod[prod.id] = (
+                            kap_injection_gross_per_prod.get(prod.id, 0.0) + betrag
+                        )
                         kap_injection_gross_j += betrag
                     if ist_etf:
                         gain_ratio = (
                             max(0.0, 1.0 - _einz_eff / einmal_wert)
                             if einmal_wert > 0 else 0.0
                         )
-                        _abgelt = betrag * gain_ratio * (1.0 - prod.teilfreistellung)
+                        _eff_tf = 0.0 if prod.etf_ausschuettend else prod.teilfreistellung
+                        _abgelt = betrag * gain_ratio * (1.0 - _eff_tf)
                         if _is_p2:
                             p2_etf_brutto_j += betrag
                             p2_etf_abgelt_j += _abgelt
@@ -1002,9 +1049,9 @@ def _netto_ueber_horizont(
         _spe = SPARERPAUSCHBETRAG * (2 if hat_partner else 1)
         steuer_abgelt = max(0.0, abgelt_pool - _spe) * 0.25
         if zusammen:
-            steuer_progr = einkommensteuer_splitting(zvE_p1 + p2_zvE_j)
+            steuer_progr = einkommensteuer_splitting(zvE_p1 + p2_zvE_j, _gfb_y)
         else:
-            steuer_progr = einkommensteuer(zvE_p1)
+            steuer_progr = einkommensteuer(zvE_p1, _gfb_y)
         _soli_j = solidaritaetszuschlag(steuer_progr)
         steuer = steuer_progr + _soli_j + steuer_abgelt
         # Kirchensteuer § 51a EStG (auf die progressive Einkommensteuer)
@@ -1068,18 +1115,50 @@ def _netto_ueber_horizont(
         )
         netto = brutto - steuer - kv
 
-        # ── Kapitalanlage-Pool-Einzahlung: Netto-Anteil aus der Auszahlung umleiten ──
-        # Steuer + KV auf die Einzahlung sind bereits in obiger steuer/kv-Berechnung
-        # enthalten. Der verbleibende Nettobetrag wird in den Pool verschoben.
+        # ── Kapitalanlage-Pool-Einzahlung: Netto-Anteil pro Produkt umleiten ──
         kap_net_inj_j = 0.0
+        kap_net_inj_per_prod: dict[str, float] = {}
         if kap_injection_gross_j > 0 and brutto > 0:
             _eff_net = max(0.0, netto / brutto)
-            kap_net_inj_j = kap_injection_gross_j * _eff_net
-            netto -= kap_net_inj_j   # nicht zum Ausgeben, geht in Pool
-            brutto -= kap_injection_gross_j  # Anzeige: keine Doppelzählung
-        # Pool-Update: Entnahme + Rendite + neue Einzahlung
-        _kap_pool = max(0.0, _kap_pool - kap_verzehr_j) * (1.0 + profil.rendite_pa) + kap_net_inj_j
-        _kap_basis += kap_net_inj_j
+            for _pid, _gross_inj in kap_injection_gross_per_prod.items():
+                _net_inj = _gross_inj * _eff_net
+                kap_net_inj_per_prod[_pid] = _net_inj
+                kap_net_inj_j += _net_inj
+            netto -= kap_net_inj_j
+            brutto -= kap_injection_gross_j
+        # Pool-Update je Produkt: Entnahme + Rendite + Einzahlung
+        _all_pids = set(list(_kap_pools.keys()) + list(kap_net_inj_per_prod.keys()))
+        for _pid in _all_pids:
+            _prod_ka  = _ka_prods.get(_pid)
+            _pool_r   = _resolve_pool_rendite(_prod_ka, profil)
+            _pool_old = _kap_pools.get(_pid, 0.0)
+            _verzehr  = kap_verzehr_j_per_prod.get(_pid, 0.0)
+            _net_inj  = kap_net_inj_per_prod.get(_pid, 0.0)
+            _kap_pools[_pid] = max(0.0, _pool_old - _verzehr) * (1.0 + _pool_r) + _net_inj
+            _kap_bases[_pid] = _kap_bases.get(_pid, 0.0) + _net_inj
+
+        # ── Sonderausgaben (Hypothek-Restschuld, Ratenkredit) ────────────────
+        sonderausgabe_j = ausgaben_plan.get(jahr, 0.0) if ausgaben_plan else 0.0
+        kap_tilgung_sonder_j = 0.0
+        fehlbetrag_j = 0.0
+        if sonderausgabe_j > 0.0:
+            _total_pool = sum(_kap_pools.values())
+            _noch_zu_tilgen = sonderausgabe_j
+            if _total_pool > 0.0:
+                for _pid in list(_kap_pools.keys()):
+                    _pool_val = _kap_pools[_pid]
+                    if _pool_val <= 0.0:
+                        continue
+                    # Pro-rata-Anteil an der Sonderausgabe
+                    _this_tilg = min(_pool_val, sonderausgabe_j * _pool_val / _total_pool)
+                    _kap_bases[_pid] = _kap_bases[_pid] * max(
+                        0.0, 1.0 - _this_tilg / _pool_val
+                    )
+                    _kap_pools[_pid] = max(0.0, _pool_val - _this_tilg)
+                    kap_tilgung_sonder_j += _this_tilg
+                    _noch_zu_tilgen -= _this_tilg
+            fehlbetrag_j = max(0.0, _noch_zu_tilgen)
+            netto -= fehlbetrag_j
 
         total_netto += netto
         zvE_display = zvE_p1 + (p2_zvE_j if zusammen else 0.0)
@@ -1100,7 +1179,12 @@ def _netto_ueber_horizont(
                                       + p2_einmal_brutto_j + p2_etf_brutto_j
                                       - kap_injection_gross_j),  # Kapitalanlage-Einzahlung ausblenden
             "Src_Kapitalverzehr": round(kap_verzehr_j),
-            "Kap_Pool":         round(_kap_pool),
+            "Kap_Pool":           round(sum(_kap_pools.values())),
+            # Per-Pool-Einträge für individuelle Diagramme
+            **{f"Kap_Pool_{_pid}":       round(_kap_pools.get(_pid, 0.0)) for _pid in _ka_prods},
+            **{f"Src_Kap_{_pid}": round(kap_verzehr_j_per_prod.get(_pid, 0.0)) for _pid in _ka_prods},
+            "Sonderausgabe":      round(sonderausgabe_j),
+            "Kap_Fehlbetrag":     round(fehlbetrag_j),
             "Src_Miete":        round(miet_j),
             "zvE":              round(zvE_display),
             "Steuer_Progressiv": round(steuer_progr),
@@ -1124,6 +1208,7 @@ def optimiere_auszahlungen(
     ergebnis2: "RentenErgebnis | None" = None,
     veranlagung: str = "Getrennt",
     gehalt_monatlich: float = 0.0,
+    ausgaben_plan: "dict[int, float] | None" = None,
 ) -> dict:
     """
     Sucht die steuerlich optimale Kombination aus Startjahr × Auszahlungsart.
@@ -1166,7 +1251,8 @@ def optimiere_auszahlungen(
         ents = [(produkte[i], kombi[i][0], kombi[i][1]) for i in range(len(produkte))]
         netto, _ = _netto_ueber_horizont(profil, ergebnis, ents, horizont_jahre,
                                           mieteinnahmen_monatlich, mietsteigerung_pa,
-                                          profil2, ergebnis2, veranlagung, gehalt_monatlich)
+                                          profil2, ergebnis2, veranlagung, gehalt_monatlich,
+                                          ausgaben_plan)
         return netto
 
     alle_optionen = [optionen(p) for p in produkte]
@@ -1217,7 +1303,7 @@ def optimiere_auszahlungen(
     beste_entscheidungen = [(produkte[i], beste_kombi[i][0], beste_kombi[i][1])
                              for i in range(len(produkte))]
     _kw = dict(profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
-               gehalt_monatlich=gehalt_monatlich)
+               gehalt_monatlich=gehalt_monatlich, ausgaben_plan=ausgaben_plan)
     _, jahresdaten = _netto_ueber_horizont(profil, ergebnis, beste_entscheidungen, horizont_jahre,
                                            mieteinnahmen_monatlich, mietsteigerung_pa, **_kw)
 

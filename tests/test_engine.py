@@ -1008,8 +1008,8 @@ class TestDuvBuv:
         """DUV wird mit Ertragsanteil versteuert – weniger als 100 % Besteuerung."""
         p = self._pensionaer_mit_duv(duv_mon=1_000.0)
         e = berechne_rente(p)
-        # Ertragsanteil bei Alter 40 = ertragsanteil(40) = 38 %
-        ea = ertragsanteil(2025 - 1985)  # aktuelles Alter bei DU
+        # Ertragsanteil bei aktuellem Alter
+        ea = ertragsanteil(AKTUELLES_JAHR - 1985)  # aktuelles Alter bei DU
         assert ea < 1.0  # Ertragsanteil ist deutlich unter 100 %
         # Jahres-zvE enthält nur ea × duv_monatl × 12 (nicht voll)
         duv_voll_j  = 1_000.0 * 12
@@ -1049,7 +1049,7 @@ class TestDuvBuv:
         e_mit  = berechne_rente(p_mit)
         # zvE steigt um Ertragsanteil × 12.000, nicht 12.000
         zvE_diff = e_mit.zvE_jahres - e_ohne.zvE_jahres
-        ea = ertragsanteil(2025 - 1985)
+        ea = ertragsanteil(AKTUELLES_JAHR - 1985)
         assert zvE_diff == pytest.approx(1_000.0 * 12 * ea, abs=1.0)
 
     def test_buv_nicht_fuer_pensionaer(self):
@@ -2116,7 +2116,7 @@ class TestKapitalanlagePool:
             kvdr_pflicht=True,
             kinder=True,
             bereits_rentner=True,
-            rentenbeginn_jahr=2025,
+            rentenbeginn_jahr=AKTUELLES_JAHR,
         )
         defaults.update(kw)
         return _profil(**defaults)
@@ -2323,3 +2323,447 @@ class TestOptimiererReferenzStrategien:
             val = opt[key]
             assert math.isfinite(val)
             assert val > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ausgaben-Plan (Hypothek-Restschuld-Tilgung / Ratenkredit)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAusgabenPlan:
+    """_netto_ueber_horizont und optimiere_auszahlungen mit ausgaben_plan."""
+
+    def _std(self, **kw) -> Profil:
+        return _profil(**kw)
+
+    def _lv_prod(self, startjahr: int) -> VorsorgeProdukt:
+        return VorsorgeProdukt(
+            id="lv1", typ="LV", name="LV Pool", person="Person 1",
+            max_einmalzahlung=100_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=startjahr, spaetestes_startjahr=startjahr,
+            aufschub_rendite=0.0, einzahlungen_gesamt=60_000.0,
+            als_kapitalanlage=True,
+        )
+
+    # ── Grundverhalten ────────────────────────────────────────────────────────
+
+    def test_ohne_plan_keine_sonderausgabe(self):
+        """Ohne ausgaben_plan: Sonderausgabe und Fehlbetrag immer 0."""
+        p = self._std()
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 10)
+        for row in jd:
+            assert row.get("Sonderausgabe", 0) == 0
+            assert row.get("Kap_Fehlbetrag", 0) == 0
+
+    def test_sonderausgabe_im_richtigen_jahr(self):
+        """ausgaben_plan schreibt Sonderausgabe in genau das angegebene Jahr."""
+        p = self._std()
+        e = berechne_rente(p)
+        ziel_j = p.eintritt_jahr + 2
+        _, jd = _netto_ueber_horizont(p, e, [], 10, ausgaben_plan={ziel_j: 15_000.0})
+        jd_idx = {r["Jahr"]: r for r in jd}
+        assert jd_idx[ziel_j]["Sonderausgabe"] == 15_000
+        # Alle anderen Jahre: keine Sonderausgabe
+        for j, r in jd_idx.items():
+            if j != ziel_j:
+                assert r["Sonderausgabe"] == 0
+
+    def test_fehlbetrag_ohne_pool_gleich_sonderausgabe(self):
+        """Ohne Kapitalanlage-Pool: Fehlbetrag = Sonderausgabe (aus Netto)."""
+        p = self._std()
+        e = berechne_rente(p)
+        ziel_j = p.eintritt_jahr + 1
+        betrag = 30_000.0
+        _, jd = _netto_ueber_horizont(p, e, [], 10, ausgaben_plan={ziel_j: betrag})
+        row = next(r for r in jd if r["Jahr"] == ziel_j)
+        assert row["Sonderausgabe"] == betrag
+        assert row["Kap_Fehlbetrag"] == betrag
+
+    def test_netto_reduziert_um_fehlbetrag(self):
+        """Fehlbetrag reduziert das Netto im betroffenen Jahr."""
+        p = self._std()
+        e = berechne_rente(p)
+        ziel_j = p.eintritt_jahr + 1
+        betrag = 20_000.0
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 10)
+        _, jd_mit = _netto_ueber_horizont(p, e, [], 10, ausgaben_plan={ziel_j: betrag})
+        netto_ohne = next(r["Netto"] for r in jd_ohne if r["Jahr"] == ziel_j)
+        netto_mit = next(r["Netto"] for r in jd_mit if r["Jahr"] == ziel_j)
+        assert netto_ohne - netto_mit == pytest.approx(betrag, abs=1.0)
+
+    def test_pool_deckt_sonderausgabe_fehlbetrag_null(self):
+        """Pool groß genug: Fehlbetrag = 0, Netto unverändert."""
+        p = self._std()
+        e = berechne_rente(p)
+        startjahr = p.eintritt_jahr
+        prod = self._lv_prod(startjahr)
+        ziel_j = startjahr + 3
+        betrag = 10_000.0
+        # Pool bei Startjahr ≈ 100k × Netto-Quote → nach 3J. mit Rendite noch groß genug
+        _, jd = _netto_ueber_horizont(p, e, [(prod, startjahr, 1.0)], 10,
+                                       ausgaben_plan={ziel_j: betrag})
+        row = next(r for r in jd if r["Jahr"] == ziel_j)
+        assert row["Sonderausgabe"] == betrag
+        assert row["Kap_Fehlbetrag"] == 0, f"Fehlbetrag sollte 0 sein, ist {row['Kap_Fehlbetrag']}"
+
+    def test_pool_reduziert_nach_tilgung(self):
+        """Nach Pool-Tilgung ist der Kap_Pool kleiner als ohne Tilgung."""
+        p = self._std()
+        e = berechne_rente(p)
+        startjahr = p.eintritt_jahr
+        prod = self._lv_prod(startjahr)
+        ziel_j = startjahr + 2
+        betrag = 5_000.0
+        _, jd_ohne = _netto_ueber_horizont(p, e, [(prod, startjahr, 1.0)], 10)
+        _, jd_mit = _netto_ueber_horizont(p, e, [(prod, startjahr, 1.0)], 10,
+                                           ausgaben_plan={ziel_j: betrag})
+        pool_ohne = next(r["Kap_Pool"] for r in jd_ohne if r["Jahr"] == ziel_j)
+        pool_mit = next(r["Kap_Pool"] for r in jd_mit if r["Jahr"] == ziel_j)
+        assert pool_mit < pool_ohne
+
+    def test_mehrere_jahre_ratenkredit(self):
+        """Ratenkredit-Muster: Sonderausgabe in mehreren aufeinanderfolgenden Jahren."""
+        p = self._std()
+        e = berechne_rente(p)
+        startjahr = p.eintritt_jahr
+        plan = {startjahr + i: 6_000.0 for i in range(5)}
+        _, jd = _netto_ueber_horizont(p, e, [], 10, ausgaben_plan=plan)
+        sonder_jahre = [r for r in jd if r.get("Sonderausgabe", 0) > 0]
+        assert len(sonder_jahre) == 5
+        for r in sonder_jahre:
+            assert r["Sonderausgabe"] == 6_000
+
+    def test_gesamtnetto_sinkt_mit_fehlbetrag(self):
+        """Gesamtnetto mit ausgaben_plan (Fehlbetrag) < ohne Plan."""
+        p = self._std()
+        e = berechne_rente(p)
+        plan = {p.eintritt_jahr + 1: 50_000.0}  # groß → sicher Fehlbetrag
+        total_ohne, _ = _netto_ueber_horizont(p, e, [], 10)
+        total_mit, _ = _netto_ueber_horizont(p, e, [], 10, ausgaben_plan=plan)
+        assert total_mit < total_ohne
+
+    def test_optimizer_nimmt_ausgaben_plan(self):
+        """optimiere_auszahlungen akzeptiert ausgaben_plan und gibt gültige Struktur zurück."""
+        p = self._std()
+        e = berechne_rente(p)
+        prod = self._lv_prod(p.eintritt_jahr)
+        plan = {p.eintritt_jahr + 5: 15_000.0}
+        opt = optimiere_auszahlungen(p, e, [prod], horizont_jahre=15, ausgaben_plan=plan)
+        assert "jahresdaten" in opt
+        assert "Sonderausgabe" in opt["jahresdaten"][0]
+        assert "Kap_Fehlbetrag" in opt["jahresdaten"][0]
+        assert math.isfinite(opt["bestes_netto"])
+
+    def test_optimizer_bestes_netto_mit_plan_kleiner_gleich_ohne(self):
+        """Mit ausgaben_plan (Fehlbetrag) ≤ ohne Plan (wenn kein Pool)."""
+        p = self._std()
+        e = berechne_rente(p)
+        from engine import VorsorgeProdukt as VP
+        bav = VP(id="b1", typ="bAV", name="bAV", person="Person 1",
+                 max_einmalzahlung=0.0, max_monatsrente=500.0,
+                 laufzeit_jahre=0, fruehestes_startjahr=p.eintritt_jahr,
+                 spaetestes_startjahr=p.eintritt_jahr, aufschub_rendite=0.0,
+                 einzahlungen_gesamt=0.0)
+        plan = {p.eintritt_jahr + 3: 40_000.0}
+        opt_ohne = optimiere_auszahlungen(p, e, [bav], horizont_jahre=10)
+        opt_mit = optimiere_auszahlungen(p, e, [bav], horizont_jahre=10, ausgaben_plan=plan)
+        assert opt_mit["bestes_netto"] <= opt_ohne["bestes_netto"] + 1.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestEinkommensteuerGFB – einkommensteuer(zvE, grundfreibetrag)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEinkommensteuerGFB:
+    """einkommensteuer() mit optionalem grundfreibetrag-Parameter."""
+
+    def test_ohne_param_identisch_zum_standard(self):
+        """Ohne grundfreibetrag: Ergebnis identisch mit Standard-GFB."""
+        for zvE in [0, 5_000, 15_000, 30_000, 100_000, 300_000]:
+            assert einkommensteuer(zvE) == pytest.approx(
+                einkommensteuer(zvE, GRUNDFREIBETRAG_2024), abs=0.01
+            )
+
+    def test_unter_gfb_null(self):
+        """zvE ≤ GFB → immer 0, unabhängig vom GFB-Wert."""
+        for gfb in [11_604, 12_500, 14_000]:
+            assert einkommensteuer(gfb, gfb) == 0.0
+            assert einkommensteuer(gfb - 1, gfb) == 0.0
+
+    def test_hoeher_gfb_reduziert_steuer(self):
+        """Höherer GFB → niedrigere Steuer für dasselbe zvE."""
+        zvE = 40_000
+        st_std = einkommensteuer(zvE, GRUNDFREIBETRAG_2024)
+        st_hoeher = einkommensteuer(zvE, GRUNDFREIBETRAG_2024 + 1_000)
+        assert st_hoeher < st_std
+
+    def test_steuer_monoton_in_zvE(self):
+        """ESt(zvE, gfb) ist monoton steigend in zvE."""
+        gfb = 12_500
+        zvEs = [gfb, gfb + 1_000, 20_000, 50_000, 100_000, 300_000]
+        steuer_werte = [einkommensteuer(z, gfb) for z in zvEs]
+        for i in range(len(steuer_werte) - 1):
+            assert steuer_werte[i] <= steuer_werte[i + 1]
+
+    def test_zonenbreiten_unveraendert(self):
+        """Zone-1-Breite (5401 €) bleibt konstant bei GFB-Verschiebung."""
+        gfb = 13_000
+        # Zone-1-Grenze: gfb + 5401
+        zone1_ende = gfb + 5_401
+        # Knapp unter Zone-1-Ende: Formel = (928.37 * y + 1400) * y
+        y_check = (zone1_ende - 1 - gfb) / 10_000
+        expected = (928.37 * y_check + 1_400) * y_check
+        assert einkommensteuer(zone1_ende - 1, gfb) == pytest.approx(expected, abs=1.0)
+
+    def test_gfb_wachstum_reduziert_steuer_in_simulation(self):
+        """grundfreibetrag_wachstum_pa > 0 → geringere Steuerlast in _netto_ueber_horizont."""
+        p_normal = _profil(rendite_pa=0.0, rentenanpassung_pa=0.0, grundfreibetrag_wachstum_pa=0.0)
+        p_wachstum = _profil(rendite_pa=0.0, rentenanpassung_pa=0.0, grundfreibetrag_wachstum_pa=0.02)
+        e = berechne_rente(p_normal)
+        total_normal, _ = _netto_ueber_horizont(p_normal, e, [], 20)
+        total_wachstum, _ = _netto_ueber_horizont(p_wachstum, e, [], 20)
+        # Höherer GFB → mehr Netto (Steuer sinkt)
+        assert total_wachstum >= total_normal
+
+    def test_gfb_wachstum_effekt_groesser_bei_laengerem_horizont(self):
+        """GFB-Wachstum wirkt stärker bei langem als bei kurzem Horizont."""
+        p = _profil(rendite_pa=0.0, rentenanpassung_pa=0.0, grundfreibetrag_wachstum_pa=0.02)
+        p0 = _profil(rendite_pa=0.0, rentenanpassung_pa=0.0, grundfreibetrag_wachstum_pa=0.0)
+        e = berechne_rente(p)
+        total_kurz_wachstum, _ = _netto_ueber_horizont(p, e, [], 5)
+        total_kurz_normal, _ = _netto_ueber_horizont(p0, e, [], 5)
+        total_lang_wachstum, _ = _netto_ueber_horizont(p, e, [], 30)
+        total_lang_normal, _ = _netto_ueber_horizont(p0, e, [], 30)
+        diff_kurz = total_kurz_wachstum - total_kurz_normal
+        diff_lang = total_lang_wachstum - total_lang_normal
+        assert diff_lang > diff_kurz
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestMultiPool – mehrere als_kapitalanlage Produkte mit unterschiedlicher Rendite
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestMultiPool:
+    """Mehrere Kapitalanlage-Pools mit individuellen Renditen."""
+
+    def _profil_rente(self, **kw):
+        defaults = dict(
+            geburtsjahr=1958, renteneintritt_alter=67,
+            aktuelle_punkte=30.0, punkte_pro_jahr=0.0,
+            zusatz_monatlich=0.0, sparkapital=0.0, sparrate=0.0,
+            rendite_pa=0.03, rentenanpassung_pa=0.0,
+            krankenversicherung="GKV", kvdr_pflicht=True,
+            kinder=True, bereits_rentner=True, rentenbeginn_jahr=AKTUELLES_JAHR,
+        )
+        defaults.update(kw)
+        return _profil(**defaults)
+
+    def _pool_prod(self, pid: str, name: str, startjahr: int,
+                   einzahlungen: float = 50_000.0,
+                   rendite_pa: float = -1.0) -> VorsorgeProdukt:
+        return VorsorgeProdukt(
+            id=pid, typ="LV", name=name, person="Person 1",
+            max_einmalzahlung=80_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0,
+            fruehestes_startjahr=startjahr, spaetestes_startjahr=startjahr,
+            aufschub_rendite=0.0,
+            vertragsbeginn=1990,  # Altvertrag → steuerfrei
+            einzahlungen_gesamt=einzahlungen,
+            als_kapitalanlage=True,
+            kap_rendite_pa=rendite_pa,
+        )
+
+    def test_zwei_pools_erzeugen_individuelle_jahresdaten_spalten(self):
+        """Zwei als_kapitalanlage-Produkte → Kap_Pool_{id} und Src_Kap_{id} in jahresdaten."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod1 = self._pool_prod("pool1", "Pool A", sj)
+        prod2 = self._pool_prod("pool2", "Pool B", sj)
+        _, jd = _netto_ueber_horizont(p, e, [(prod1, sj, 1.0), (prod2, sj, 1.0)], 10)
+        for row in jd:
+            assert "Kap_Pool_pool1" in row
+            assert "Kap_Pool_pool2" in row
+            assert "Src_Kap_pool1" in row
+            assert "Src_Kap_pool2" in row
+
+    def test_kap_pool_summe_entspricht_total(self):
+        """Summe der Einzel-Kap_Pool_{id} ≈ Kap_Pool (Gesamtpool)."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod1 = self._pool_prod("pool1", "Pool A", sj)
+        prod2 = self._pool_prod("pool2", "Pool B", sj)
+        _, jd = _netto_ueber_horizont(p, e, [(prod1, sj, 1.0), (prod2, sj, 1.0)], 10)
+        for row in jd:
+            summe_einzel = row.get("Kap_Pool_pool1", 0) + row.get("Kap_Pool_pool2", 0)
+            assert row["Kap_Pool"] == pytest.approx(summe_einzel, abs=2.0)
+
+    def test_src_kap_summe_entspricht_kapitalverzehr(self):
+        """Summe der Src_Kap_{id} ≈ Src_Kapitalverzehr."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod1 = self._pool_prod("pool1", "Pool A", sj)
+        prod2 = self._pool_prod("pool2", "Pool B", sj)
+        _, jd = _netto_ueber_horizont(p, e, [(prod1, sj, 1.0), (prod2, sj, 1.0)], 10)
+        for row in jd:
+            summe = row.get("Src_Kap_pool1", 0) + row.get("Src_Kap_pool2", 0)
+            assert row["Src_Kapitalverzehr"] == pytest.approx(summe, abs=2.0)
+
+    def test_individuelle_pool_rendite_wirkt(self):
+        """Produkt mit hoher kap_rendite_pa wächst stärker als Produkt mit niedrigerer."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod_hoch = self._pool_prod("hoch", "Hoch-Rendite", sj, rendite_pa=0.08)
+        prod_nied = self._pool_prod("nied", "Niedrig-Rendite", sj, rendite_pa=0.01)
+        # Beide gleiche Einzahlungen
+        _, jd = _netto_ueber_horizont(p, e, [(prod_hoch, sj, 1.0), (prod_nied, sj, 1.0)], 15)
+        # Nach 15 Jahren: Pool hoch sollte größer sein als Pool nied
+        last_row = jd[-1]
+        assert last_row.get("Kap_Pool_hoch", 0) >= last_row.get("Kap_Pool_nied", 0)
+
+    def test_pool_rendite_minus_1_verwendet_profil_rendite(self):
+        """kap_rendite_pa=-1 → Pool verwendet profil.rendite_pa."""
+        p1 = self._profil_rente(rendite_pa=0.05)
+        p2 = self._profil_rente(rendite_pa=0.05, kap_pool_rendite_pa=0.05)
+        e = berechne_rente(p1)
+        sj = AKTUELLES_JAHR
+        prod = self._pool_prod("p", "Test", sj, rendite_pa=-1.0)
+        _, jd1 = _netto_ueber_horizont(p1, e, [(prod, sj, 1.0)], 10)
+        _, jd2 = _netto_ueber_horizont(p2, e, [(prod, sj, 1.0)], 10)
+        # Beide verwenden 5% → gleiche Pool-Werte
+        for r1, r2 in zip(jd1, jd2):
+            assert r1["Kap_Pool"] == pytest.approx(r2["Kap_Pool"], abs=5.0)
+
+    def test_profil_kap_pool_rendite_pa_ueberschreibt_rendite_pa(self):
+        """kap_pool_rendite_pa auf Profil-Ebene überschreibt rendite_pa für den Pool.
+
+        Höhere Pool-Rendite → im mittleren Lauf größerer Poolstand.
+        (Am Ende erschöpft sich auch der höherverzinste Pool – Vergleich in Jahr 5.)
+        """
+        p_standard = self._profil_rente(rendite_pa=0.03)
+        p_hoch = self._profil_rente(rendite_pa=0.03, kap_pool_rendite_pa=0.08)
+        e = berechne_rente(p_standard)
+        sj = AKTUELLES_JAHR
+        prod = self._pool_prod("p", "Test", sj, rendite_pa=-1.0)
+        _, jd_std = _netto_ueber_horizont(p_standard, e, [(prod, sj, 1.0)], 20)
+        _, jd_hoch = _netto_ueber_horizont(p_hoch, e, [(prod, sj, 1.0)], 20)
+        # Höhere Pool-Rendite → in einem mittleren Jahr größerer Poolstand
+        pool_std_y5 = jd_std[5]["Kap_Pool"]
+        pool_hoch_y5 = jd_hoch[5]["Kap_Pool"]
+        assert pool_hoch_y5 >= pool_std_y5
+
+    def test_ein_pool_kap_pool_einzel_gleich_gesamt(self):
+        """Ein einzelnes als_kapitalanlage-Produkt: Kap_Pool_{id} == Kap_Pool."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod = self._pool_prod("solo", "Solo Pool", sj)
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 10)
+        for row in jd:
+            assert row.get("Kap_Pool_solo", 0) == pytest.approx(row["Kap_Pool"], abs=2.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestEtfAusschuettend – etf_ausschuettend=True → Teilfreistellung 0%
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEtfAusschuettend:
+    """VorsorgeProdukt.etf_ausschuettend=True setzt effektive TF auf 0%."""
+
+    def _profil_rente(self):
+        return _profil(
+            geburtsjahr=1958, renteneintritt_alter=67,
+            aktuelle_punkte=30.0, punkte_pro_jahr=0.0,
+            zusatz_monatlich=0.0, sparkapital=0.0, sparrate=0.0,
+            rendite_pa=0.0, rentenanpassung_pa=0.0,
+            krankenversicherung="GKV", kvdr_pflicht=True,
+            kinder=True, bereits_rentner=True, rentenbeginn_jahr=AKTUELLES_JAHR,
+        )
+
+    def _etf_prod(self, ausschuettend: bool, tf: float = 0.30) -> VorsorgeProdukt:
+        return VorsorgeProdukt(
+            id="etf1", typ="ETF", name="ETF-Test", person="Person 1",
+            max_einmalzahlung=80_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0,
+            fruehestes_startjahr=AKTUELLES_JAHR, spaetestes_startjahr=AKTUELLES_JAHR,
+            aufschub_rendite=0.0,
+            einzahlungen_gesamt=40_000.0,  # Gewinn = 40k
+            teilfreistellung=tf,
+            etf_ausschuettend=ausschuettend,
+        )
+
+    def test_ausschuettend_false_tf_wirkt(self):
+        """Thesaurierender ETF (default): TF 30% wirkt → weniger Steuer als 0% TF."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod_tf = self._etf_prod(ausschuettend=False, tf=0.30)
+        prod_0  = self._etf_prod(ausschuettend=True,  tf=0.30)
+        total_tf, _ = _netto_ueber_horizont(p, e, [(prod_tf, sj, 1.0)], 10)
+        total_0,  _ = _netto_ueber_horizont(p, e, [(prod_0,  sj, 1.0)], 10)
+        # Thesaurierender (TF 30%) → höheres Netto durch geringere Steuer
+        assert total_tf >= total_0
+
+    def test_ausschuettend_true_tf_ignoriert(self):
+        """Ausschüttender ETF: TF-Wert irrelevant (wird intern auf 0 gesetzt)."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod_30 = self._etf_prod(ausschuettend=True, tf=0.30)
+        prod_60 = self._etf_prod(ausschuettend=True, tf=0.60)
+        total_30, _ = _netto_ueber_horizont(p, e, [(prod_30, sj, 1.0)], 10)
+        total_60, _ = _netto_ueber_horizont(p, e, [(prod_60, sj, 1.0)], 10)
+        # Beide ausschüttend → TF=0 → identisches Ergebnis
+        assert total_30 == pytest.approx(total_60, abs=1.0)
+
+    def test_default_etf_ausschuettend_ist_false(self):
+        """Standard-VorsorgeProdukt hat etf_ausschuettend=False."""
+        prod = VorsorgeProdukt(
+            id="test", typ="ETF", name="Test", person="Person 1",
+            max_einmalzahlung=1_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0,
+            fruehestes_startjahr=AKTUELLES_JAHR, spaetestes_startjahr=AKTUELLES_JAHR,
+            aufschub_rendite=0.0,
+        )
+        assert prod.etf_ausschuettend is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestProfilNeueFelder – Defaultwerte der neuen Profil-Felder
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestProfilNeueFelder:
+    """Korrekte Defaultwerte für grundfreibetrag_wachstum_pa und kap_pool_rendite_pa."""
+
+    def test_grundfreibetrag_wachstum_default_null(self):
+        """grundfreibetrag_wachstum_pa Default = 0.0."""
+        p = _profil()
+        assert p.grundfreibetrag_wachstum_pa == 0.0
+
+    def test_kap_pool_rendite_default_minus1(self):
+        """kap_pool_rendite_pa Default = -1.0 (→ rendite_pa verwenden)."""
+        p = _profil()
+        assert p.kap_pool_rendite_pa == -1.0
+
+    def test_kap_rendite_pa_default_minus1(self):
+        """VorsorgeProdukt.kap_rendite_pa Default = -1.0."""
+        prod = VorsorgeProdukt(
+            id="t", typ="bAV", name="T", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=100.0,
+            laufzeit_jahre=0,
+            fruehestes_startjahr=AKTUELLES_JAHR, spaetestes_startjahr=AKTUELLES_JAHR,
+            aufschub_rendite=0.0,
+        )
+        assert prod.kap_rendite_pa == -1.0
+
+    def test_gfb_wachstum_null_identisch_mit_standard(self):
+        """GFB-Wachstum 0.0 → identische Steuer wie ohne Parameter."""
+        p0 = _profil(rendite_pa=0.0, rentenanpassung_pa=0.0, grundfreibetrag_wachstum_pa=0.0)
+        p_ref = _profil(rendite_pa=0.0, rentenanpassung_pa=0.0)
+        e = berechne_rente(p0)
+        total0, _ = _netto_ueber_horizont(p0, e, [], 10)
+        total_ref, _ = _netto_ueber_horizont(p_ref, e, [], 10)
+        assert total0 == pytest.approx(total_ref, abs=1.0)

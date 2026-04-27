@@ -53,15 +53,20 @@ def _run_optimierung(cache_ns: str, profil: Profil, ergebnis: RentenErgebnis,
                      horizon: int, miet: float, miet_stg: float,
                      profil2=None, ergebnis2=None,
                      veranlagung: str = "Getrennt",
-                     gehalt: float = 0.0) -> dict:
+                     gehalt: float = 0.0,
+                     ausgaben_plan: "dict[int, float] | None" = None) -> dict:
     h = _opt_hash(produkte_dicts, horizon, miet, miet_stg, profil,
                   profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung, gehalt=gehalt)
+    # Ausgaben-Plan in Hash einbeziehen damit Cache invalidiert wird
+    if ausgaben_plan:
+        import hashlib, json as _json
+        h = hashlib.md5((h + _json.dumps(sorted(ausgaben_plan.items()))).encode()).hexdigest()
     cached = st.session_state.get(f"_{cache_ns}_opt_cache")
     if cached and cached.get("k") == h:
         return cached["r"]
     result = optimiere_auszahlungen(profil, ergebnis, produkte_obj, horizon, miet, miet_stg,
                                      profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
-                                     gehalt_monatlich=gehalt)
+                                     gehalt_monatlich=gehalt, ausgaben_plan=ausgaben_plan)
     st.session_state[f"_{cache_ns}_opt_cache"] = {"k": h, "r": result}
     return result
 
@@ -125,6 +130,10 @@ def _migriere(p: dict) -> dict:
         p["beitragsbefreiung_jahr"] = 0
     if "als_kapitalanlage" not in p:
         p["als_kapitalanlage"] = False
+    if "kap_rendite_pa" not in p:
+        p["kap_rendite_pa"] = -1.0
+    if "etf_ausschuettend" not in p:
+        p["etf_ausschuettend"] = False
     return p
 
 
@@ -148,6 +157,8 @@ def _aus_dict(d: dict) -> VorsorgeProdukt:
         jaehrl_dynamik=d.get("jaehrl_dynamik", 0.0),
         beitragsbefreiung_jahr=d.get("beitragsbefreiung_jahr", 0),
         als_kapitalanlage=d.get("als_kapitalanlage", False),
+        kap_rendite_pa=d.get("kap_rendite_pa", -1.0),
+        etf_ausschuettend=d.get("etf_ausschuettend", False),
     )
 
 
@@ -374,8 +385,59 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
                      "eingestellten Rendite und wird gleichmäßig als Annuität über den "
                      "Planungshorizont verzehrt. Steuer und KV werden dabei berücksichtigt.",
             )
+            if new_als_ka:
+                _kap_r_cb = st.checkbox(
+                    "Eigene Pool-Rendite",
+                    value=bool(p.get("kap_rendite_pa", -1.0) >= 0.0),
+                    key=f"ve_kapr_cb_{pid}",
+                    help="Individuelle Rendite für diesen Pool (überschreibt Profil-Poolrendite).",
+                )
+                if _kap_r_cb:
+                    new_kap_r = st.slider(
+                        "Pool-Rendite p.a. (%)", 0.0, 12.0,
+                        value=float(max(0.0, p.get("kap_rendite_pa", 5.0) * 100
+                                        if p.get("kap_rendite_pa", -1.0) >= 0 else 5.0)),
+                        step=0.25, key=f"ve_kapr_{pid}",
+                    ) / 100
+                else:
+                    new_kap_r = -1.0
+            else:
+                new_als_ka = False
+                new_kap_r = -1.0
         else:
             new_als_ka = False
+            new_kap_r = -1.0
+
+        # ETF: Ausschüttungstyp
+        if typ_key == "ETF":
+            new_etf_aus = st.checkbox(
+                "Ausschüttender ETF",
+                value=bool(p.get("etf_ausschuettend", False)),
+                key=f"ve_etfaus_{pid}",
+                help="Ausschüttende ETFs erhalten keine Teilfreistellung auf Ausschüttungen "
+                     "(§ 20 InvStG, nur thesaurierende Fonds profitieren von TF bei Verkauf). "
+                     "Effektive Teilfreistellung = 0 % → voll steuerpflichtige Erträge.",
+            )
+        else:
+            new_etf_aus = False
+
+        # Riester: Zulagen-Info
+        if typ_key == "Riester":
+            st.info(
+                "**Riester-Zulagen (§ 83 EStG):**  \n"
+                "Grundzulage: **175 €/Jahr** | "
+                "Kinderzulage: **185 €/Jahr** (Geb. vor 2008) / **300 €/Jahr** (Geb. ab 2008)  \n"
+                "Mindesteigenbeitrag: 4 % Vorjahresbrutto − Zulagen (mind. 60 €/Jahr).  \n"
+                "⚠️ Auszahlung im Rentenalter voll steuerpflichtig (§ 22 Nr. 5 EStG).",
+                icon=None,
+            )
+
+        # Beitragsbefreiung > spätestes Startjahr
+        if new_bb_jahr > 0 and new_bb_jahr > new_spaet:
+            st.warning(
+                f"⚠️ Beitragsbefreiung ab {new_bb_jahr} liegt nach dem "
+                f"spätesten Startjahr {new_spaet} → hat keinen Effekt auf die Einzahlungsrechnung."
+            )
 
     return {
         **p,
@@ -398,6 +460,8 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
         "jaehrl_dynamik": new_jaehrl_dyn,
         "beitragsbefreiung_jahr": new_bb_jahr,
         "als_kapitalanlage": new_als_ka,
+        "kap_rendite_pa": new_kap_r,
+        "etf_ausschuettend": new_etf_aus,
     }
 
 
@@ -734,22 +798,34 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         st.divider()
 
-        # Balkenvergleich: optimal vs. alles monatlich vs. alles einmal
+        # Balkenvergleich: optimal vs. alle Referenzstrategien (5 Säulen)
         st.subheader("Strategievergleich: Gesamtnetto über Laufzeit")
+        _vgl_labels = [
+            "Optimal",
+            "Alles Monatlich\n(frühest möglich)",
+            "Alles Einmal\n(frühest möglich)",
+            "Alles Monatlich\n(spätestmöglich)",
+            "Alles Einmal\n(spätestmöglich)",
+        ]
+        _vgl_vals = [
+            opt["bestes_netto"],
+            opt["netto_alle_monatlich"],
+            opt["netto_alle_einmal"],
+            opt.get("netto_alle_monatlich_spaet", opt["netto_alle_monatlich"]),
+            opt.get("netto_alle_einmal_spaet", opt["netto_alle_einmal"]),
+        ]
+        _vgl_farben = ["#4CAF50", "#2196F3", "#FF9800", "#64B5F6", "#FFB74D"]
         fig_vgl = go.Figure(go.Bar(
-            x=["Optimal", "Alles Monatlich\n(frühest möglich)",
-               "Alles Einmal\n(frühest möglich)"],
-            y=[opt["bestes_netto"], opt["netto_alle_monatlich"], opt["netto_alle_einmal"]],
-            marker_color=["#4CAF50", "#2196F3", "#FF9800"],
-            text=[f"{_de(v)} €" for v in [
-                opt["bestes_netto"], opt["netto_alle_monatlich"], opt["netto_alle_einmal"]
-            ]],
+            x=_vgl_labels,
+            y=_vgl_vals,
+            marker_color=_vgl_farben,
+            text=[f"{_de(v)} €" for v in _vgl_vals],
             textposition="outside",
         ))
         fig_vgl.update_layout(
-            template="plotly_white", height=360,
+            template="plotly_white", height=380,
             yaxis=dict(title=f"Gesamt-Netto über {horizon} Jahre (€)", tickformat=",.0f"),
-            margin=dict(l=10, r=10, t=10, b=10),
+            margin=dict(l=10, r=10, t=30, b=10),
             separators=",.",
         )
         st.plotly_chart(fig_vgl, use_container_width=True)

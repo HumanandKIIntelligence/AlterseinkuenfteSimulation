@@ -20,6 +20,7 @@ def save_session(
     produkte: list[dict],
     mieteinnahmen: float = 0.0,
     mietsteigerung: float = 0.0,
+    hyp_daten: dict | None = None,
 ) -> str:
     os.makedirs(DATA_DIR, exist_ok=True)
     safe = "".join(c for c in name if c.isalnum() or c in "-_")
@@ -32,6 +33,7 @@ def save_session(
         "produkte": produkte,
         "mieteinnahmen": mieteinnahmen,
         "mietsteigerung": mietsteigerung,
+        "hyp_daten": hyp_daten,
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -53,6 +55,8 @@ _PROFIL_LADE_DEFAULTS: dict = {
     "kirchensteuer":             False,
     "kirchensteuer_satz":        0.09,
     "kinder_anzahl":             1,
+    "grundfreibetrag_wachstum_pa": 0.0,
+    "kap_pool_rendite_pa":       -1.0,
 }
 
 

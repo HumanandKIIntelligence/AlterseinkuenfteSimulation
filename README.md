@@ -5,15 +5,16 @@ Eine interaktive Web-App zur Simulation und Optimierung des Renteneinkommens. Be
 ## Features
 
 - **Gesetzliche Rente & Beamtenpension** – DRV-Rentenpunkt-System oder direkte Pensionseingabe mit Versorgungsfreibetrag (§ 19 Abs. 2 EStG)
-- **Vorsorgebausteine** – bAV, Riester, Rürup, Lebensversicherung, ETF-Depot, private Rentenversicherung; mit korrekter Steuer- und KV-Behandlung je Produkttyp
-- **Einkommensteuer** – §32a EStG Grundtarif 2024 inkl. Solidaritätszuschlag und Kirchensteuer (8 %/9 %)
+- **Vorsorgebausteine** – bAV, Riester, Rürup, Lebensversicherung, ETF-Depot (thesaurierend/ausschüttend), private Rentenversicherung; mit korrekter Steuer- und KV-Behandlung je Produkttyp
+- **Einkommensteuer** – §32a EStG Grundtarif 2024 inkl. Solidaritätszuschlag und Kirchensteuer (8 %/9 %); optionales GFB-Wachstum verschiebt alle Steuerzonen dynamisch
 - **Altersentlastungsbetrag** – §24a EStG; automatisch für Personen ab 65, qualifizierend: PrivRV-Ertragsanteil, Riester, BUV/DUV, Mieteinnahmen, Arbeitslohn (nicht GRV/Rürup/bAV)
 - **Ehegatten-Splitting** – §32a Abs. 5 EStG; Haushalt-Tab zeigt Splitting-Vorteil
 - **Kranken- und Pflegeversicherung** – GKV (KVdR-Pflicht vs. freiwillig §240 SGB V) und PKV; korrekte bAV-Freibetragslogik, BBG-Deckelung und PV-Kinderstaffelung (§55 Abs. 3a SGB XI)
 - **PV-Kinderstaffelung** – §55 Abs. 3a SGB XI; 0–5 Kinder: Abschlag von −0,25 % je Kind ab dem 2. Kind (max. −1,0 %)
 - **Szenarien** – Pessimistisch / Neutral / Optimistisch mit exakter Jahres-Simulation je Szenario
 - **Entnahme-Optimierung** – Brute-Force über alle Startjahr × Auszahlungsart-Kombinationen; 5-Säulen-Strategievergleich (frühest/spätestens × monatlich/einmal); Kapitalverzehr-Kalkulator
-- **Kapitalanlage-Pool** – Einmalauszahlungen wahlweise als reinvestiertes Kapital anlegen; Annuitätenverzehr mit Abgeltungsteuer auf Gewinne; `Src_Kapitalverzehr` im Jahresverlauf
+- **Multi-Pool-Kapitalanlage** – Jede Einmalauszahlung wahlweise als eigener reinvestierter Kapitalanlage-Pool; produktspezifische Rendite; Annuitätenverzehr mit Abgeltungsteuer auf Gewinne; separater Pool-Verlauf-Chart
+- **Hypothek-Verwaltung** – Tilgungsplan mit Restschuld-Behandlung (als Kapitalanlage oder Ratenkredit); optionale Einbindung laufender Raten in die Simulation
 - **Dynamische Einzahlungsfelder** – je Vorsorgebaustein: Einmaleinzahlungen, jährl. Beitrag, Dynamik %, Beitragsbefreiungsjahr; auto-berechnete Kostenbasis bis Startjahr
 - **Mieteinnahmen** – §21 EStG; jährliche Steigerung konfigurierbar
 - **DUV / BUV** – Dienstunfähigkeits- und Berufsunfähigkeitsversicherung mit Ertragsanteil-Besteuerung
@@ -24,12 +25,12 @@ Eine interaktive Web-App zur Simulation und Optimierung des Renteneinkommens. Be
 
 | Tab | Inhalt |
 |---|---|
-| ⚙️ **Profil** | Personendaten, KV-Wahl, Kirchensteuer, DUV/BUV, Mieteinnahmen, Speichern/Laden |
+| ⚙️ **Profil** | Personendaten, KV-Wahl, Kirchensteuer, DUV/BUV, Mieteinnahmen, Erweiterte Einstellungen (GFB-Wachstum, Pool-Rendite) |
 | 📊 **Dashboard** | Kennzahlen, Wasserfall, Kaufkraft, Progressionszone-Ampel, Steuer & KV-Details |
 | 👥 **Haushalt** | Nur bei Partner: Paarvergleich, Splitting-Vorteil, Szenario-Tabelle |
 | 🔮 **Simulation** | Drei Szenarien, Sensitivitätsanalyse Renteneintrittsalter |
 | 🏦 **Vorsorge-Bausteine** | Vertragserfassung, Steuer-Steckbrief, Optimierung |
-| 💡 **Entnahme-Optimierung** | Optimale Auszahlungsstrategie, Jahresverlauf, Kapitalverzehr |
+| 💡 **Entnahme-Optimierung** | Optimale Auszahlungsstrategie, Jahresverlauf, Pool-Verlauf, Hypothek-Verwaltung, Kapitalverzehr |
 | 📖 **Dokumentation** | Berechnungsgrundlagen, Formeln, Haftungsausschluss |
 
 ## Technologie
@@ -75,7 +76,7 @@ docker compose logs -f
 docker exec altereinkuenfte-app python -m pytest tests/ -v
 ```
 
-Alle Berechnungslogiken in `engine.py` sind durch Unit-Tests abgedeckt (215 Tests).
+Alle Berechnungslogiken in `engine.py` sind durch Unit-Tests abgedeckt (268 Tests).
 
 ## Projektstruktur
 
@@ -88,12 +89,13 @@ tabs/
   simulation.py     – Szenarien, Sensitivitätsanalyse
   haushalt.py       – Paarvergleich, Splitting
   vorsorge.py       – Vertragserfassung, Steueroptimierung
-  entnahme_opt.py   – Auszahlungsoptimierung, Jahresverlauf
+  hypothek.py       – Hypothek-Verwaltung, Tilgungsplan, Ausgabenplan
+  entnahme_opt.py   – Auszahlungsoptimierung, Jahresverlauf, Pool-Verlauf
   auszahlung.py     – Kapitalverzehr-Kalkulator
   steuern.py        – Steuer & KV-Detailansicht
   dokumentation.py  – Statische Dokumentationsseite
 tests/
-  test_engine.py    – Unit-Tests
+  test_engine.py    – Unit-Tests (268 Tests)
 data/               – Gespeicherte Profile (JSON)
 ```
 
@@ -108,6 +110,7 @@ data/               – Gespeicherte Profile (JSON)
 | §22 Nr. 1 S. 3a bb EStG | Ertragsanteil private RV / DUV / BUV |
 | §24a EStG | Altersentlastungsbetrag für Personen ab 64 Jahren |
 | §51a EStG | Solidaritätszuschlag und Kirchensteuer |
+| §20 InvStG | Teilfreistellung ETF (30 % thesaurierend; 0 % ausschüttend) |
 | §226 Abs. 2 SGB V | bAV-Freibetrag KVdR (187,25 €/Mon.) |
 | §229 SGB V | Versorgungsbezüge KVdR-pflichtig |
 | §240 SGB V | Freiwillig GKV: alle Einkünfte beitragspflichtig |

@@ -12,6 +12,12 @@ from engine import (
     simuliere_szenarien, _netto_ueber_horizont,
 )
 
+try:
+    from tabs.hypothek import get_hyp_schedule
+except ImportError:
+    def get_hyp_schedule():
+        return []
+
 
 def _de(v: float, dec: int = 0) -> str:
     s = f"{v:,.{dec}f}"
@@ -329,6 +335,79 @@ def render(
                 separators=",.",
             )
             st.plotly_chart(fig_jv, use_container_width=True)
+
+        st.divider()
+
+        # ── Ausgaben im Planungszeitraum ──────────────────────────────────────
+        st.subheader("📤 Ausgaben im Planungszeitraum")
+
+        _ausgaben_rows = []
+
+        # Vorsorgebeiträge: Produkte mit laufenden Beiträgen die noch nicht ausgezahlt werden
+        for _vp in st.session_state.get("vp_produkte", []):
+            _je = float(_vp.get("jaehrl_einzahlung", 0.0))
+            if _je <= 0.0:
+                continue
+            _frueh = int(_vp.get("fruehestes_startjahr", AKTUELLES_JAHR))
+            if _frueh <= betrachtungsjahr:
+                continue
+            _bbj = int(_vp.get("beitragsbefreiung_jahr", 0))
+            if _bbj > 0 and betrachtungsjahr >= _bbj:
+                continue
+            _dyn = float(_vp.get("jaehrl_dynamik", 0.0))
+            _jahre_gelaufen = max(0, betrachtungsjahr - AKTUELLES_JAHR)
+            _beitrag_j = _je * (1.0 + _dyn) ** _jahre_gelaufen
+            _name = _vp.get("bezeichnung") or _vp.get("typ", "Produkt")
+            _ausgaben_rows.append({
+                "Name / Beschreibung": f"{_name} ({_vp.get('typ', '')})",
+                "_jaehrl": _beitrag_j,
+            })
+
+        # Hypothek: Jahresausgabe für Betrachtungsjahr
+        _hyp_schedule = get_hyp_schedule()
+        _hyp_row = next((r for r in _hyp_schedule if r["Jahr"] == betrachtungsjahr), None)
+        if _hyp_row is not None:
+            _ausgaben_rows.append({
+                "Name / Beschreibung": "Hypothek (Annuität + Sondertilgung)",
+                "_jaehrl": _hyp_row["Jahresausgabe"],
+            })
+
+        if _ausgaben_rows:
+            _total_j = sum(r["_jaehrl"] for r in _ausgaben_rows)
+            _total_m = _total_j / 12.0
+
+            _df_aus = pd.DataFrame([{
+                "Name / Beschreibung": r["Name / Beschreibung"],
+                "Jährl. Betrag (€)": _de(r["_jaehrl"]),
+                "Monatl. Betrag (€)": _de(r["_jaehrl"] / 12.0),
+            } for r in _ausgaben_rows])
+            st.dataframe(_df_aus.set_index("Name / Beschreibung"), use_container_width=True)
+
+            out1, out2, out3 = st.columns(3)
+            out1.metric("Gesamtausgaben/Jahr", f"{_de(_total_j)} €")
+            out2.metric("Gesamtausgaben/Monat", f"{_de(_total_m)} €")
+
+            # Verfügbares Netto nach Abzug der Ausgaben
+            if ansicht == "Haushalt gesamt" and _row_comb:
+                _netto_hh_m = _row_comb["Netto"] / 12.0
+            elif ansicht == "Haushalt gesamt":
+                _netto_hh_m = hh["netto_gesamt"]
+            else:
+                _netto_hh_m = 0.0
+
+            if _netto_hh_m > 0:
+                _verfuegbar = _netto_hh_m - _total_m
+                out3.metric(
+                    "Verfügbares Netto (nach Ausgaben)",
+                    f"{_de(_verfuegbar)} €/Mon.",
+                    help="Vereinfacht: Netto Haushalt minus monatliche Ausgaben. "
+                         "Individuelle Steuerwirkung der Beiträge nicht berücksichtigt.",
+                )
+        else:
+            st.caption(
+                f"Für {betrachtungsjahr} liegen keine laufenden Vorsorgebeiträge oder "
+                "Hypothekzahlungen vor."
+            )
 
         st.divider()
 
