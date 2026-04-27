@@ -811,19 +811,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 x=_profil2_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#E91E63",
                 annotation_text="P2 Renteneintritt", annotation_position="top left",
             )
-        # Sonderausgaben (Hypothek) als Annotationen im Chart
-        if "Sonderausgabe" in df_jd.columns:
-            _sonder_jahre = df_jd[df_jd["Sonderausgabe"] > 0].index
-            for _sj in _sonder_jahre:
-                _sa = df_jd.loc[_sj, "Sonderausgabe"]
-                fig_src.add_annotation(
-                    x=_sj, y=0,
-                    text=f"Hyp. {_de(_sa / 1000, 0)}k€",
-                    showarrow=True, arrowhead=2, arrowcolor="#D32F2F",
-                    font=dict(color="#D32F2F", size=10),
-                    ax=0, ay=30,
-                )
-        # Pool-Injektion-Annotationen (Produkt wird in Kapitalanlage-Pool überführt)
+        # Hypothek-Tilgung als eigener Balken auf sekundärer Achse
+        _hat_sonder = "Sonderausgabe" in df_jd.columns and df_jd["Sonderausgabe"].sum() > 0
+        if _hat_sonder:
+            fig_src.add_trace(go.Bar(
+                name="Hypothek-Tilgung",
+                x=df_jd.index, y=df_jd["Sonderausgabe"],
+                marker_color="#D32F2F", opacity=0.65,
+                yaxis="y2",
+                hovertemplate="%{x}: %{y:,.0f} € Tilgung/Rate<extra>Hypothek</extra>",
+            ))
+        # Pool-Injektion-Annotationen
         if "Kap_Injektion" in df_jd.columns:
             for _ij in df_jd[df_jd["Kap_Injektion"] > 0].index:
                 _inj = df_jd.loc[_ij, "Kap_Injektion"]
@@ -839,13 +837,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             barmode="stack", template="plotly_white", height=400,
             xaxis=dict(title="Jahr", dtick=2),
             yaxis=dict(title="€ / Jahr (brutto)", tickformat=",.0f"),
+            yaxis2=dict(title="Tilgung/Rate (€/Jahr)", overlaying="y", side="right",
+                        tickformat=",.0f", showgrid=False) if _hat_sonder else {},
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=10, r=10, t=50, b=10),
             separators=",.",
         )
         st.plotly_chart(fig_src, use_container_width=True)
 
-        # ── Hypothek-Fehlbetrag Warnungen ────────────────────────────────────
+        # ── Hypothek-Tilgung: Status-Meldungen ───────────────────────────────
         if "Kap_Fehlbetrag" in df_jd.columns and df_jd["Kap_Fehlbetrag"].sum() > 0:
             _fehlbetrag_jahre = df_jd[df_jd["Kap_Fehlbetrag"] > 0]
             st.error(
@@ -857,11 +857,26 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 )
                 + "\n\nEmpfehlung: Anschlussfinanzierung oder Sondertilgung erhöhen.",
             )
-        elif "Sonderausgabe" in df_jd.columns and df_jd["Sonderausgabe"].sum() > 0:
-            _sa_total = df_jd["Sonderausgabe"].sum()
-            st.success(
-                f"✅ Restschuld-Tilgung ({_de(_sa_total)} €) vollständig durch Kapitalanlage-Pool gedeckt."
-            )
+        elif _hat_sonder and _rs > 0:
+            _hat_pool_data = "Kap_Pool" in df_jd.columns and df_jd["Kap_Pool"].sum() > 0
+            if _pool_tilgung and _hat_pool_data:
+                st.success(
+                    f"✅ Restschuld **{_de(_rs)} €** durch Kapitalanlage-Pool gedeckt "
+                    f"(kein Netto-Abzug im Jahr {_hyp_info['endjahr']})."
+                )
+            elif _einmal_tilgung:
+                st.info(
+                    f"ℹ️ Restschuld **{_de(_rs)} €** wird im Jahr **{_hyp_info['endjahr']}** "
+                    "direkt aus dem verfügbaren Netto getilgt (kein Kapitalanlage-Pool aktiv)."
+                )
+            else:
+                # Ratenkredit: laufende Raten im Jahresverlauf sichtbar
+                _sa_raten = df_jd["Sonderausgabe"].sum()
+                st.info(
+                    f"ℹ️ Anschlussfinanzierung: Gesamtbelastung **{_de(_sa_raten)} €** "
+                    f"über {_anschluss_lz} Jahre ab {_hyp_info['endjahr'] + 1} "
+                    f"(Nominalzins {_markt_zins_pa*100:.2f} %)."
+                )
 
         # ── Zwei-Strategie-Vergleich Netto-Verlauf ────────────────────────────
         with st.expander("📊 Zwei-Strategie-Vergleich", expanded=False):
@@ -937,19 +952,23 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # ── Kapitalanlage-Pool Verlauf ─────────────────────────────────────────
         if "Kap_Pool" in df_jd.columns and df_jd["Kap_Pool"].sum() > 0:
             st.subheader("Kapitalanlage-Pool Verlauf")
+            # Auf Planungshorizont (ab Renteneintritt) beschränken
+            _ej_pool = (_profil_eo.rentenbeginn_jahr if _profil_eo.bereits_rentner
+                        else _profil_eo.eintritt_jahr)
+            _df_pool = df_jd[df_jd.index >= _ej_pool]
             _pool_pids_chart = [c[len("Kap_Pool_"):] for c in df_jd.columns
                                 if c.startswith("Kap_Pool_")]
             _prod_names_pool = {p.id: p.name for p in produkte_obj}
             fig_pool = go.Figure()
-            # Per-Produkt-Linien zeigen wenn Tilgung aus Pool aktiv und mehrere Pools
+            # Per-Produkt-Linien wenn Kapitalpool-Tilgung aktiv und mehrere Pools
             if _pool_tilgung and len(_pool_pids_chart) > 1:
                 _pool_colors_c = ["#1976D2", "#388E3C", "#E64A19", "#7B1FA2", "#00838F"]
                 for _i, _pid in enumerate(_pool_pids_chart):
                     _col = f"Kap_Pool_{_pid}"
-                    if _col in df_jd.columns and df_jd[_col].sum() > 0:
+                    if _col in _df_pool.columns and _df_pool[_col].sum() > 0:
                         _lbl = _prod_names_pool.get(_pid, _pid)
                         fig_pool.add_trace(go.Scatter(
-                            name=_lbl, x=df_jd.index, y=df_jd[_col],
+                            name=_lbl, x=_df_pool.index, y=_df_pool[_col],
                             mode="lines",
                             line=dict(color=_pool_colors_c[_i % len(_pool_colors_c)],
                                       width=1.5, dash="dot"),
@@ -957,7 +976,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         ))
             # Gesamtpool-Linie
             fig_pool.add_trace(go.Scatter(
-                name="Pool gesamt", x=df_jd.index, y=df_jd["Kap_Pool"],
+                name="Pool gesamt", x=_df_pool.index, y=_df_pool["Kap_Pool"],
                 mode="lines+markers", line=dict(color="#1565C0", width=2.5),
                 hovertemplate="%{x}: %{y:,.0f} € Poolwert<extra></extra>",
             ))
@@ -969,16 +988,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     annotation_position="top right",
                     annotation_font_color="#D32F2F",
                 )
-            if "Src_Kapitalverzehr" in df_jd.columns and df_jd["Src_Kapitalverzehr"].sum() > 0:
+            if "Src_Kapitalverzehr" in _df_pool.columns and _df_pool["Src_Kapitalverzehr"].sum() > 0:
                 fig_pool.add_trace(go.Bar(
-                    name="Entnahme gesamt", x=df_jd.index, y=df_jd["Src_Kapitalverzehr"],
+                    name="Entnahme", x=_df_pool.index, y=_df_pool["Src_Kapitalverzehr"],
                     marker_color="#42A5F5", opacity=0.7,
                     yaxis="y2",
                     hovertemplate="%{x}: %{y:,.0f} € Entnahme<extra></extra>",
                 ))
             fig_pool.update_layout(
                 barmode="stack", template="plotly_white", height=380,
-                xaxis=dict(title="Jahr", dtick=2),
+                xaxis=dict(title="Jahr", dtick=2,
+                           range=[_ej_pool - 0.5, _ej_pool + horizon + 0.5]),
                 yaxis=dict(title="Poolwert (€)", tickformat=",.0f"),
                 yaxis2=dict(title="Entnahme (€/Jahr)", overlaying="y", side="right",
                             tickformat=",.0f", showgrid=False),
@@ -992,13 +1012,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 _pool_rows = []
                 for _pid in _pool_pids_chart:
                     _col = f"Kap_Pool_{_pid}"
-                    if _col not in df_jd.columns:
+                    if _col not in _df_pool.columns:
                         continue
-                    _inj_jahre = [j for j in df_jd.index
-                                  if "Kap_Injektion" in df_jd.columns
-                                  and df_jd.loc[j, "Kap_Injektion"] > 0]
-                    _pool_max = df_jd[_col].max()
-                    _pool_end = df_jd[_col].iloc[-1]
+                    _pool_max = _df_pool[_col].max()
+                    _pool_end = _df_pool[_col].iloc[-1]
                     _pool_rows.append({
                         "Produkt": _prod_names_pool.get(_pid, _pid),
                         "Max. Poolwert (€)": round(_pool_max),
