@@ -520,6 +520,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # ── Hypothek ──────────────────────────────────────────────────────────
         _hyp_info = get_hyp_info()
         _ausgaben_plan: dict[int, float] = {}
+        _rs            = 0.0   # Restschuld – wird in Pool-Chart genutzt
+        _pool_tilgung  = False  # Kapitalpool für Tilgung – wird in Pool-Chart genutzt
+        _einmal_tilgung = False  # Einmaltilgung aktiv (Pool oder Vorsorge)
+        _markt_zins_pa = 0.04
+        _anschluss_lz  = 10
+
         if _hyp_info:
             _hyp_checkbox = st.checkbox(
                 "🏠 Hypothek in Optimierung berücksichtigen",
@@ -531,25 +537,23 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             if _hyp_checkbox:
                 _de_h = lambda v: f"{v:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
                 _rs = _hyp_info["restschuld_end"]
+                _markt_zins_pa = _hyp_info["anschluss_zins_pa"]
+                _anschluss_lz  = _hyp_info["anschluss_laufzeit"]
                 st.caption(
                     f"Hypothek {_hyp_info['startjahr']}–{_hyp_info['endjahr']} · "
                     f"Rate {_de_h(_hyp_info['jaehrl_rate'])} €/Jahr · "
                     f"Nominalzins {_hyp_info['zins_pa']*100:.2f} % · "
-                    f"Restschuld Endjahr: **{_de_h(_rs)} €**"
+                    f"Restschuld Endjahr {_hyp_info['endjahr']}: **{_de_h(_rs)} €**"
                 )
-                _markt_zins_pa = _hyp_info["anschluss_zins_pa"]
-                _anschluss_lz  = _hyp_info["anschluss_laufzeit"]
-                _vorsorge_tilgung = False
                 if _rs > 0:
-                    _vorsorge_tilgung = st.checkbox(
-                        "💰 Restschuld aus Vorsorgevertrag tilgen (Einmalauszahlung)",
-                        value=False,
-                        key=f"rc{_rc}_eo_hyp_vorsorge_tilgung",
-                        help="Der Optimizer prüft, ob eine Einmalauszahlung aus einem "
-                             "Vorsorgevertrag im Endjahr der Hypothek die Restschuld deckt "
-                             "und ob ein früherer Auszahlungszeitpunkt vorteilhafter ist.",
+                    _tilgungsart = st.radio(
+                        "Restschuld-Behandlung",
+                        ["Anschlussfinanzierung (Ratenkredit)",
+                         "Einmaltilgung (Kapitalpool / Vorsorgevertrag)"],
+                        horizontal=True,
+                        key=f"rc{_rc}_eo_hyp_tilgungsart",
                     )
-                    if not _vorsorge_tilgung:
+                    if _tilgungsart == "Anschlussfinanzierung (Ratenkredit)":
                         hc1, hc2 = st.columns(2)
                         with hc1:
                             _markt_zins_pct = st.number_input(
@@ -557,8 +561,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                                 value=round(_hyp_info["anschluss_zins_pa"] * 100, 2),
                                 step=0.05, format="%.2f",
                                 key=f"rc{_rc}_eo_hyp_markt_zins",
-                                help="Anschlussfinanzierung nach Ablauf der Zinsbindung. "
-                                     "Default: in Hypothek-Tab eingestellter Anschlusszins.",
+                                help="Nominalzins der Anschlussfinanzierung.",
                             )
                             _markt_zins_pa = _markt_zins_pct / 100.0
                         with hc2:
@@ -568,14 +571,33 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                                 key=f"rc{_rc}_eo_hyp_anschl_lz",
                             ))
                     else:
-                        st.info(
-                            f"Restschuld **{_de_h(_rs)} €** wird als Einmalbetrag im Jahr "
-                            f"**{_hyp_info['endjahr']}** geplant. Der Optimizer bewertet, "
-                            "ob eine frühere Einmalauszahlung aus einem Vorsorgevertrag "
-                            "die Restschuld vorteilhafter deckt."
+                        _einmal_tilgung = True
+                        tc1, tc2 = st.columns(2)
+                        with tc1:
+                            _pool_tilgung = st.checkbox(
+                                "💰 Kapitalpool (Vorrang)",
+                                value=True,
+                                key=f"rc{_rc}_eo_hyp_pool_tilgung",
+                                help="Pool aus als_kapitalanlage-Produkten deckt die Restschuld "
+                                     "zuerst. Fehlbetrag wird durch Einmalauszahlung oder Netto gedeckt.",
+                            )
+                        with tc2:
+                            _vorsorge_tilgung = st.checkbox(
+                                "📄 Einmalauszahlung aus Vorsorgevertrag",
+                                value=True,
+                                key=f"rc{_rc}_eo_hyp_vorsorge_tilgung",
+                                help="Der Optimizer prüft, ob eine Einmalauszahlung "
+                                     "die Restschuld (oder den verbleibenden Fehlbetrag) deckt "
+                                     "und ob ein früherer Auszahlungszeitpunkt vorteilhafter ist.",
+                            )
+                        st.caption(
+                            f"Restschuld **{_de_h(_rs)} €** im Jahr **{_hyp_info['endjahr']}**: "
+                            "Kapitalpool deckt zuerst · verbleibender Betrag aus Einmalauszahlung · "
+                            "Rest direkt aus Netto."
                         )
+
                 _ausgaben_plan = get_ausgaben_plan_optimierung(
-                    _markt_zins_pa, _anschluss_lz, als_einmaltilgung=_vorsorge_tilgung
+                    _markt_zins_pa, _anschluss_lz, als_einmaltilgung=_einmal_tilgung
                 )
 
         # ── Optimierung ausführen ─────────────────────────────────────────────
@@ -915,21 +937,47 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # ── Kapitalanlage-Pool Verlauf ─────────────────────────────────────────
         if "Kap_Pool" in df_jd.columns and df_jd["Kap_Pool"].sum() > 0:
             st.subheader("Kapitalanlage-Pool Verlauf")
+            _pool_pids_chart = [c[len("Kap_Pool_"):] for c in df_jd.columns
+                                if c.startswith("Kap_Pool_")]
+            _prod_names_pool = {p.id: p.name for p in produkte_obj}
             fig_pool = go.Figure()
+            # Per-Produkt-Linien zeigen wenn Tilgung aus Pool aktiv und mehrere Pools
+            if _pool_tilgung and len(_pool_pids_chart) > 1:
+                _pool_colors_c = ["#1976D2", "#388E3C", "#E64A19", "#7B1FA2", "#00838F"]
+                for _i, _pid in enumerate(_pool_pids_chart):
+                    _col = f"Kap_Pool_{_pid}"
+                    if _col in df_jd.columns and df_jd[_col].sum() > 0:
+                        _lbl = _prod_names_pool.get(_pid, _pid)
+                        fig_pool.add_trace(go.Scatter(
+                            name=_lbl, x=df_jd.index, y=df_jd[_col],
+                            mode="lines",
+                            line=dict(color=_pool_colors_c[_i % len(_pool_colors_c)],
+                                      width=1.5, dash="dot"),
+                            hovertemplate=f"%{{x}}: %{{y:,.0f}} €<extra>{_lbl}</extra>",
+                        ))
+            # Gesamtpool-Linie
             fig_pool.add_trace(go.Scatter(
-                name="Poolwert", x=df_jd.index, y=df_jd["Kap_Pool"],
+                name="Pool gesamt", x=df_jd.index, y=df_jd["Kap_Pool"],
                 mode="lines+markers", line=dict(color="#1565C0", width=2.5),
                 hovertemplate="%{x}: %{y:,.0f} € Poolwert<extra></extra>",
             ))
+            # Restschuld-Referenzlinie
+            if _einmal_tilgung and _rs > 0:
+                fig_pool.add_hline(
+                    y=_rs, line_dash="dash", line_color="#D32F2F", line_width=1.5,
+                    annotation_text=f"Restschuld {_de(_rs)} €",
+                    annotation_position="top right",
+                    annotation_font_color="#D32F2F",
+                )
             if "Src_Kapitalverzehr" in df_jd.columns and df_jd["Src_Kapitalverzehr"].sum() > 0:
                 fig_pool.add_trace(go.Bar(
-                    name="Entnahme", x=df_jd.index, y=df_jd["Src_Kapitalverzehr"],
+                    name="Entnahme gesamt", x=df_jd.index, y=df_jd["Src_Kapitalverzehr"],
                     marker_color="#42A5F5", opacity=0.7,
                     yaxis="y2",
                     hovertemplate="%{x}: %{y:,.0f} € Entnahme<extra></extra>",
                 ))
             fig_pool.update_layout(
-                barmode="stack", template="plotly_white", height=360,
+                barmode="stack", template="plotly_white", height=380,
                 xaxis=dict(title="Jahr", dtick=2),
                 yaxis=dict(title="Poolwert (€)", tickformat=",.0f"),
                 yaxis2=dict(title="Entnahme (€/Jahr)", overlaying="y", side="right",
@@ -939,6 +987,33 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 separators=",.",
             )
             st.plotly_chart(fig_pool, use_container_width=True)
+            # Pool-Verfügbarkeit: Tabelle je Produkt
+            if _pool_pids_chart:
+                _pool_rows = []
+                for _pid in _pool_pids_chart:
+                    _col = f"Kap_Pool_{_pid}"
+                    if _col not in df_jd.columns:
+                        continue
+                    _inj_jahre = [j for j in df_jd.index
+                                  if "Kap_Injektion" in df_jd.columns
+                                  and df_jd.loc[j, "Kap_Injektion"] > 0]
+                    _pool_max = df_jd[_col].max()
+                    _pool_end = df_jd[_col].iloc[-1]
+                    _pool_rows.append({
+                        "Produkt": _prod_names_pool.get(_pid, _pid),
+                        "Max. Poolwert (€)": round(_pool_max),
+                        "Poolwert am Ende (€)": round(_pool_end),
+                        "Restschuld deckbar": (
+                            "✅ Ja" if _pool_max >= _rs > 0
+                            else ("–" if _rs == 0 else "⚠️ Teilweise" if _pool_max > 0 else "❌ Nein")
+                        ),
+                    })
+                if _pool_rows:
+                    import pandas as _pd_pool
+                    st.dataframe(
+                        _pd_pool.DataFrame(_pool_rows).set_index("Produkt"),
+                        use_container_width=True,
+                    )
 
         # ── Hypothek-Vergleich: Kapitalanlage vs. Ratenkredit ────────────────
         _restschuld = get_restschuld_end()
