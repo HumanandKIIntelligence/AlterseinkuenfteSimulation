@@ -15,7 +15,7 @@ from engine import (
     Profil, RentenErgebnis, VorsorgeProdukt,
     optimiere_auszahlungen, besteuerungsanteil, ertragsanteil,
     BAV_FREIBETRAG_MONATLICH, BBG_KV_MONATLICH, _pv_satz, AKTUELLES_JAHR,
-    _netto_ueber_horizont,
+    _netto_ueber_horizont, kapitalwachstum,
 )
 from tabs import auszahlung
 from tabs.vorsorge import _run_optimierung
@@ -600,11 +600,37 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _markt_zins_pa, _anschluss_lz, als_einmaltilgung=_einmal_tilgung
                 )
 
+        # ── Sparkapital ────────────────────────────────────────────────────────
+        _spkap_orig     = float(getattr(_profil_eo, "sparkapital", 0.0))
+        _spkap_sparrate = float(getattr(_profil_eo, "sparrate", 0.0))
+        _spkap_rendite  = float(getattr(_profil_eo, "rendite_pa", 0.05))
+        _spkap_eintritt_j = (_profil_eo.rentenbeginn_jahr if _profil_eo.bereits_rentner
+                             else _profil_eo.eintritt_jahr)
+        _spkap = float(getattr(_ergebnis_eo, "kapital_bei_renteneintritt", 0.0))
+
         # ── Optimierung ausführen ─────────────────────────────────────────────
         st.subheader("🔍 Optimale Auszahlungsstrategie")
         produkte_obj = [_aus_dict(p) for p in produkte_dicts]
+        _produkte_obj_run   = list(produkte_obj)
+        _produkte_dicts_run = list(produkte_dicts)
+        if _pool_tilgung and _spkap > 0:
+            _spar_prod = VorsorgeProdukt(
+                id="__sparkapital__", typ="ETF", name="Sparkapital", person="Person 1",
+                max_einmalzahlung=_spkap, max_monatsrente=0.0, laufzeit_jahre=0,
+                fruehestes_startjahr=_spkap_eintritt_j, spaetestes_startjahr=_spkap_eintritt_j,
+                aufschub_rendite=0.0, einzahlungen_gesamt=_spkap_orig,
+                als_kapitalanlage=True, kap_rendite_pa=_spkap_rendite,
+                erzwungener_anteil=1.0,
+            )
+            _produkte_obj_run.insert(0, _spar_prod)
+            _produkte_dicts_run.insert(0, {
+                "id": "__sparkapital__", "typ": "ETF", "typ_label": "Sparkapital",
+                "name": "Sparkapital", "person": "Person 1",
+                "max_einmalzahlung": round(_spkap),
+            })
         with st.spinner("Optimierung läuft …"):
-            opt = _run_optimierung("eo", _profil_eo, _ergebnis_eo, produkte_obj, produkte_dicts,
+            opt = _run_optimierung("eo", _profil_eo, _ergebnis_eo,
+                                   _produkte_obj_run, _produkte_dicts_run,
                                    horizon, mieteinnahmen, mietsteigerung,
                                    profil2=_profil2_eo, ergebnis2=_ergebnis2_eo,
                                    veranlagung=_ver_eo, gehalt=gehalt,
@@ -649,6 +675,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         st.success("**Optimale Strategie:**")
         for prod, startjahr, anteil in opt["beste_entscheidungen"]:
+            if prod.id == "__sparkapital__":
+                continue
             einmal_wert = prod.max_einmalzahlung * (1 + prod.aufschub_rendite) ** max(
                 0, startjahr - prod.fruehestes_startjahr)
             mono_wert = prod.max_monatsrente * (1 + prod.aufschub_rendite) ** max(
@@ -763,6 +791,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         fig_src = go.Figure()
         src_cols = [
             ("Src_Gehalt",       "Bruttogehalt (aktiv)",    "#78909C", None),
+            ("Src_Zusatzentgelt","Zusatzentgelt (PV, stfr.)","#546E7A", None),
             ("Src_GesRente",     "Gesetzl. Rente P1",       "#4CAF50", None),
             ("Src_P2_Rente",     "Gesetzl. Rente P2",       "#81C784", None),
             ("Src_Versorgung",   "Betriebliche Versorgung", "#2196F3", _cd_versorg),
@@ -958,7 +987,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _df_pool = df_jd[df_jd.index >= _ej_pool]
             _pool_pids_chart = [c[len("Kap_Pool_"):] for c in df_jd.columns
                                 if c.startswith("Kap_Pool_")]
-            _prod_names_pool = {p.id: p.name for p in produkte_obj}
+            _prod_names_pool = {p.id: p.name for p in _produkte_obj_run}
             fig_pool = go.Figure()
             # Per-Produkt-Linien wenn Kapitalpool-Tilgung aktiv und mehrere Pools
             if _pool_tilgung and len(_pool_pids_chart) > 1:
@@ -1031,6 +1060,89 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         _pd_pool.DataFrame(_pool_rows).set_index("Produkt"),
                         use_container_width=True,
                     )
+
+        # ── Sparkapital-Zeitleiste ─────────────────────────────────────────────
+        _spar_col = "Kap_Pool___sparkapital__"
+        _hat_spar_post = (_pool_tilgung and _spar_col in df_jd.columns
+                          and df_jd[_spar_col].sum() > 0)
+        _show_spar_chart = _spkap_orig > 0 and (
+            not _profil_eo.bereits_rentner or _hat_spar_post
+        )
+        if _show_spar_chart:
+            st.subheader("💰 Sparkapital-Zeitleiste")
+            fig_spar = go.Figure()
+
+            if not _profil_eo.bereits_rentner:
+                _pre_years  = list(range(AKTUELLES_JAHR, _spkap_eintritt_j + 1))
+                _pre_values = [
+                    kapitalwachstum(_spkap_orig, _spkap_sparrate, _spkap_rendite,
+                                    j - AKTUELLES_JAHR)
+                    for j in _pre_years
+                ]
+                fig_spar.add_trace(go.Scatter(
+                    name="Ansparphase (prognostiziert)",
+                    x=_pre_years, y=_pre_values,
+                    mode="lines",
+                    line=dict(color="#43A047", width=2, dash="dot"),
+                    hovertemplate="%{x}: %{y:,.0f} €<extra>Ansparphase</extra>",
+                ))
+
+            if _hat_spar_post:
+                _df_spar_post = df_jd[df_jd.index >= _spkap_eintritt_j][_spar_col]
+                fig_spar.add_trace(go.Scatter(
+                    name="Poolwert (Rentenphase)",
+                    x=_df_spar_post.index, y=_df_spar_post.values,
+                    mode="lines+markers",
+                    line=dict(color="#1565C0", width=2.5),
+                    hovertemplate="%{x}: %{y:,.0f} € Poolwert<extra>Sparkapital Pool</extra>",
+                ))
+
+            if _einmal_tilgung and _rs > 0:
+                fig_spar.add_hline(
+                    y=_rs, line_dash="dash", line_color="#D32F2F", line_width=1.5,
+                    annotation_text=f"Restschuld {_de(_rs)} €",
+                    annotation_position="top right",
+                    annotation_font_color="#D32F2F",
+                )
+
+            if not _profil_eo.bereits_rentner:
+                fig_spar.add_vline(
+                    x=_spkap_eintritt_j, line_width=2, line_dash="dash", line_color="#5C6BC0",
+                    annotation_text="Renteneintritt", annotation_position="top right",
+                )
+
+            _x_spar_start = AKTUELLES_JAHR if not _profil_eo.bereits_rentner else _spkap_eintritt_j
+            _x_spar_end   = _spkap_eintritt_j + horizon
+            fig_spar.update_layout(
+                template="plotly_white", height=350,
+                xaxis=dict(title="Jahr", dtick=2,
+                           range=[_x_spar_start - 0.5, _x_spar_end + 0.5]),
+                yaxis=dict(title="Kapital (€)", tickformat=",.0f"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=10, r=10, t=50, b=10),
+                separators=",.",
+            )
+            st.plotly_chart(fig_spar, use_container_width=True)
+            if _hat_spar_post:
+                st.caption(
+                    f"Sparkapital bei Renteneintritt: **{_de(_spkap)} €** fließt als Pool in die Optimierung ein "
+                    f"(Rendite {_spkap_rendite:.1%} p.a.)."
+                )
+            elif _pool_tilgung:
+                st.caption(
+                    f"Sparkapital bei Renteneintritt: **{_de(_spkap)} €**. "
+                    "Kein Pool aktiv (kein Sparkapital im Profil oder Kapitalpool-Checkbox nicht aktiv)."
+                )
+            else:
+                _hint = (
+                    " Aktiviere **Einmaltilgung → 💰 Kapitalpool**, um das Sparkapital für die Restschuld einzusetzen."
+                    if _hyp_info and _rs > 0 else ""
+                )
+                st.caption(
+                    f"Sparkapital bei Renteneintritt: **{_de(_spkap)} €** "
+                    f"(Sparrate {_de(_spkap_sparrate)} €/Mon., Rendite {_spkap_rendite:.1%} p.a.)."
+                    + _hint
+                )
 
         # ── Hypothek-Vergleich: Kapitalanlage vs. Ratenkredit ────────────────
         _restschuld = get_restschuld_end()

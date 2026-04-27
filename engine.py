@@ -276,6 +276,11 @@ class Profil:
     # Lebenshaltungskosten: werden je Simulationsjahr vom Netto abgezogen
     lebenshaltungskosten_monatlich: float = 0.0  # €/Mon. (z.B. Miete, Fixkosten)
 
+    # Progressionsvorbehalt §32b EStG (z.B. Altersteilzeit-Aufstockungsbetrag)
+    # Steuerfrei + kein KV; erhöht aber den Steuersatz auf das übrige Einkommen.
+    # Gilt nur bis Rentenbeginn (eintritt_jahr). Nur für Nicht-Beamte.
+    zusatzentgelt_jaehrlich: float = 0.0  # €/Jahr (z.B. ATZ-Aufstockungsbetrag)
+
     @property
     def aktuelles_alter(self) -> int:
         return AKTUELLES_JAHR - self.geburtsjahr
@@ -1096,6 +1101,12 @@ def _netto_ueber_horizont(
             p2_kv_j = _p2_kv_basis_mono * 12 * _p2_kv_rate_halb
 
         # ── Einkommensteuer ───────────────────────────────────────────────────
+        # Progressionsvorbehalt §32b EStG (z.B. ATZ-Aufstockungsbetrag): nur Arbeitsjahre,
+        # nur Nicht-Beamte; erhöht Steuersatz auf reguläres zvE, ist selbst steuerfrei.
+        _pv_zusatz = (profil.zusatzentgelt_jaehrlich
+                      if (not in_rente and not profil.ist_pensionaer
+                          and profil.zusatzentgelt_jaehrlich > 0)
+                      else 0.0)
         zvE_p1 = max(
             0.0,
             gesetzl_j * ba_aktuell   # Gehalt (1.0) oder Rente (Besteuerungsanteil)
@@ -1113,7 +1124,12 @@ def _netto_ueber_horizont(
         _spe = SPARERPAUSCHBETRAG * (2 if hat_partner else 1)
         steuer_abgelt = max(0.0, abgelt_pool - _spe) * 0.25
         if zusammen:
-            steuer_progr = einkommensteuer_splitting(zvE_p1 + p2_zvE_j, _gfb_y)
+            zvE_joint = zvE_p1 + p2_zvE_j
+            if _pv_zusatz > 0 and zvE_joint > 0:
+                _zvE_pv = zvE_joint + _pv_zusatz
+                steuer_progr = einkommensteuer_splitting(_zvE_pv, _gfb_y) / _zvE_pv * zvE_joint
+            else:
+                steuer_progr = einkommensteuer_splitting(zvE_joint, _gfb_y)
             _soli_j = solidaritaetszuschlag(steuer_progr)
             _kist = 0.0
             if profil.kirchensteuer:
@@ -1126,7 +1142,11 @@ def _netto_ueber_horizont(
                          * (1.0 + profil2.grundfreibetrag_wachstum_pa) ** y
                          if profil2.grundfreibetrag_wachstum_pa > 0.0
                          else None)
-            _est_p1 = einkommensteuer(zvE_p1, _gfb_y)
+            if _pv_zusatz > 0 and (zvE_p1 + _pv_zusatz) > 0:
+                _zvE_p1_pv = zvE_p1 + _pv_zusatz
+                _est_p1 = einkommensteuer(_zvE_p1_pv, _gfb_y) / _zvE_p1_pv * zvE_p1
+            else:
+                _est_p1 = einkommensteuer(zvE_p1, _gfb_y)
             _est_p2 = einkommensteuer(max(0.0, p2_zvE_j), _gfb_p2_y)
             steuer_progr = _est_p1 + _est_p2
             _soli_j = solidaritaetszuschlag(_est_p1) + solidaritaetszuschlag(_est_p2)
@@ -1136,7 +1156,11 @@ def _netto_ueber_horizont(
             if profil2 is not None and profil2.kirchensteuer:
                 _kist += profil2.kirchensteuer_satz * _est_p2
         else:
-            steuer_progr = einkommensteuer(zvE_p1, _gfb_y)
+            if _pv_zusatz > 0 and (zvE_p1 + _pv_zusatz) > 0:
+                _zvE_pv = zvE_p1 + _pv_zusatz
+                steuer_progr = einkommensteuer(_zvE_pv, _gfb_y) / _zvE_pv * zvE_p1
+            else:
+                steuer_progr = einkommensteuer(zvE_p1, _gfb_y)
             _soli_j = solidaritaetszuschlag(steuer_progr)
             _kist = profil.kirchensteuer_satz * steuer_progr if profil.kirchensteuer else 0.0
         steuer = steuer_progr + _soli_j + steuer_abgelt + _kist
@@ -1187,6 +1211,7 @@ def _netto_ueber_horizont(
             + p2_brutto_j   # P2-Rente/Pension (Basis)
             + p2_bav_lfd_j + p2_riester_j + p2_ruerup_brutto_j + p2_priv_brutto_j
             + p2_einmal_brutto_j + p2_etf_brutto_j
+            + _pv_zusatz    # Progressionsvorbehalt §32b EStG: steuerfrei, kein KV
         )
         netto = brutto - steuer - kv
 
@@ -1255,6 +1280,7 @@ def _netto_ueber_horizont(
             "KV_P2": round(p2_kv_j),
             "Netto": round(netto),
             "Src_Gehalt":       round(gesetzl_j if not in_rente else 0.0),
+            "Src_Zusatzentgelt": round(_pv_zusatz),
             "Src_GesRente":     round(gesetzl_j if in_rente else 0.0),
             "Src_P2_Rente":     round(p2_brutto_j),
             "Src_Versorgung":   round(bav_lfd_j + riester_lfd_j + ruerup_brutto_j + priv_brutto_j

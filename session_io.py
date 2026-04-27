@@ -58,6 +58,7 @@ _PROFIL_LADE_DEFAULTS: dict = {
     "grundfreibetrag_wachstum_pa":     0.0,
     "kap_pool_rendite_pa":            -1.0,
     "lebenshaltungskosten_monatlich":  0.0,
+    "zusatzentgelt_jaehrlich":         0.0,
 }
 
 

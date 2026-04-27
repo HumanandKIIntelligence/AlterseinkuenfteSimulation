@@ -82,6 +82,8 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
     grundfreibetrag_wachstum_pa = float(_get(pfx, "gfb_wachstum", 0.0)) / 100
     kap_pool_rendite_pa = -1.0  # Pool immer mit Profil-Rendite (keine separate Pool-Rendite)
     lebenshaltungskosten_monatlich = float(_get(pfx, "lhk", 0.0))
+    zusatzentgelt_jaehrlich = (float(_get(pfx, "zusatzentgelt", 0.0))
+                               if not ist_pensionaer and not bereits_rentner else 0.0)
 
     return Profil(
         geburtsjahr=geburtsjahr,
@@ -113,6 +115,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         grundfreibetrag_wachstum_pa=grundfreibetrag_wachstum_pa,
         kap_pool_rendite_pa=kap_pool_rendite_pa,
         lebenshaltungskosten_monatlich=lebenshaltungskosten_monatlich,
+        zusatzentgelt_jaehrlich=zusatzentgelt_jaehrlich,
     )
 
 
@@ -158,6 +161,7 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
         f"rc{_RC}_{pfx}_kist_satz":       p.kirchensteuer_satz * 100,
         f"rc{_RC}_{pfx}_gfb_wachstum":    p.grundfreibetrag_wachstum_pa * 100,
         f"rc{_RC}_{pfx}_lhk":             p.lebenshaltungskosten_monatlich,
+        f"rc{_RC}_{pfx}_zusatzentgelt":   p.zusatzentgelt_jaehrlich,
     }
     st.session_state.update(updates)
 
@@ -454,6 +458,18 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                     "Monatliche Fixausgaben (Miete, Lebensmittel, Versicherungen …). "
                     "Wird im Planungshorizont jährlich vom Nettoeinkommen abgezogen. "
                     "Zeigt, ob das Renteneinkommen den Lebensstandard deckt."
+                ),
+            )
+        if not ist_pensionaer and not bereits_rentner:
+            st.number_input(
+                "Zusatzentgelt / Aufstockungsbetrag (§ 32b EStG, €/Jahr)", 0.0, 200_000.0,
+                value=float(_get(pfx, "zusatzentgelt", 0.0)),
+                step=500.0, key=f"rc{_RC}_{pfx}_zusatzentgelt",
+                help=(
+                    "Steuerfreies Zusatzentgelt mit Progressionsvorbehalt (§ 32b EStG), "
+                    "z.B. Altersteilzeit-Aufstockungsbetrag oder Transferkurzarbeitergeld. "
+                    "Steuerfrei und kein KV/PV, erhöht aber den Steuersatz auf das übrige "
+                    "Bruttoeinkommen. Gilt nur in der Simulation bis zum Renteneintritt."
                 ),
             )
 
