@@ -15,8 +15,28 @@ GRUNDFREIBETRAG_2024 = 11_604  # €
 WERBUNGSKOSTEN_PAUSCHBETRAG = 102   # € Pauschbetrag für Rentner
 SONDERAUSGABEN_PAUSCHBETRAG = 36    # €
 AKTUELLES_JAHR: int = _date.today().year
-REGELALTERSGRENZE = 67         # Jahrgänge ab 1964 (§ 35 SGB VI)
 ABSCHLAG_PRO_MONAT = 0.003     # 0,3 % je Monat Frühverrentung (§ 77 SGB VI)
+
+# Regelaltersgrenze § 235 Abs. 2 SGB VI: schrittweise Anhebung 1947–1963 auf 67
+_RAG_TABLE: dict[int, float] = {
+    1947: 65 + 1/12, 1948: 65 + 2/12, 1949: 65 + 3/12,
+    1950: 65 + 4/12, 1951: 65 + 5/12, 1952: 65 + 6/12,
+    1953: 65 + 7/12, 1954: 65 + 8/12, 1955: 65 + 9/12,
+    1956: 65 + 10/12, 1957: 65 + 11/12,
+    1958: 66.0, 1959: 66 + 2/12, 1960: 66 + 4/12,
+    1961: 66 + 6/12, 1962: 66 + 8/12, 1963: 66 + 10/12,
+}
+
+# Riester-Zulagen (§ 84 / § 85 EStG 2024)
+RIESTER_GRUNDZULAGE        = 175.0   # € pro Person und Jahr (§ 84 EStG)
+RIESTER_KINDERZULAGE_NEU   = 300.0   # € pro Kind/Jahr für ab 01.01.2008 geborene Kinder (§ 85 Abs. 1 S. 2 EStG)
+RIESTER_KINDERZULAGE_ALT   = 185.0   # € pro Kind/Jahr für vor 2008 geborene Kinder (§ 85 Abs. 1 S. 1 EStG)
+
+# Grundsicherung im Alter § 41 SGB XII 2024 (Regelbedarf + durchschnittliche KdU)
+GRUNDSICHERUNG_SCHWELLE = 1_100.0  # €/Mon. – indikativ, abhängig von Wohnkosten
+
+# Durchschnittsentgelt 2024 für EP-Schätzung (§ 18 Abs. 1 SGB IV, Anlage 1)
+DURCHSCHNITTSENTGELT_2024 = 43_142.0
 
 # KV/PV-Konstanten 2024 (§ 226 Abs. 2 SGB V, § 223 Abs. 3 SGB V)
 BAV_FREIBETRAG_MONATLICH   = 187.25    # Freibetrag Versorgungsbezüge (nur KVdR-Pflichtmitglieder)
@@ -40,6 +60,20 @@ _VFB_SCHRITT_B = (0.008,  60, 18)   # 2021–2039
 _AEB_2005      = (0.40, 1_900)
 _AEB_SCHRITT_A = (0.016,   76)      # 2006–2020
 _AEB_SCHRITT_B = (0.008,   38)      # 2021–2039
+
+
+def regelaltersgrenze(geburtsjahr: int) -> float:
+    """Regelaltersgrenze (RAG) nach § 235 Abs. 2 SGB VI.
+
+    Jahrgänge vor 1947: RAG 65. Ab 1964: RAG 67.
+    Jahrgänge 1947–1963: schrittweise Anhebung (Übergangsregelung).
+    Gibt die RAG in Dezimaljahren zurück (z.B. 65,0833 = 65 Jahre 1 Monat).
+    """
+    if geburtsjahr <= 1946:
+        return 65.0
+    if geburtsjahr >= 1964:
+        return 67.0
+    return _RAG_TABLE[geburtsjahr]
 
 
 def versorgungsfreibetrag(ruhestand_jahr: int, pension_jahres: float) -> float:
@@ -239,6 +273,9 @@ class Profil:
     # Kapitalanlage-Pool: eigene Rendite (-1.0 = wie rendite_pa)
     kap_pool_rendite_pa: float = -1.0          # Rendite für Pool-Entnahmen p.a.
 
+    # Lebenshaltungskosten: werden je Simulationsjahr vom Netto abgezogen
+    lebenshaltungskosten_monatlich: float = 0.0  # €/Mon. (z.B. Miete, Fixkosten)
+
     @property
     def aktuelles_alter(self) -> int:
         return AKTUELLES_JAHR - self.geburtsjahr
@@ -320,7 +357,7 @@ def berechne_rente(p: Profil) -> RentenErgebnis:  # noqa: C901
         # Standard GRV
         gesamtpunkte  = p.aktuelle_punkte + p.punkte_pro_jahr * p.jahre_bis_rente
         rentenwert    = RENTENWERT_2024 * (1 + p.rentenanpassung_pa) ** p.jahre_bis_rente
-        monate_frueh  = max(0, (REGELALTERSGRENZE - p.renteneintritt_alter) * 12)
+        monate_frueh  = max(0, round((regelaltersgrenze(p.geburtsjahr) - p.renteneintritt_alter) * 12))
         abschlag      = monate_frueh * ABSCHLAG_PRO_MONAT
         brutto_gesetzlich = gesamtpunkte * rentenwert * (1.0 - abschlag)
         kapital       = kapitalwachstum(p.sparkapital, p.sparrate, p.rendite_pa,
@@ -562,6 +599,12 @@ class VorsorgeProdukt:
     als_kapitalanlage: bool = False     # Einmalauszahlung → Kapitalanlage-Pool statt Einkommen
     kap_rendite_pa: float = -1.0       # Pool-Rendite für dieses Produkt (-1.0 = Profilwert)
     etf_ausschuettend: bool = False    # Ausschüttender ETF → Teilfreistellung 0 % bei Ausschüttungen
+    # Riester: staatliche Zulagen in Kostenbasis einbeziehen
+    riester_zulage_nutzen: bool = False  # Grundzulage (175 €) + Kinderzulagen in einzahlungen_effektiv
+    riester_kinder_zulage: int = 0       # Kinder ab 01.01.2008 (300 €/Kind/Jahr, § 85 Abs. 1 S. 2 EStG)
+    riester_kinder_zulage_alt: int = 0   # Kinder vor 01.01.2008 (185 €/Kind/Jahr, § 85 Abs. 1 S. 1 EStG)
+    # bAV: AG-Pflichtzuschuss 15 % (§ 1a Abs. 1a BetrAVG ab 2022) in Einzahlung einbeziehen
+    bav_ag_zuschuss: bool = False        # Effektive Einzahlung += 15 % AG-Anteil
 
     @property
     def ist_lebensversicherung(self) -> bool:
@@ -577,15 +620,26 @@ class VorsorgeProdukt:
 
         Verwendet die laufenden Beitragsfelder wenn jaehrl_einzahlung > 0,
         sonst Fallback auf einzahlungen_gesamt (Rückwärtskompatibilität).
+        Riester: Grundzulage 175 €/Jahr + Kinderzulage (300 €/Kind ab 2008, 185 €/Kind vor 2008)
+        wenn riester_zulage_nutzen=True (§ 84/85 EStG). bAV: ×1,15 wenn bav_ag_zuschuss=True.
         """
         if self.jaehrl_einzahlung <= 0:
             return self.einzahlungen_gesamt
         total = self.einzel_einzahlung
         beitrag = self.jaehrl_einzahlung
+        # AG-Zuschuss und Riester-Zulagen enden mit der aktiven Erwerbsphase
+        # (fruehestes_startjahr = frühestmöglicher Auszahlungsbeginn = ca. Renteneintritt)
+        _letztes_arbeitsjahr = self.fruehestes_startjahr
         for j in range(AKTUELLES_JAHR, startjahr):
             if self.beitragsbefreiung_jahr > 0 and j >= self.beitragsbefreiung_jahr:
                 break
-            total += beitrag
+            _noch_aktiv = j < _letztes_arbeitsjahr
+            _b = beitrag * 1.15 if (self.bav_ag_zuschuss and _noch_aktiv) else beitrag
+            total += _b
+            if self.riester_zulage_nutzen and _noch_aktiv:
+                total += (RIESTER_GRUNDZULAGE
+                          + RIESTER_KINDERZULAGE_NEU * self.riester_kinder_zulage
+                          + RIESTER_KINDERZULAGE_ALT * self.riester_kinder_zulage_alt)
             beitrag *= (1 + self.jaehrl_dynamik)
         return total
 
@@ -1160,6 +1214,10 @@ def _netto_ueber_horizont(
             fehlbetrag_j = max(0.0, _noch_zu_tilgen)
             netto -= fehlbetrag_j
 
+        # Lebenshaltungskosten: monatlicher Fixbetrag × 12 vom Netto abziehen
+        lhk_j = profil.lebenshaltungskosten_monatlich * 12
+        netto -= lhk_j
+
         total_netto += netto
         zvE_display = zvE_p1 + (p2_zvE_j if zusammen else 0.0)
         jahresdaten.append({
@@ -1185,6 +1243,8 @@ def _netto_ueber_horizont(
             **{f"Src_Kap_{_pid}": round(kap_verzehr_j_per_prod.get(_pid, 0.0)) for _pid in _ka_prods},
             "Sonderausgabe":      round(sonderausgabe_j),
             "Kap_Fehlbetrag":     round(fehlbetrag_j),
+            "Kap_Injektion":      round(kap_net_inj_j),
+            "LHK":                round(lhk_j),
             "Src_Miete":        round(miet_j),
             "zvE":              round(zvE_display),
             "Steuer_Progressiv": round(steuer_progr),

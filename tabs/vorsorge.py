@@ -134,6 +134,14 @@ def _migriere(p: dict) -> dict:
         p["kap_rendite_pa"] = -1.0
     if "etf_ausschuettend" not in p:
         p["etf_ausschuettend"] = False
+    if "riester_zulage_nutzen" not in p:
+        p["riester_zulage_nutzen"] = False
+    if "riester_kinder_zulage" not in p:
+        p["riester_kinder_zulage"] = 0
+    if "riester_kinder_zulage_alt" not in p:
+        p["riester_kinder_zulage_alt"] = 0
+    if "bav_ag_zuschuss" not in p:
+        p["bav_ag_zuschuss"] = False
     return p
 
 
@@ -159,6 +167,10 @@ def _aus_dict(d: dict) -> VorsorgeProdukt:
         als_kapitalanlage=d.get("als_kapitalanlage", False),
         kap_rendite_pa=d.get("kap_rendite_pa", -1.0),
         etf_ausschuettend=d.get("etf_ausschuettend", False),
+        riester_zulage_nutzen=d.get("riester_zulage_nutzen", False),
+        riester_kinder_zulage=d.get("riester_kinder_zulage", 0),
+        riester_kinder_zulage_alt=d.get("riester_kinder_zulage_alt", 0),
+        bav_ag_zuschuss=d.get("bav_ag_zuschuss", False),
     )
 
 
@@ -421,14 +433,67 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
         else:
             new_etf_aus = False
 
-        # Riester: Zulagen-Info
+        # bAV: AG-Pflichtzuschuss
+        if typ_key == "bAV":
+            new_ag_zuschuss = st.checkbox(
+                "AG-Pflichtzuschuss 15 % einbeziehen",
+                value=bool(p.get("bav_ag_zuschuss", False)),
+                key=f"ve_ag_zus_{pid}",
+                help=(
+                    "Seit 2022: Arbeitgeber muss mind. 15 % auf Entgeltumwandlungs-bAV "
+                    "zuschießen (§ 1a Abs. 1a BetrAVG). "
+                    "Wirkt nur während aktiver Beschäftigung (bis Renteneintritt). "
+                    "Erhöht die Kostenbasis um +15 % des Jahresbeitrags."
+                ),
+            )
+            if new_ag_zuschuss and new_jaehrl_einz > 0:
+                st.caption(
+                    f"Inkl. AG-Zuschuss: {_de(new_jaehrl_einz * 1.15)} €/Jahr "
+                    f"(AN {_de(new_jaehrl_einz)} € + AG {_de(new_jaehrl_einz * 0.15)} €)"
+                )
+        else:
+            new_ag_zuschuss = False
+
+        # Riester: interaktive Zulagen-Felder
+        new_riester_zulage = False
+        new_riester_kinder = 0
+        new_riester_kinder_alt = 0
         if typ_key == "Riester":
+            new_riester_zulage = st.checkbox(
+                "Staatliche Zulagen einbeziehen",
+                value=bool(p.get("riester_zulage_nutzen", False)),
+                key=f"ve_riester_zul_{pid}",
+                help=(
+                    "Riester-Zulagen (§ 84/85 EStG) werden zur Kostenbasis addiert. "
+                    "Gilt nur für aktive Einzahlungsjahre bis Renteneintritt. "
+                    "Grundzulage: 175 €/Jahr; Kinderzulage: 300 €/Kind (ab 2008) / 185 €/Kind (vor 2008)."
+                ),
+            )
+            if new_riester_zulage:
+                _kc1, _kc2 = st.columns(2)
+                with _kc1:
+                    new_riester_kinder = int(st.number_input(
+                        "Kinder ab 2008 (300 €/Kind)", 0, 5,
+                        value=int(p.get("riester_kinder_zulage", 0)),
+                        step=1, key=f"ve_riester_kinder_{pid}",
+                        help="Kinder, geboren ab 01.01.2008 → 300 €/Kind/Jahr (§ 85 Abs. 1 S. 2 EStG).",
+                    ))
+                with _kc2:
+                    new_riester_kinder_alt = int(st.number_input(
+                        "Kinder vor 2008 (185 €/Kind)", 0, 5,
+                        value=int(p.get("riester_kinder_zulage_alt", 0)),
+                        step=1, key=f"ve_riester_kinder_alt_{pid}",
+                        help="Kinder, geboren vor 01.01.2008 → 185 €/Kind/Jahr (§ 85 Abs. 1 S. 1 EStG).",
+                    ))
+                _jahre_aktiv = max(0, new_frueh - _AJ)
+                _zulage_j = 175.0 + 300.0 * new_riester_kinder + 185.0 * new_riester_kinder_alt
+                st.caption(
+                    f"Zulagen ca. {_de(_zulage_j)} €/Jahr × {_jahre_aktiv} Jahre "
+                    f"= **{_de(_zulage_j * _jahre_aktiv)} €** Gesamtzulage bis Renteneintritt"
+                )
             st.info(
-                "**Riester-Zulagen (§ 83 EStG):**  \n"
-                "Grundzulage: **175 €/Jahr** | "
-                "Kinderzulage: **185 €/Jahr** (Geb. vor 2008) / **300 €/Jahr** (Geb. ab 2008)  \n"
-                "Mindesteigenbeitrag: 4 % Vorjahresbrutto − Zulagen (mind. 60 €/Jahr).  \n"
-                "⚠️ Auszahlung im Rentenalter voll steuerpflichtig (§ 22 Nr. 5 EStG).",
+                "**Riester § 83 EStG:** Mindesteigenbeitrag: 4 % Vorjahresbrutto − Zulagen "
+                "(mind. 60 €/Jahr). Auszahlung im Rentenalter voll steuerpflichtig (§ 22 Nr. 5 EStG).",
                 icon=None,
             )
 
@@ -462,6 +527,10 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
         "als_kapitalanlage": new_als_ka,
         "kap_rendite_pa": new_kap_r,
         "etf_ausschuettend": new_etf_aus,
+        "bav_ag_zuschuss": new_ag_zuschuss,
+        "riester_zulage_nutzen": new_riester_zulage,
+        "riester_kinder_zulage": new_riester_kinder,
+        "riester_kinder_zulage_alt": new_riester_kinder_alt,
     }
 
 

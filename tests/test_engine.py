@@ -2088,6 +2088,82 @@ class TestEinzahlungenEffektiv:
         spaet = p.einzahlungen_effektiv(AKTUELLES_JAHR + 8)
         assert spaet > frueh
 
+    def test_riester_grundzulage_ohne_kinder(self):
+        """Riester-Grundzulage 175 €/Jahr wird zu Einzahlungen addiert (nur aktive Jahre)."""
+        jahre = 5
+        sj = AKTUELLES_JAHR + jahre
+        p = self._prod(
+            typ="Riester", einzel_einzahlung=0.0, jaehrl_einzahlung=1_000.0,
+            jaehrl_dynamik=0.0,
+            fruehestes_startjahr=sj,
+            spaetestes_startjahr=sj,
+            riester_zulage_nutzen=True,
+        )
+        # 5 aktive Jahre: jedes Jahr +1.000 €  +175 € Grundzulage
+        expected = jahre * (1_000.0 + 175.0)
+        assert p.einzahlungen_effektiv(sj) == pytest.approx(expected)
+
+    def test_riester_kinderzulage_neu(self):
+        """Kinder ab 2008: 300 €/Kind/Jahr (§ 85 Abs. 1 S. 2 EStG)."""
+        jahre = 4
+        sj = AKTUELLES_JAHR + jahre
+        p = self._prod(
+            typ="Riester", einzel_einzahlung=0.0, jaehrl_einzahlung=1_000.0,
+            jaehrl_dynamik=0.0,
+            fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            riester_zulage_nutzen=True,
+            riester_kinder_zulage=2,     # 2 Kinder ab 2008
+        )
+        expected = jahre * (1_000.0 + 175.0 + 2 * 300.0)
+        assert p.einzahlungen_effektiv(sj) == pytest.approx(expected)
+
+    def test_riester_kinderzulage_alt(self):
+        """Kinder vor 2008: 185 €/Kind/Jahr (§ 85 Abs. 1 S. 1 EStG)."""
+        jahre = 3
+        sj = AKTUELLES_JAHR + jahre
+        p = self._prod(
+            typ="Riester", einzel_einzahlung=0.0, jaehrl_einzahlung=1_000.0,
+            jaehrl_dynamik=0.0,
+            fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            riester_zulage_nutzen=True,
+            riester_kinder_zulage_alt=1,  # 1 Kind vor 2008
+        )
+        expected = jahre * (1_000.0 + 175.0 + 1 * 185.0)
+        assert p.einzahlungen_effektiv(sj) == pytest.approx(expected)
+
+    def test_riester_kinderzulage_gemischt(self):
+        """Gemischte Kinder: neue (300 €) + alte (185 €) Kinderzulage korrekt kombiniert."""
+        jahre = 6
+        sj = AKTUELLES_JAHR + jahre
+        p = self._prod(
+            typ="Riester", einzel_einzahlung=0.0, jaehrl_einzahlung=1_000.0,
+            jaehrl_dynamik=0.0,
+            fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            riester_zulage_nutzen=True,
+            riester_kinder_zulage=2,       # 2 Kinder ab 2008 → 600 €/Jahr
+            riester_kinder_zulage_alt=1,   # 1 Kind vor 2008  → 185 €/Jahr
+        )
+        expected = jahre * (1_000.0 + 175.0 + 2 * 300.0 + 1 * 185.0)
+        assert p.einzahlungen_effektiv(sj) == pytest.approx(expected)
+
+    def test_riester_zulage_endet_mit_renteneintritt(self):
+        """Zulagen werden nur für aktive Arbeitsjahre (< fruehestes_startjahr) gezählt."""
+        frueh = AKTUELLES_JAHR + 3
+        spaet = AKTUELLES_JAHR + 8   # 5 Jahre nach Renteneintritt
+        p = self._prod(
+            typ="Riester", einzel_einzahlung=0.0, jaehrl_einzahlung=1_000.0,
+            jaehrl_dynamik=0.0,
+            fruehestes_startjahr=frueh, spaetestes_startjahr=spaet,
+            riester_zulage_nutzen=True,
+            riester_kinder_zulage=1,
+        )
+        # Bei startjahr=frueh: 3 aktive Jahre mit Zulagen
+        frueh_einz = p.einzahlungen_effektiv(frueh)
+        # Bei startjahr=spaet: gleiche 3 aktive Jahre + 5 passive Jahre ohne Zulagen
+        spaet_einz = p.einzahlungen_effektiv(spaet)
+        # Differenz = 5 × 1.000 € (Beitrag ohne Zulage in Rentenjahren)
+        assert spaet_einz - frueh_einz == pytest.approx(5 * 1_000.0)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestKapitalanlagePool – als_kapitalanlage und Kapitalverzehr-Logik

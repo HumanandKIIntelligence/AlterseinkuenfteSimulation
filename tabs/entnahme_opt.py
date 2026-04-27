@@ -15,6 +15,7 @@ from engine import (
     Profil, RentenErgebnis, VorsorgeProdukt,
     optimiere_auszahlungen, besteuerungsanteil, ertragsanteil,
     BAV_FREIBETRAG_MONATLICH, BBG_KV_MONATLICH, _pv_satz, AKTUELLES_JAHR,
+    _netto_ueber_horizont,
 )
 from tabs import auszahlung
 from tabs.vorsorge import _run_optimierung
@@ -611,7 +612,31 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         # ── Jahresverlauf nach Einkommensquelle ───────────────────────────────
         st.subheader("Jahresverlauf nach Einkommensquelle")
+        _rl_col1, _rl_col2 = st.columns([2, 1])
+        with _rl_col1:
+            _real_toggle = st.checkbox(
+                "Reale Werte (inflationsbereinigt)",
+                value=False, key=f"rc{_rc}_eo_real",
+                help="Deflationiert alle Jahreswerte auf die Kaufkraft des Renteneintritts-Jahres.",
+            )
+        with _rl_col2:
+            _real_inf = st.number_input(
+                "Inflation p.a. (%)", 0.0, 5.0, 2.0, 0.1,
+                key=f"rc{_rc}_eo_inflation",
+                disabled=not _real_toggle,
+                help="Jährliche Inflationsrate für Kaufkraftkorrektur.",
+            ) if _real_toggle else 2.0
         df_jd = pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
+
+        # Reale Werte: alle numerischen Spalten mit Inflationsdeflaktor skalieren
+        _start_j = int(df_jd.index[0]) if len(df_jd) > 0 else 0
+        if _real_toggle and _real_inf > 0:
+            _inf_r = _real_inf / 100
+            _deflator = {j: 1.0 / (1 + _inf_r) ** (j - _start_j) for j in df_jd.index}
+            _num_cols = [c for c in df_jd.columns if df_jd[c].dtype in ("float64", "int64")
+                         and c not in ("LHK",)]
+            for _col in _num_cols:
+                df_jd[_col] = df_jd[_col] * df_jd.index.map(_deflator)
 
         # Vertragsnamen pro Jahr für Einmal- und Versorgungsbalken
         _jahre = list(df_jd.index)
@@ -724,6 +749,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     font=dict(color="#D32F2F", size=10),
                     ax=0, ay=30,
                 )
+        # Pool-Injektion-Annotationen (Produkt wird in Kapitalanlage-Pool überführt)
+        if "Kap_Injektion" in df_jd.columns:
+            for _ij in df_jd[df_jd["Kap_Injektion"] > 0].index:
+                _inj = df_jd.loc[_ij, "Kap_Injektion"]
+                fig_src.add_annotation(
+                    x=_ij, y=_inj,
+                    text=f"Pool +{_de(_inj / 1000, 0)}k€",
+                    showarrow=True, arrowhead=2, arrowcolor="#0288D1",
+                    font=dict(color="#0288D1", size=10),
+                    ax=0, ay=-30,
+                )
 
         fig_src.update_layout(
             barmode="stack", template="plotly_white", height=400,
@@ -751,6 +787,77 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _sa_total = df_jd["Sonderausgabe"].sum()
             st.success(
                 f"✅ Restschuld-Tilgung ({_de(_sa_total)} €) vollständig durch Kapitalanlage-Pool gedeckt."
+            )
+
+        # ── Zwei-Strategie-Vergleich Netto-Verlauf ────────────────────────────
+        with st.expander("📊 Zwei-Strategie-Vergleich", expanded=False):
+            st.caption(
+                "Vergleicht den jährlichen Nettoverlauf der optimalen Strategie mit "
+                "einer manuell gewählten Vergleichsstrategie."
+            )
+            _vgl_opts = [
+                "Alles Monatlich (frühestmöglich)",
+                "Alles Monatlich (spätestmöglich)",
+                "Alles Einmal (frühestmöglich)",
+                "Alles Einmal (spätestmöglich)",
+            ]
+            _sel_vgl = st.selectbox(
+                "Vergleichsstrategie", _vgl_opts, key=f"rc{_rc}_eo_vgl_strat",
+            )
+            # Build the comparison scenario decisions
+            _vgl_sj_frueh  = {p.id: p.fruehestes_startjahr for p in produkte_obj}
+            _vgl_sj_spaet  = {p.id: p.spaetestes_startjahr for p in produkte_obj}
+            if "frühestmöglich" in _sel_vgl:
+                _vgl_sj_map = _vgl_sj_frueh
+            else:
+                _vgl_sj_map = _vgl_sj_spaet
+            if "Monatlich" in _sel_vgl:
+                _vgl_ents = [(p, _vgl_sj_map[p.id], 0.0) for p in produkte_obj]
+            else:
+                _vgl_ents = [(p, _vgl_sj_map[p.id], 1.0) for p in produkte_obj]
+            _, _vgl_jd = _netto_ueber_horizont(
+                _profil_eo, _ergebnis_eo, _vgl_ents, horizon, mieteinnahmen, mietsteigerung,
+                profil2=_profil2_eo, ergebnis2=_ergebnis2_eo, veranlagung=_ver_eo,
+                gehalt_monatlich=gehalt,
+                ausgaben_plan=_ausgaben_plan if _ausgaben_plan else None,
+            )
+            _vgl_df = pd.DataFrame(_vgl_jd).set_index("Jahr")
+            if _real_toggle and _real_inf > 0:
+                _inf_r2 = _real_inf / 100
+                _defl2 = {j: 1.0 / (1 + _inf_r2) ** (j - _start_j) for j in _vgl_df.index}
+                if "Netto" in _vgl_df.columns:
+                    _vgl_df["Netto"] = _vgl_df["Netto"] * _vgl_df.index.map(_defl2)
+            fig_vgl2 = go.Figure()
+            fig_vgl2.add_trace(go.Scatter(
+                name="Optimal",
+                x=df_jd.index, y=df_jd["Netto"],
+                mode="lines+markers",
+                line=dict(color="#4CAF50", width=2.5),
+                hovertemplate="%{x}: %{y:,.0f} € Netto<extra>Optimal</extra>",
+            ))
+            fig_vgl2.add_trace(go.Scatter(
+                name=_sel_vgl,
+                x=_vgl_df.index, y=_vgl_df["Netto"],
+                mode="lines+markers",
+                line=dict(color="#2196F3", width=2, dash="dash"),
+                hovertemplate="%{x}: %{y:,.0f} € Netto<extra>" + _sel_vgl + "</extra>",
+            ))
+            _diff_total = df_jd["Netto"].sum() - _vgl_df["Netto"].sum()
+            _ylabel = "€ / Jahr (real)" if _real_toggle else "€ / Jahr"
+            fig_vgl2.update_layout(
+                template="plotly_white", height=360,
+                xaxis=dict(title="Jahr", dtick=2),
+                yaxis=dict(title=_ylabel, tickformat=",.0f"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=10, r=10, t=50, b=10),
+                separators=",.",
+            )
+            st.plotly_chart(fig_vgl2, use_container_width=True)
+            _sign = "+" if _diff_total >= 0 else ""
+            st.caption(
+                f"Differenz (Optimal − {_sel_vgl}): "
+                f"**{_sign}{_de(_diff_total)} €** über {horizon} Jahre"
+                + (" (inflationsbereinigt)" if _real_toggle else "") + "."
             )
 
         # ── Multi-Pool Kapitalanlage-Verlauf ─────────────────────────────────

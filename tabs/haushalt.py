@@ -578,6 +578,67 @@ def render(
             else:
                 st.info("Beide Partner gehen voraussichtlich im gleichen Jahr in Rente.")
 
+        st.divider()
+
+        # ── Witwen-/Witwerrente-Schätzung ─────────────────────────────────────
+        st.subheader("Witwen-/Witwerrente-Schätzung (§ 46 SGB VI)")
+        _ww_grenze = 26_400.0  # Hinzuverdienstgrenze 2024 (§ 97 SGB VI), einfacher Freibetrag
+        _ww_satz = 0.55        # großes Witwengeld (§ 46 Abs. 2 SGB VI)
+
+        def _witwen_rente(verstorben_brutto: float, ueberlebend_netto: float,
+                          label_verstorben: str, label_ueberlebend: str) -> None:
+            _wwr_brutto = verstorben_brutto * _ww_satz
+            # Anrechnung eigenes Einkommen: Freibetrag 26.400 €/Jahr; 40 % des darüber
+            # liegenden Einkommens werden angerechnet (§ 97 SGB VI)
+            _jahres_eigen = ueberlebend_netto * 12
+            _anrechnung_basis = max(0.0, _jahres_eigen - _ww_grenze)
+            _anrechnung_mono = _anrechnung_basis * 0.40 / 12
+            _wwr_netto_mono = max(0.0, _wwr_brutto - _anrechnung_mono)
+            ww1, ww2, ww3 = st.columns(3)
+            ww1.metric(
+                f"Witwen-/Witwerrente brutto",
+                f"{_de(_wwr_brutto)} €/Mon.",
+                help=f"55 % der gesetzl. Bruttorente von {label_verstorben}: "
+                     f"{_de(verstorben_brutto)} €/Mon. × 0,55 (§ 46 Abs. 2 SGB VI).",
+            )
+            ww2.metric(
+                "Anrechnung eigenes Einkommen",
+                f"−{_de(_anrechnung_mono)} €/Mon.",
+                help=f"40 % von max(0, Jahreseinkommen {label_ueberlebend} − {_de(_ww_grenze)} €) / 12 "
+                     f"(§ 97 SGB VI, vereinfacht).",
+            )
+            ww3.metric(
+                f"Witwen-/Witwerrente (geschätzt)",
+                f"{_de(_wwr_netto_mono)} €/Mon.",
+                help="Brutto-Witwerrente nach vereinfachter Einkommensanrechnung. "
+                     "Steuerpflichtig nach § 22 Nr. 1 S. 3a aa EStG.",
+            )
+            if _anrechnung_mono > 0:
+                st.caption(
+                    f"Das eigene Jahreseinkommen von {label_ueberlebend} "
+                    f"({_de(_jahres_eigen)} €/Jahr) übersteigt den Freibetrag "
+                    f"({_de(_ww_grenze)} €/Jahr) um {_de(_anrechnung_basis)} €/Jahr → "
+                    f"40 % = {_de(_anrechnung_mono)} €/Mon. werden angerechnet."
+                )
+
+        st.caption(
+            "Schätzung: 55 % der gesetzlichen Bruttorente (großes Witwengeld nach "
+            "§ 46 Abs. 2 SGB VI). Eigenes Einkommen wird nach § 97 SGB VI angerechnet "
+            "(Freibetrag 2024: 26.400 €/Jahr; 40 % des übersteigenden Betrags). "
+            "Keine Berücksichtigung von Bestandsschutz, kleinem Witwengeld oder Kinderzuschlägen."
+        )
+
+        with st.expander("Tod von Person 1 – Witwerrente für Person 2", expanded=False):
+            _witwen_rente(
+                e1.brutto_gesetzlich, e2.netto_monatlich,
+                "Person 1", "Person 2",
+            )
+        with st.expander("Tod von Person 2 – Witwenrente für Person 1", expanded=False):
+            _witwen_rente(
+                e2.brutto_gesetzlich, e1.netto_monatlich,
+                "Person 2", "Person 1",
+            )
+
         st.caption(
             "⚠️ Vereinfachte Berechnung. Splitting-Vorteil basiert auf Renteneinnahmen. "
             "Weitere Einkünfte (Mieten, Kapitalerträge) können das Ergebnis erheblich verändern. "

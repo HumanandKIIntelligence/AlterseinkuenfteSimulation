@@ -9,7 +9,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR, einkommensteuer, BBG_KV_MONATLICH, _pv_satz
+from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR, einkommensteuer, BBG_KV_MONATLICH, _pv_satz, DURCHSCHNITTSENTGELT_2024
 from session_io import save_session, load_session, list_saves
 from tabs import dashboard, simulation, vorsorge, haushalt, dokumentation, entnahme_opt, hypothek
 
@@ -82,6 +82,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
     grundfreibetrag_wachstum_pa = float(_get(pfx, "gfb_wachstum", 0.0)) / 100
     _kap_pool_cb = bool(_get(pfx, "kap_pool_cb", False))
     kap_pool_rendite_pa = float(_get(pfx, "kap_pool_rendite", 5.0)) / 100 if _kap_pool_cb else -1.0
+    lebenshaltungskosten_monatlich = float(_get(pfx, "lhk", 0.0))
 
     return Profil(
         geburtsjahr=geburtsjahr,
@@ -112,6 +113,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         kirchensteuer_satz=kirchensteuer_satz,
         grundfreibetrag_wachstum_pa=grundfreibetrag_wachstum_pa,
         kap_pool_rendite_pa=kap_pool_rendite_pa,
+        lebenshaltungskosten_monatlich=lebenshaltungskosten_monatlich,
     )
 
 
@@ -158,6 +160,7 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
         f"rc{_RC}_{pfx}_gfb_wachstum":    p.grundfreibetrag_wachstum_pa * 100,
         f"rc{_RC}_{pfx}_kap_pool_cb":     p.kap_pool_rendite_pa >= 0.0,
         f"rc{_RC}_{pfx}_kap_pool_rendite": max(0.0, p.kap_pool_rendite_pa * 100),
+        f"rc{_RC}_{pfx}_lhk":             p.lebenshaltungskosten_monatlich,
     }
     st.session_state.update(updates)
 
@@ -263,6 +266,13 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                     value=float(_get(pfx, "ppj", 1.2)),
                     step=0.05, key=f"rc{_RC}_{pfx}_ppj",
                     help="1,0 = Durchschnittsverdienst (~45.358 € brutto in 2024).",
+                )
+            _gehalt_hint = float(_get(pfx, "gehalt", 0.0))
+            if _gehalt_hint > 0:
+                _ep_hint = _gehalt_hint * 12 / DURCHSCHNITTSENTGELT_2024
+                st.caption(
+                    f"Aus Gehalt {_gehalt_hint:,.0f} €/Mon. → ca. **{_ep_hint:.2f} EP/Jahr** "
+                    f"(Ø-Entgelt 2024: {DURCHSCHNITTSENTGELT_2024:,.0f} €/Jahr)"
                 )
             st.slider(
                 "Rentenanpassung p.a. (%)", 0.0, 5.0,
@@ -419,7 +429,7 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
             st.session_state[f"rc{_RC}_{pfx}_kist_satz"] = _kist_val
 
     with st.expander("⚙️ Erweiterte Einstellungen"):
-        ea1, ea2 = st.columns(2)
+        ea1, ea2, ea3 = st.columns(3)
         with ea1:
             st.slider(
                 "GFB-Wachstum p.a. (%)", 0.0, 3.0,
@@ -444,6 +454,17 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                     value=float(_get(pfx, "kap_pool_rendite", 5.0)),
                     step=0.25, key=f"rc{_RC}_{pfx}_kap_pool_rendite",
                 )
+        with ea3:
+            st.number_input(
+                "Lebenshaltungskosten (€/Mon.)", 0.0, 15_000.0,
+                value=float(_get(pfx, "lhk", 0.0)),
+                step=100.0, key=f"rc{_RC}_{pfx}_lhk",
+                help=(
+                    "Monatliche Fixausgaben (Miete, Lebensmittel, Versicherungen …). "
+                    "Wird im Planungshorizont jährlich vom Nettoeinkommen abgezogen. "
+                    "Zeigt, ob das Renteneinkommen den Lebensstandard deckt."
+                ),
+            )
 
     if ist_pensionaer:
         with st.expander("🛡 Dienstunfähigkeitsversicherung (DUV)"):

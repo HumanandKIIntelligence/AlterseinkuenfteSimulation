@@ -56,7 +56,7 @@ docker exec altereinkuenfte-app pip install pytest -q
 | `TestBerufsjahre` | Pre-retirement Simulation: Gehalt, Jahresanzahl, Src_Gehalt-Verlauf |
 | `TestAltersentlastungsbetrag` | §24a EStG: Tabellenwerte 2005/2010/2020/2025, Phase-A/B, Cap, bereits_genutzt, Integration berechne_rente |
 | `TestPVKinderstaffelung` | §55 Abs. 3a SGB XI: 0–5 Kinder Beitragssätze, Monotonie, Integration berechne_rente |
-| `TestEinzahlungenEffektiv` | VorsorgeProdukt.einzahlungen_effektiv(): Fallback, Akkumulation, Dynamik, Beitragsbefreiung, Monotonie |
+| `TestEinzahlungenEffektiv` | VorsorgeProdukt.einzahlungen_effektiv(): Fallback, Akkumulation, Dynamik, Beitragsbefreiung, Monotonie, Riester-Grundzulage, Kinderzulage neu/alt/gemischt, Zulagen-Ende mit Renteneintritt |
 | `TestKapitalanlagePool` | als_kapitalanlage: Pool-Initialisierung, Timing (Injektion vs. Verzehr), Src_Kapitalverzehr, Kap_Pool, Src_Einmal-Korrektur |
 | `TestMultiPool` | Multi-Pool: Zwei Produkte mit eigenen Pools, per-Produkt-Rendite, Kap_Pool_{pid} / Src_Kap_{pid} Felder |
 | `TestEtfAusschuettend` | etf_ausschuettend=True: keine Teilfreistellung, Abgeltungsteuer auf vollen Betrag |
@@ -81,12 +81,15 @@ Profil-Tab (app.py) + Mieteinnahmen
 ```
 ⚙️ Profil          – Personendaten (Person 1+2), Mieteinnahmen, KV, DUV/BUV
                      └─ Expander: ⚙️ Erweiterte Einstellungen (GFB-Wachstum, Pool-Rendite)
-📊 Dashboard       – Kennzahlen, Wasserfall, Kaufkraft, Progressionszone-Ampel
+📊 Dashboard       – Kennzahlen, Wasserfall, Kaufkraft, Progressionszone-Ampel, Grundsicherungs-Hinweis
+                     └─ Expander: 🔎 Was-wäre-wenn Steuerzone (interaktiv)
                      └─ Expander: 🧾 Steuer- & KV-Details (steuern.render_section)
+                     └─ Expander: 📄 HTML-Export (Download-Button)
 👥 Haushalt        – nur bei Partner: Paarvergleich, Splitting-Vorteil
+                     └─ Witwen-/Witwerrente-Schätzung (§46 SGB VI)
 🔮 Simulation      – Szenarien pessimistisch/neutral/optimistisch
 🏦 Vorsorge-Bausteine – Vertragserfassung, Steuer-Steckbrief
-💡 Entnahme-Optimierung – Auszahlungsstrategie, Jahresverlauf, Pool-Verlauf
+💡 Entnahme-Optimierung – Auszahlungsstrategie, Jahresverlauf (real/nominal), Pool-Verlauf
                      └─ Expander: 🏠 Hypothek-Verwaltung (hypothek.render_section)
                      └─ Expander: 💰 Kapitalverzehr-Kalkulator (auszahlung.render_section)
 📖 Dokumentation   – Berechnungsgrundlagen, Haftungsausschluss
@@ -115,6 +118,7 @@ Profil-Tab (app.py) + Mieteinnahmen
 
 | Funktion | Beschreibung |
 |---|---|
+| `regelaltersgrenze(geburtsjahr)` | §235 Abs. 2 SGB VI: RAG für Jahrgänge 1947–1963 aus `_RAG_TABLE`; ≤1946 → 65, ≥1964 → 67 |
 | `einkommensteuer(zvE, grundfreibetrag=None)` | §32a EStG Grundtarif 2024; optionaler GFB-Override verschiebt alle Zonengrenzen um `delta = gfb - GRUNDFREIBETRAG_2024` |
 | `solidaritaetszuschlag(est)` | §51a EStG: Freigrenze 17.543 €, Gleitzone bis 33.912 €, dann 5,5 % |
 | `einkommensteuer_splitting(zvE_gesamt)` | §32a Abs. 5: 2× ESt(zvE/2) |
@@ -140,6 +144,11 @@ Profil-Tab (app.py) + Mieteinnahmen
 | `BBG_KV_MONATLICH` | 5.175 € | BBG KV/PV 2024 |
 | `MINDEST_BMG_FREIWILLIG_MONO` | 1.096,67 € | §240 Abs. 4 SGB V 2024 (1/90 Bezugsgröße) |
 | `AKTUELLES_JAHR` | auto | `from datetime import date; AKTUELLES_JAHR = date.today().year` – kein manuelles Update nötig |
+| `RIESTER_GRUNDZULAGE` | 175,0 € | §84 EStG |
+| `RIESTER_KINDERZULAGE_NEU` | 300,0 € | §85 Abs. 1 S. 2 EStG (Kinder ab 01.01.2008) |
+| `RIESTER_KINDERZULAGE_ALT` | 185,0 € | §85 Abs. 1 S. 1 EStG (Kinder vor 2008) |
+| `GRUNDSICHERUNG_SCHWELLE` | 1.100,0 € | §41 SGB XII – indikativer Schwellenwert, kein Rechtsanspruch |
+| `DURCHSCHNITTSENTGELT_2024` | 43.142,0 € | DRV – Rentenpunkt-Hochrechnung (EP = Brutto / DURCHSCHNITTSENTGELT) |
 
 ---
 
@@ -232,8 +241,12 @@ Wenn `gehalt_monatlich > 0` und nicht `bereits_rentner`:
 - **`als_kapitalanlage`** (bool, default False): Einmalauszahlung → interner Kapitalanlage-Pool. Nettobetrag wird reinvestiert und als Annuität über den Planungshorizont verzehrt (Gewinne → Abgeltungsteuer).
 - **`kap_rendite_pa`** (float, default -1.0): Produktspezifische Pool-Rendite. Überschreibt `profil.kap_pool_rendite_pa` und `profil.rendite_pa` wenn ≥ 0. Auflösung: `_resolve_pool_rendite(prod, profil)`.
 - **`etf_ausschuettend`** (bool, default False): Nur für ETF-Produkte. Bei True: Teilfreistellung 0 % (kein Fonds-Privileg); volle Abgeltungsteuer auf Ausschüttungen und Gewinne.
+- **`riester_zulage_nutzen`** (bool, default False): Grundzulage 175 €/Jahr + Kinderzulagen zur Kostenbasis addieren. Nur für aktive Einzahlungsjahre (`j < fruehestes_startjahr`).
+- **`riester_kinder_zulage`** (int, default 0): Anzahl Kinder, geboren ab 01.01.2008 → 300 €/Kind/Jahr (§85 Abs. 1 S. 2 EStG).
+- **`riester_kinder_zulage_alt`** (int, default 0): Anzahl Kinder, geboren vor 01.01.2008 → 185 €/Kind/Jahr (§85 Abs. 1 S. 1 EStG).
+- **`bav_ag_zuschuss`** (bool, default False): AG-Pflichtzuschuss 15 % (§1a Abs. 1a BetrAVG ab 2022). Effektive Einzahlung = `beitrag × 1,15`. Nur für aktive Einzahlungsjahre.
 
-`einzahlungen_effektiv(startjahr: int) -> float`: Methode auf VorsorgeProdukt. Berechnet Gesamteinzahlungen bis `startjahr`. Fallback auf `einzahlungen_gesamt` wenn `jaehrl_einzahlung==0`.
+`einzahlungen_effektiv(startjahr: int) -> float`: Methode auf VorsorgeProdukt. Berechnet Gesamteinzahlungen bis `startjahr`. Fallback auf `einzahlungen_gesamt` wenn `jaehrl_einzahlung==0`. Riester-Zulagen und bAV-AG-Zuschuss enden bei `fruehestes_startjahr` (Renteneintrittsjahr).
 
 ## Multi-Pool-Architektur (`_netto_ueber_horizont`)
 
@@ -250,6 +263,8 @@ _ka_prods:  list[VorsorgeProdukt]  # alle als_kapitalanlage-Produkte
 - **Rendite-Auflösung:** `_resolve_pool_rendite(prod, profil)` – Priorität: `prod.kap_rendite_pa ≥ 0` → `profil.kap_pool_rendite_pa ≥ 0` → `profil.rendite_pa`.
 - **Jahresdaten-Felder:** `Src_Kap_{pid}` (Entnahme p.a.), `Kap_Pool_{pid}` (Poolwert am Jahresende) – je Pool ein eigenes Feld.
 - **Rückwärtskompatibilität:** `Src_Kapitalverzehr` und `Kap_Pool` (aggregiert) bleiben erhalten.
+- **`Kap_Injektion`** (int): Netto-Injektionsbetrag ins Kapitalanlage-Pool im Injektionsjahr; für Annotations in `entnahme_opt.py`.
+- **`LHK`** (int): Jährliche Lebenshaltungskosten (`profil.lebenshaltungskosten_monatlich × 12`); bereits im Netto abgezogen.
 - **Bekannte Vereinfachung:** Pool-Renditegewinne werden nochmals mit Abgeltungsteuer belastet (konservativ).
 
 ## Optimizer – Referenzstrategien
@@ -268,6 +283,7 @@ Im Strategievergleich-Balkendiagramm werden 5 Säulen angezeigt.
 - **`kinder_anzahl`** (int, default 1): Anzahl Kinder für PV-Kinderstaffelung §55 Abs. 3a SGB XI. Nur relevant wenn `kinder=True`. UI: Zahlen-Input im Profil-Tab bei GKV-Wahl + Kinder-Checkbox.
 - **`grundfreibetrag_wachstum_pa`** (float, default 0.0): Jährliches GFB-Wachstum p.a. (z.B. 0.01 = 1 %). Pro Simulationsjahr: `gfb = GRUNDFREIBETRAG_2024 × (1+wachstum)^y`. UI: Slider im "Erweiterte Einstellungen"-Expander.
 - **`kap_pool_rendite_pa`** (float, default -1.0): Profilweite Default-Pool-Rendite für alle `als_kapitalanlage`-Produkte. Wird von `prod.kap_rendite_pa` überschrieben wenn ≥ 0. UI: Checkbox + Slider im "Erweiterte Einstellungen"-Expander.
+- **`lebenshaltungskosten_monatlich`** (float, default 0.0): Monatliche Fixausgaben (Lebenshaltungskosten). Wird jährlich in `_netto_ueber_horizont()` vom Netto abgezogen (`LHK`-Feld in Jahresdaten). UI: number_input im "Erweiterte Einstellungen"-Expander.
 
 ## RentenErgebnis – Felder
 
@@ -312,6 +328,30 @@ Intercept-Verschiebungen (Zone 3 und 4 ändern sich durch das delta):
 
 Im Kaufkraft-Abschnitt des Dashboards gibt es ein konfigurierbares `number_input` für die Inflation p.a. (0–5 %, Default 2 %). Keys: `f"rc{_rc}_dash_inflation"` (Einzelperson) und `f"rc{_rc}_dash_inflation_hh"` (Haushalt/Zusammen).
 
+## Grundsicherungs-Hinweis (dashboard.py)
+
+`GRUNDSICHERUNG_SCHWELLE = 1_100.0` (§41 SGB XII). Wenn projizierte Nettorente für das gewählte Betrachtungsjahr unter diesem Schwellenwert liegt, erscheint eine `st.warning()` mit Hinweis auf möglichen Grundsicherungsanspruch. Im Zusammen-Modus für beide Personen separat geprüft.
+
+## Was-wäre-wenn Steuerzone (dashboard.py)
+
+Expander "🔎 Was-wäre-wenn: Steuerzone" nach `_steuerampel()` in Einzelperson-Ansicht. Slider 0–50.000 € für Zusatzeinkommen. Zeigt zvE vorher/nachher, Jahressteuer vorher, Mehrsteuer absolut + Grenzbelastung in %, und eine zweite Steuerampel für das neue zvE. Key: `f"rc{_rc}_dash_ww_extra"`.
+
+## HTML-Export (dashboard.py)
+
+Expander "📄 Zusammenfassung exportieren" am Ende der Einzelperson-Ansicht. `st.download_button` mit HTML-Blob aus f-string. Enthält Kennzahlen, Profildaten, Disclaimer. Hinweis auf Drucken als PDF via Strg+P.
+
+## Witwen-/Witwerrente (haushalt.py)
+
+Abschnitt am Ende des Haushalt-Tabs. Schätzung: 55 % der gesetzl. Bruttorente (§46 Abs. 2 SGB VI, großes Witwengeld). Einkommensanrechnung nach §97 SGB VI: Freibetrag 26.400 €/Jahr; 40 % des übersteigenden Betrags werden monatlich angerechnet. Zwei Expander: "Tod von Person 1" / "Tod von Person 2". Vereinfachung: kein kleines Witwengeld, kein Bestandsschutz, keine Kinderzuschläge.
+
+## Reale Werte / Inflationsbereinigung (entnahme_opt.py)
+
+Checkbox "Reale Werte (inflationsbereinigt)" + `number_input` "Inflation p.a. %" vor dem Jahresverlauf-Chart. Bei Aktivierung werden alle numerischen Jahresdaten-Spalten mit `1 / (1+inf)^(j - start_j)` multipliziert. Keys: `f"rc{_rc}_eo_real"`, `f"rc{_rc}_eo_inflation"`.
+
+## Zwei-Strategie-Vergleich (entnahme_opt.py)
+
+Expander "📊 Zwei-Strategie-Vergleich" nach dem Jahresverlauf-Chart. Selectbox für Vergleichsstrategie (Monatlich/Einmal × frühest/spätestmöglich). Führt `_netto_ueber_horizont()` direkt mit fixen Entscheidungen aus (ohne Brute-Force). Zeigt zwei Netto-Linien (Optimal grün / Vergleich blau gestrichelt) und Differenzsumme. Berücksichtigt real-Werte-Toggle.
+
 ## Widget-Key-Namensraum
 
 Alle Slider/Radio-Keys in Tabs sind mit `f"rc{_rc}_"` präfixiert (`_rc = st.session_state.get("_rc", 0)`). app.py verwendet `_RC` (Modul-Level, einmalig aus session_state gelesen). Verhindert stale-state-Bugs nach Reset (Reset inkrementiert `_rc`).
@@ -334,7 +374,7 @@ Validierungsregeln: `endjahr > startjahr`, `betrag > 0`, `rate > 0`, `rate <= be
 
 ## Bekannte Vereinfachungen
 
-- Rentenabschlag bei Frühverrentung: 0,3 %/Monat vor Regelaltersgrenze 67 (§ 77 SGB VI) implementiert; feste RAG 67 für alle Jahrgänge (Übergangsregelung 1947–1963 nicht berücksichtigt)
+- Rentenabschlag bei Frühverrentung: 0,3 %/Monat vor individueller RAG (§ 77 SGB VI); `regelaltersgrenze(geburtsjahr)` mit §235-Übergangstabelle für Jahrgänge 1947–1963
 - LV-Altvertrag (vor 2005): steuerfrei pauschal angenommen (5-J.-Beitragspflicht und 60%-Todesfallschutz werden nicht geprüft)
 - Abgeltungsteuer auf LV/PrivateRV: vereinfacht 25 % (ohne Soli/KiSt auf Abgeltungsteuer)
 - Kirchensteuer auf Abgeltungsteuer (Kapitalerträge): nicht berücksichtigt

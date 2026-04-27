@@ -5,6 +5,7 @@ import streamlit as st
 
 from engine import (
     Profil, RentenErgebnis, GRUNDFREIBETRAG_2024, AKTUELLES_JAHR,
+    GRUNDSICHERUNG_SCHWELLE,
     berechne_haushalt, _netto_ueber_horizont,
     einkommensteuer, einkommensteuer_splitting, solidaritaetszuschlag,
 )
@@ -377,6 +378,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             with st.expander("🧾 Steuer- & KV-Details Person 2", expanded=False):
                 steuern.render_section(profil2, ergebnis2, mieteinnahmen / 2 if mieteinnahmen > 0 else 0.0)
 
+            # Grundsicherungs-Hinweis für beide Personen
+            for _gs_label, _gs_netto in [("Person 1", _p1_n_y), ("Person 2", _p2_n_y)]:
+                if 0 < _gs_netto < GRUNDSICHERUNG_SCHWELLE:
+                    st.warning(
+                        f"⚠️ **Grundsicherungsrisiko {_gs_label}:** Nettorente "
+                        f"**{_de(_gs_netto)} €/Mon.** im Jahr {_sel_j_dash} "
+                        f"unter Grundsicherungsschwelle ca. {_de(GRUNDSICHERUNG_SCHWELLE)} €/Mon. "
+                        f"(§ 41 SGB XII)."
+                    )
+
             st.caption(
                 "⚠️ Alle Angaben sind Simulationswerte auf Basis vereinfachter Annahmen. "
                 "Keine Steuer- oder Anlageberatung."
@@ -479,6 +490,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                      f" (Renteneintritt {profil.eintritt_jahr})",
             )
 
+        # ── Grundsicherungs-Hinweis ───────────────────────────────────────────
+        if _d_netto < GRUNDSICHERUNG_SCHWELLE and _d_netto > 0:
+            st.warning(
+                f"⚠️ **Grundsicherungsrisiko:** Die projizierte Nettorente von "
+                f"**{_de(_d_netto)} €/Mon.** im Jahr {_sel_j_dash} liegt unter der "
+                f"Grundsicherungsschwelle von ca. {_de(GRUNDSICHERUNG_SCHWELLE)} €/Mon. "
+                f"(§ 41 SGB XII). Ein ergänzender Anspruch auf Grundsicherung im Alter "
+                f"könnte bestehen. Bitte prüfen Sie zusätzliche Vorsorgemöglichkeiten "
+                f"(Riester, bAV, Rürup) und ggf. einen späteren Renteneintritt."
+            )
+
         st.divider()
 
         # ── Wasserfall Brutto → Netto ─────────────────────────────────────────
@@ -569,12 +591,83 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         st.divider()
 
-        _steuerampel(_d_zvE + mieteinnahmen * 12)
+        _zvE_ampel = _d_zvE + mieteinnahmen * 12
+        _steuerampel(_zvE_ampel)
+
+        st.divider()
+
+        with st.expander("🔎 Was-wäre-wenn: Steuerzone", expanded=False):
+            st.caption(
+                "Verschieben Sie den Slider, um zu sehen, wie sich ein "
+                "zusätzliches Einkommen (z.B. Einmalentnahme, Mieterhöhung, "
+                "Nebenverdienst) auf Ihren Grenzsteuersatz auswirkt."
+            )
+            _ww_extra = st.slider(
+                "Zusätzliches Jahreseinkommen (€)", 0, 50_000,
+                value=0, step=500, key=f"rc{_rc}_dash_ww_extra",
+            )
+            _zvE_ww = _zvE_ampel + _ww_extra
+            _est_vorher = einkommensteuer(_zvE_ampel)
+            _soli_vorher = solidaritaetszuschlag(_est_vorher)
+            _est_nachher = einkommensteuer(_zvE_ww)
+            _soli_nachher = solidaritaetszuschlag(_est_nachher)
+            _mehrsteuer = (_est_nachher + _soli_nachher) - (_est_vorher + _soli_vorher)
+            if _ww_extra > 0:
+                ww1, ww2, ww3, ww4 = st.columns(4)
+                ww1.metric("zvE vorher", f"{_de(_zvE_ampel)} €")
+                ww2.metric("zvE nachher", f"{_de(_zvE_ww)} €", delta=f"+{_de(_ww_extra)} €")
+                ww3.metric("Jahressteuer vorher", f"{_de(_est_vorher + _soli_vorher)} €")
+                ww4.metric(
+                    "Mehrsteuer (ESt + Soli)", f"{_de(_mehrsteuer)} €",
+                    delta=f"{_mehrsteuer / _ww_extra:.1%} Grenzbelastung".replace(".", ","),
+                    delta_color="inverse",
+                )
+                _steuerampel(_zvE_ww, titel="Mit Zusatzeinkommen")
 
         st.divider()
 
         with st.expander("🧾 Steuer- & KV-Details", expanded=False):
             steuern.render_section(profil, ergebnis, mieteinnahmen)
+
+        # ── HTML-Export ───────────────────────────────────────────────────────
+        with st.expander("📄 Zusammenfassung exportieren", expanded=False):
+            _html = f"""<!DOCTYPE html>
+<html lang="de"><head><meta charset="utf-8">
+<title>Rentenübersicht – {_sel_j_dash}</title>
+<style>body{{font-family:sans-serif;max-width:800px;margin:2em auto}}
+table{{border-collapse:collapse;width:100%}}
+td,th{{border:1px solid #ccc;padding:.4em .8em}}th{{background:#f0f0f0}}
+h2{{color:#1976d2}}</style></head><body>
+<h1>Rentenübersicht {_sel_j_dash}</h1>
+<p><em>Erstellt: {__import__('datetime').date.today()}</em></p>
+<h2>Kennzahlen</h2>
+<table>
+<tr><th>Kennzahl</th><th>Wert</th></tr>
+<tr><td>Bruttorente</td><td>{_de(_d_brutto)} €/Mon.</td></tr>
+<tr><td>Nettorente</td><td>{_de(_d_netto)} €/Mon.</td></tr>
+<tr><td>Einkommensteuer</td><td>{_de(_d_steuer)} €/Mon.</td></tr>
+<tr><td>KV/PV</td><td>{_de(_d_kv)} €/Mon.</td></tr>
+<tr><td>zvE (Jahr)</td><td>{_de(_d_zvE)} €/Jahr</td></tr>
+<tr><td>Kapital bei Renteneintritt</td><td>{_de(ergebnis.kapital_bei_renteneintritt)} €</td></tr>
+<tr><td>Rentenpunkte gesamt</td><td>{ergebnis.gesamtpunkte:.1f}</td></tr>
+</table>
+<h2>Profil</h2>
+<table>
+<tr><th>Feld</th><th>Wert</th></tr>
+<tr><td>Geburtsjahr</td><td>{profil.geburtsjahr}</td></tr>
+<tr><td>Renteneintrittsalter</td><td>{profil.renteneintritt_alter}</td></tr>
+<tr><td>Renteneintrittsjahr</td><td>{profil.eintritt_jahr}</td></tr>
+<tr><td>Krankenversicherung</td><td>{profil.krankenversicherung}</td></tr>
+</table>
+<p style="color:#888;font-size:.9em">⚠️ Simulationswerte – keine Steuer- oder Anlageberatung.</p>
+</body></html>"""
+            st.download_button(
+                "⬇️ HTML herunterladen",
+                data=_html.encode("utf-8"),
+                file_name=f"rente_{_sel_j_dash}.html",
+                mime="text/html",
+            )
+            st.caption("Die HTML-Datei kann im Browser geöffnet und als PDF gedruckt werden (Strg+P).")
 
         st.caption(
             "⚠️ Alle Angaben sind Simulationswerte auf Basis vereinfachter Annahmen. "
