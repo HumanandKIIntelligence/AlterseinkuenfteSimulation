@@ -520,11 +520,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # ── Hypothek ──────────────────────────────────────────────────────────
         _hyp_info = get_hyp_info()
         _ausgaben_plan: dict[int, float] = {}
-        _rs            = 0.0   # Restschuld – wird in Pool-Chart genutzt
-        _pool_tilgung  = False  # Kapitalpool für Tilgung – wird in Pool-Chart genutzt
+        _rs             = 0.0   # Restschuld
+        _pool_tilgung   = False  # Kapitalpool bei Einmaltilgung
+        _anschluss_spar = False  # Sparkapital bei Anschlussfinanzierung einsetzen
         _einmal_tilgung = False  # Einmaltilgung aktiv (Pool oder Vorsorge)
-        _markt_zins_pa = 0.04
-        _anschluss_lz  = 10
+        _markt_zins_pa  = 0.04
+        _anschluss_lz   = 10
 
         if _hyp_info:
             _hyp_checkbox = st.checkbox(
@@ -570,6 +571,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                                 value=_hyp_info["anschluss_laufzeit"], step=1,
                                 key=f"rc{_rc}_eo_hyp_anschl_lz",
                             ))
+                        _anschluss_spar = st.checkbox(
+                            "💰 Sparkapital für Anschlussraten einsetzen",
+                            value=False,
+                            key=f"rc{_rc}_eo_hyp_anschluss_spar",
+                            help="Das Sparkapital deckt die Anschlussfinanzierungs-Raten "
+                                 "vorrangig aus dem Pool. Reicht der Pool nicht aus, "
+                                 "wird der Rest vom Netto abgezogen.",
+                        )
                     else:
                         _einmal_tilgung = True
                         tc1, tc2 = st.columns(2)
@@ -613,7 +622,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         produkte_obj = [_aus_dict(p) for p in produkte_dicts]
         _produkte_obj_run   = list(produkte_obj)
         _produkte_dicts_run = list(produkte_dicts)
-        if _pool_tilgung and _spkap > 0:
+        _use_spar_pool = (_pool_tilgung or _anschluss_spar) and _spkap > 0
+        if _use_spar_pool:
             _spar_prod = VorsorgeProdukt(
                 id="__sparkapital__", typ="ETF", name="Sparkapital", person="Person 1",
                 max_einmalzahlung=_spkap, max_monatsrente=0.0, laufzeit_jahre=0,
@@ -899,8 +909,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     "direkt aus dem verfügbaren Netto getilgt (kein Kapitalanlage-Pool aktiv)."
                 )
             else:
-                # Ratenkredit: laufende Raten im Jahresverlauf sichtbar
-                _sa_raten = df_jd["Sonderausgabe"].sum()
+                # Ratenkredit: nur Anschlussfinanzierungsraten (nach endjahr) aufsummieren
+                _sa_raten = sum(
+                    v for k, v in _ausgaben_plan.items() if k > _hyp_info['endjahr']
+                )
                 st.info(
                     f"ℹ️ Anschlussfinanzierung: Gesamtbelastung **{_de(_sa_raten)} €** "
                     f"über {_anschluss_lz} Jahre ab {_hyp_info['endjahr'] + 1} "
@@ -1061,88 +1073,164 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         use_container_width=True,
                     )
 
-        # ── Sparkapital-Zeitleiste ─────────────────────────────────────────────
+        # ── Kapital-Zeitleiste ─────────────────────────────────────────────────
+        # P2 Sparkapital-Werte
+        _spkap2_orig     = 0.0
+        _spkap2_sparrate = 0.0
+        _spkap2_rendite  = 0.05
+        _spkap2_eintritt_j = _spkap_eintritt_j
+        _spkap2          = 0.0
+        if _profil2_eo is not None and _ergebnis2_eo is not None:
+            _spkap2_orig     = float(getattr(_profil2_eo, "sparkapital", 0.0))
+            _spkap2_sparrate = float(getattr(_profil2_eo, "sparrate", 0.0))
+            _spkap2_rendite  = float(getattr(_profil2_eo, "rendite_pa", 0.05))
+            _spkap2_eintritt_j = (_profil2_eo.rentenbeginn_jahr if _profil2_eo.bereits_rentner
+                                  else _profil2_eo.eintritt_jahr)
+            _spkap2 = float(getattr(_ergebnis2_eo, "kapital_bei_renteneintritt", 0.0))
+
         _spar_col = "Kap_Pool___sparkapital__"
-        _hat_spar_post = (_pool_tilgung and _spar_col in df_jd.columns
+        _hat_spar_post = (_use_spar_pool and _spar_col in df_jd.columns
                           and df_jd[_spar_col].sum() > 0)
-        _show_spar_chart = _spkap_orig > 0 and (
-            not _profil_eo.bereits_rentner or _hat_spar_post
-        )
+
+        # Echte Vorsorge-Pools (keine synthetischen Sparkapital-Einträge)
+        _real_pool_pids = [
+            c[len("Kap_Pool_"):] for c in df_jd.columns
+            if c.startswith("Kap_Pool_") and not c.endswith("__sparkapital__")
+            and df_jd[c].sum() > 0
+        ]
+        _prod_names_all = {p.id: p.name for p in _produkte_obj_run}
+
+        _show_spar_chart = _spkap_orig > 0 or _spkap2_orig > 0 or len(_real_pool_pids) > 0
         if _show_spar_chart:
-            st.subheader("💰 Sparkapital-Zeitleiste")
+            st.subheader("💰 Kapital-Zeitleiste")
             fig_spar = go.Figure()
+            _x_chart_start = AKTUELLES_JAHR
+            _x_chart_end   = _spkap_eintritt_j + horizon
 
-            if not _profil_eo.bereits_rentner:
-                _pre_years  = list(range(AKTUELLES_JAHR, _spkap_eintritt_j + 1))
-                _pre_values = [
-                    kapitalwachstum(_spkap_orig, _spkap_sparrate, _spkap_rendite,
-                                    j - AKTUELLES_JAHR)
-                    for j in _pre_years
-                ]
+            # ── P1 Sparkapital ──────────────────────────────────────────────
+            if _spkap_orig > 0:
+                if not _profil_eo.bereits_rentner:
+                    _pre_yrs  = list(range(AKTUELLES_JAHR, _spkap_eintritt_j + 1))
+                    _pre_vals = [kapitalwachstum(_spkap_orig, _spkap_sparrate,
+                                                 _spkap_rendite, j - AKTUELLES_JAHR)
+                                 for j in _pre_yrs]
+                    fig_spar.add_trace(go.Scatter(
+                        name="P1 Sparkapital (Anspar)", x=_pre_yrs, y=_pre_vals,
+                        mode="lines", line=dict(color="#43A047", width=2, dash="dot"),
+                        hovertemplate="%{x}: %{y:,.0f} €<extra>P1 Ansparphase</extra>",
+                    ))
+                if _hat_spar_post:
+                    _df_sp = df_jd[df_jd.index >= _spkap_eintritt_j][_spar_col]
+                    fig_spar.add_trace(go.Scatter(
+                        name="P1 Sparkapital (Pool)", x=_df_sp.index, y=_df_sp.values,
+                        mode="lines+markers", line=dict(color="#2E7D32", width=2.5),
+                        hovertemplate="%{x}: %{y:,.0f} €<extra>P1 Sparkapital Pool</extra>",
+                    ))
+                else:
+                    _post_yrs  = list(range(_spkap_eintritt_j, _x_chart_end + 1))
+                    _post_vals = [kapitalwachstum(_spkap, 0.0, _spkap_rendite,
+                                                  j - _spkap_eintritt_j)
+                                  for j in _post_yrs]
+                    fig_spar.add_trace(go.Scatter(
+                        name="P1 Sparkapital (Rente, proj.)", x=_post_yrs, y=_post_vals,
+                        mode="lines+markers", line=dict(color="#2E7D32", width=2),
+                        hovertemplate="%{x}: %{y:,.0f} € (proj.)<extra>P1 Sparkapital</extra>",
+                    ))
+
+            # ── P2 Sparkapital ──────────────────────────────────────────────
+            if _spkap2_orig > 0:
+                if _profil2_eo is not None and not _profil2_eo.bereits_rentner:
+                    _pre_yrs2  = list(range(AKTUELLES_JAHR, _spkap2_eintritt_j + 1))
+                    _pre_vals2 = [kapitalwachstum(_spkap2_orig, _spkap2_sparrate,
+                                                  _spkap2_rendite, j - AKTUELLES_JAHR)
+                                  for j in _pre_yrs2]
+                    fig_spar.add_trace(go.Scatter(
+                        name="P2 Sparkapital (Anspar)", x=_pre_yrs2, y=_pre_vals2,
+                        mode="lines", line=dict(color="#E91E63", width=2, dash="dot"),
+                        hovertemplate="%{x}: %{y:,.0f} €<extra>P2 Ansparphase</extra>",
+                    ))
+                _post_yrs2  = list(range(_spkap2_eintritt_j, _x_chart_end + 1))
+                _post_vals2 = [kapitalwachstum(_spkap2, 0.0, _spkap2_rendite,
+                                               j - _spkap2_eintritt_j)
+                               for j in _post_yrs2]
                 fig_spar.add_trace(go.Scatter(
-                    name="Ansparphase (prognostiziert)",
-                    x=_pre_years, y=_pre_values,
+                    name="P2 Sparkapital (Rente, proj.)", x=_post_yrs2, y=_post_vals2,
+                    mode="lines+markers", line=dict(color="#C2185B", width=2),
+                    hovertemplate="%{x}: %{y:,.0f} € (proj.)<extra>P2 Sparkapital</extra>",
+                ))
+
+            # ── Vorsorge-Kapitalanlage-Pools ────────────────────────────────
+            _ej_spar = (_profil_eo.rentenbeginn_jahr if _profil_eo.bereits_rentner
+                        else _profil_eo.eintritt_jahr)
+            _vp_colors = ["#1565C0", "#E64A19", "#7B1FA2", "#00838F", "#F57F17"]
+            for _i, _pid in enumerate(_real_pool_pids):
+                _col_vp = f"Kap_Pool_{_pid}"
+                _lbl_vp = _prod_names_all.get(_pid, _pid)
+                _df_vp  = df_jd[df_jd.index >= _ej_spar][_col_vp]
+                fig_spar.add_trace(go.Scatter(
+                    name=f"{_lbl_vp} (Pool)", x=_df_vp.index, y=_df_vp.values,
                     mode="lines",
-                    line=dict(color="#43A047", width=2, dash="dot"),
-                    hovertemplate="%{x}: %{y:,.0f} €<extra>Ansparphase</extra>",
+                    line=dict(color=_vp_colors[_i % len(_vp_colors)], width=1.5, dash="dash"),
+                    hovertemplate=f"%{{x}}: %{{y:,.0f}} €<extra>{_lbl_vp}</extra>",
                 ))
 
-            if _hat_spar_post:
-                _df_spar_post = df_jd[df_jd.index >= _spkap_eintritt_j][_spar_col]
-                fig_spar.add_trace(go.Scatter(
-                    name="Poolwert (Rentenphase)",
-                    x=_df_spar_post.index, y=_df_spar_post.values,
-                    mode="lines+markers",
-                    line=dict(color="#1565C0", width=2.5),
-                    hovertemplate="%{x}: %{y:,.0f} € Poolwert<extra>Sparkapital Pool</extra>",
-                ))
-
-            if _einmal_tilgung and _rs > 0:
+            # ── Referenzlinien ──────────────────────────────────────────────
+            if _rs > 0:
                 fig_spar.add_hline(
                     y=_rs, line_dash="dash", line_color="#D32F2F", line_width=1.5,
                     annotation_text=f"Restschuld {_de(_rs)} €",
-                    annotation_position="top right",
-                    annotation_font_color="#D32F2F",
+                    annotation_position="top right", annotation_font_color="#D32F2F",
                 )
-
+            if _hyp_info and not _einmal_tilgung and _rs > 0:
+                fig_spar.add_vline(
+                    x=_hyp_info['endjahr'], line_width=1.5, line_dash="dot",
+                    line_color="#D32F2F",
+                    annotation_text=f"Hyp.-Ende {_hyp_info['endjahr']}",
+                    annotation_position="top left", annotation_font_color="#D32F2F",
+                )
             if not _profil_eo.bereits_rentner:
+                _vl_label = "P1 Renteneintritt" if _spkap2_orig > 0 else "Renteneintritt"
                 fig_spar.add_vline(
                     x=_spkap_eintritt_j, line_width=2, line_dash="dash", line_color="#5C6BC0",
-                    annotation_text="Renteneintritt", annotation_position="top right",
+                    annotation_text=_vl_label, annotation_position="top right",
+                )
+            if (_profil2_eo is not None and not _profil2_eo.bereits_rentner
+                    and _spkap2_eintritt_j != _spkap_eintritt_j):
+                fig_spar.add_vline(
+                    x=_spkap2_eintritt_j, line_width=2, line_dash="dash", line_color="#E91E63",
+                    annotation_text="P2 Renteneintritt", annotation_position="top left",
                 )
 
-            _x_spar_start = AKTUELLES_JAHR if not _profil_eo.bereits_rentner else _spkap_eintritt_j
-            _x_spar_end   = _spkap_eintritt_j + horizon
             fig_spar.update_layout(
-                template="plotly_white", height=350,
+                template="plotly_white", height=400,
                 xaxis=dict(title="Jahr", dtick=2,
-                           range=[_x_spar_start - 0.5, _x_spar_end + 0.5]),
+                           range=[_x_chart_start - 0.5, _x_chart_end + 0.5]),
                 yaxis=dict(title="Kapital (€)", tickformat=",.0f"),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 margin=dict(l=10, r=10, t=50, b=10),
                 separators=",.",
             )
             st.plotly_chart(fig_spar, use_container_width=True)
+            _cap_parts = []
+            if _spkap_orig > 0:
+                _cap_parts.append(
+                    f"P1 Sparkapital @ Renteneintritt: **{_de(_spkap)} €** "
+                    f"({_spkap_rendite:.1%} p.a.)"
+                )
+            if _spkap2_orig > 0:
+                _cap_parts.append(
+                    f"P2 Sparkapital @ Renteneintritt: **{_de(_spkap2)} €** "
+                    f"({_spkap2_rendite:.1%} p.a.)"
+                )
             if _hat_spar_post:
-                st.caption(
-                    f"Sparkapital bei Renteneintritt: **{_de(_spkap)} €** fließt als Pool in die Optimierung ein "
-                    f"(Rendite {_spkap_rendite:.1%} p.a.)."
+                _cap_parts.append("P1 Sparkapital als Pool in Optimierung aktiv")
+            if _real_pool_pids:
+                _cap_parts.append(
+                    f"{len(_real_pool_pids)} Vorsorge-Pool(s) dargestellt "
+                    "(gestrichelt)"
                 )
-            elif _pool_tilgung:
-                st.caption(
-                    f"Sparkapital bei Renteneintritt: **{_de(_spkap)} €**. "
-                    "Kein Pool aktiv (kein Sparkapital im Profil oder Kapitalpool-Checkbox nicht aktiv)."
-                )
-            else:
-                _hint = (
-                    " Aktiviere **Einmaltilgung → 💰 Kapitalpool**, um das Sparkapital für die Restschuld einzusetzen."
-                    if _hyp_info and _rs > 0 else ""
-                )
-                st.caption(
-                    f"Sparkapital bei Renteneintritt: **{_de(_spkap)} €** "
-                    f"(Sparrate {_de(_spkap_sparrate)} €/Mon., Rendite {_spkap_rendite:.1%} p.a.)."
-                    + _hint
-                )
+            if _cap_parts:
+                st.caption(" · ".join(_cap_parts) + ".")
 
         # ── Hypothek-Vergleich: Kapitalanlage vs. Ratenkredit ────────────────
         _restschuld = get_restschuld_end()
