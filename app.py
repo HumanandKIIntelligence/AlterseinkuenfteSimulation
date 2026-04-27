@@ -44,7 +44,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         aktuelle_punkte      = 0.0
         punkte_pro_jahr      = 0.0
         rentenanpassung      = 0.02
-        sparrate             = 0.0
+        sparrate             = float(_get(pfx, "sprate", 0.0))
         sparkapital          = float(_get(pfx, "spkap", 50_000.0))
         rendite              = float(_get(pfx, "rendite", 3.0)) / 100
     else:
@@ -80,8 +80,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
     kirchensteuer_satz = float(_get(pfx, "kist_satz", 9.0)) / 100
 
     grundfreibetrag_wachstum_pa = float(_get(pfx, "gfb_wachstum", 0.0)) / 100
-    _kap_pool_cb = bool(_get(pfx, "kap_pool_cb", False))
-    kap_pool_rendite_pa = float(_get(pfx, "kap_pool_rendite", 5.0)) / 100 if _kap_pool_cb else -1.0
+    kap_pool_rendite_pa = -1.0  # Pool immer mit Profil-Rendite (keine separate Pool-Rendite)
     lebenshaltungskosten_monatlich = float(_get(pfx, "lhk", 0.0))
 
     return Profil(
@@ -158,8 +157,6 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
         f"rc{_RC}_{pfx}_kist":            p.kirchensteuer,
         f"rc{_RC}_{pfx}_kist_satz":       p.kirchensteuer_satz * 100,
         f"rc{_RC}_{pfx}_gfb_wachstum":    p.grundfreibetrag_wachstum_pa * 100,
-        f"rc{_RC}_{pfx}_kap_pool_cb":     p.kap_pool_rendite_pa >= 0.0,
-        f"rc{_RC}_{pfx}_kap_pool_rendite": max(0.0, p.kap_pool_rendite_pa * 100),
         f"rc{_RC}_{pfx}_lhk":             p.lebenshaltungskosten_monatlich,
     }
     st.session_state.update(updates)
@@ -204,7 +201,8 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                 value=float(_get(pfx, "akt_brutto", 2_000.0)),
                 step=50.0, key=f"rc{_RC}_{pfx}_akt_brutto",
             )
-        ca2, cb2 = st.columns(2)
+        st.markdown("**Sparkapital**")
+        ca2, cb2, cc2 = st.columns(3)
         with ca2:
             st.number_input(
                 "Sparkapital / Vermögen (€)", 0.0, 5_000_000.0,
@@ -212,6 +210,12 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                 step=1_000.0, key=f"rc{_RC}_{pfx}_spkap",
             )
         with cb2:
+            st.number_input(
+                "Monatliche Sparrate (€)", 0.0, 10_000.0,
+                value=float(_get(pfx, "sprate", 0.0)),
+                step=50.0, key=f"rc{_RC}_{pfx}_sprate",
+            )
+        with cc2:
             st.slider(
                 "Rendite p.a. (%)", 0.0, 12.0,
                 value=float(_get(pfx, "rendite", 3.0)),
@@ -429,7 +433,7 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
             st.session_state[f"rc{_RC}_{pfx}_kist_satz"] = _kist_val
 
     with st.expander("⚙️ Erweiterte Einstellungen"):
-        ea1, ea2, ea3 = st.columns(3)
+        ea1, ea2 = st.columns(2)
         with ea1:
             st.slider(
                 "GFB-Wachstum p.a. (%)", 0.0, 3.0,
@@ -442,19 +446,6 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                 ),
             )
         with ea2:
-            _kap_cb = st.checkbox(
-                "Separate Pool-Rendite",
-                value=bool(_get(pfx, "kap_pool_cb", False)),
-                key=f"rc{_RC}_{pfx}_kap_pool_cb",
-                help="Eigene Rendite für Kapitalanlage-Pool festlegen (überschreibt Anlagerendite p.a.).",
-            )
-            if _kap_cb:
-                st.slider(
-                    "Pool-Rendite p.a. (%)", 0.0, 12.0,
-                    value=float(_get(pfx, "kap_pool_rendite", 5.0)),
-                    step=0.25, key=f"rc{_RC}_{pfx}_kap_pool_rendite",
-                )
-        with ea3:
             st.number_input(
                 "Lebenshaltungskosten (€/Mon.)", 0.0, 15_000.0,
                 value=float(_get(pfx, "lhk", 0.0)),

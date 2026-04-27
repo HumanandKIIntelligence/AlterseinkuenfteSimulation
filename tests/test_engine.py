@@ -2690,49 +2690,18 @@ class TestMultiPool:
             summe = row.get("Src_Kap_pool1", 0) + row.get("Src_Kap_pool2", 0)
             assert row["Src_Kapitalverzehr"] == pytest.approx(summe, abs=2.0)
 
-    def test_individuelle_pool_rendite_wirkt(self):
-        """Produkt mit hoher kap_rendite_pa wächst stärker als Produkt mit niedrigerer."""
-        p = self._profil_rente()
-        e = berechne_rente(p)
+    def test_pool_verwendet_profil_rendite(self):
+        """Pool nutzt immer profil.rendite_pa (keine separate Pool-Rendite mehr)."""
+        p_niedrig = self._profil_rente(rendite_pa=0.01)
+        p_hoch    = self._profil_rente(rendite_pa=0.08)
+        e_nied = berechne_rente(p_niedrig)
+        e_hoch = berechne_rente(p_hoch)
         sj = AKTUELLES_JAHR
-        prod_hoch = self._pool_prod("hoch", "Hoch-Rendite", sj, rendite_pa=0.08)
-        prod_nied = self._pool_prod("nied", "Niedrig-Rendite", sj, rendite_pa=0.01)
-        # Beide gleiche Einzahlungen
-        _, jd = _netto_ueber_horizont(p, e, [(prod_hoch, sj, 1.0), (prod_nied, sj, 1.0)], 15)
-        # Nach 15 Jahren: Pool hoch sollte größer sein als Pool nied
-        last_row = jd[-1]
-        assert last_row.get("Kap_Pool_hoch", 0) >= last_row.get("Kap_Pool_nied", 0)
-
-    def test_pool_rendite_minus_1_verwendet_profil_rendite(self):
-        """kap_rendite_pa=-1 → Pool verwendet profil.rendite_pa."""
-        p1 = self._profil_rente(rendite_pa=0.05)
-        p2 = self._profil_rente(rendite_pa=0.05, kap_pool_rendite_pa=0.05)
-        e = berechne_rente(p1)
-        sj = AKTUELLES_JAHR
-        prod = self._pool_prod("p", "Test", sj, rendite_pa=-1.0)
-        _, jd1 = _netto_ueber_horizont(p1, e, [(prod, sj, 1.0)], 10)
-        _, jd2 = _netto_ueber_horizont(p2, e, [(prod, sj, 1.0)], 10)
-        # Beide verwenden 5% → gleiche Pool-Werte
-        for r1, r2 in zip(jd1, jd2):
-            assert r1["Kap_Pool"] == pytest.approx(r2["Kap_Pool"], abs=5.0)
-
-    def test_profil_kap_pool_rendite_pa_ueberschreibt_rendite_pa(self):
-        """kap_pool_rendite_pa auf Profil-Ebene überschreibt rendite_pa für den Pool.
-
-        Höhere Pool-Rendite → im mittleren Lauf größerer Poolstand.
-        (Am Ende erschöpft sich auch der höherverzinste Pool – Vergleich in Jahr 5.)
-        """
-        p_standard = self._profil_rente(rendite_pa=0.03)
-        p_hoch = self._profil_rente(rendite_pa=0.03, kap_pool_rendite_pa=0.08)
-        e = berechne_rente(p_standard)
-        sj = AKTUELLES_JAHR
-        prod = self._pool_prod("p", "Test", sj, rendite_pa=-1.0)
-        _, jd_std = _netto_ueber_horizont(p_standard, e, [(prod, sj, 1.0)], 20)
-        _, jd_hoch = _netto_ueber_horizont(p_hoch, e, [(prod, sj, 1.0)], 20)
-        # Höhere Pool-Rendite → in einem mittleren Jahr größerer Poolstand
-        pool_std_y5 = jd_std[5]["Kap_Pool"]
-        pool_hoch_y5 = jd_hoch[5]["Kap_Pool"]
-        assert pool_hoch_y5 >= pool_std_y5
+        prod = self._pool_prod("p", "Test", sj)
+        _, jd_nied = _netto_ueber_horizont(p_niedrig, e_nied, [(prod, sj, 1.0)], 10)
+        _, jd_hoch = _netto_ueber_horizont(p_hoch,    e_hoch, [(prod, sj, 1.0)], 10)
+        # Höhere Profil-Rendite → größerer Pool nach einigen Jahren
+        assert jd_hoch[5]["Kap_Pool"] > jd_nied[5]["Kap_Pool"]
 
     def test_ein_pool_kap_pool_einzel_gleich_gesamt(self):
         """Ein einzelnes als_kapitalanlage-Produkt: Kap_Pool_{id} == Kap_Pool."""

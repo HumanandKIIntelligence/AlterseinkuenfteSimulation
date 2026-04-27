@@ -709,11 +709,7 @@ def vergleiche_produkt(
 
 
 def _resolve_pool_rendite(prod: "VorsorgeProdukt | None", profil: "Profil") -> float:
-    """Gibt die effektive Pool-Rendite für ein Kapitalanlage-Produkt zurück."""
-    if prod is not None and prod.kap_rendite_pa >= 0.0:
-        return prod.kap_rendite_pa
-    if profil.kap_pool_rendite_pa >= 0.0:
-        return profil.kap_pool_rendite_pa
+    """Gibt die effektive Pool-Rendite zurück – immer profil.rendite_pa."""
     return profil.rendite_pa
 
 

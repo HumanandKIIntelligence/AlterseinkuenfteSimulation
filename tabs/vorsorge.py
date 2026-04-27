@@ -398,21 +398,7 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
                      "Planungshorizont verzehrt. Steuer und KV werden dabei berücksichtigt.",
             )
             if new_als_ka:
-                _kap_r_cb = st.checkbox(
-                    "Eigene Pool-Rendite",
-                    value=bool(p.get("kap_rendite_pa", -1.0) >= 0.0),
-                    key=f"ve_kapr_cb_{pid}",
-                    help="Individuelle Rendite für diesen Pool (überschreibt Profil-Poolrendite).",
-                )
-                if _kap_r_cb:
-                    new_kap_r = st.slider(
-                        "Pool-Rendite p.a. (%)", 0.0, 12.0,
-                        value=float(max(0.0, p.get("kap_rendite_pa", 5.0) * 100
-                                        if p.get("kap_rendite_pa", -1.0) >= 0 else 5.0)),
-                        step=0.25, key=f"ve_kapr_{pid}",
-                    ) / 100
-                else:
-                    new_kap_r = -1.0
+                new_kap_r = -1.0  # Pool nutzt immer Profil-Rendite
             else:
                 new_als_ka = False
                 new_kap_r = -1.0
