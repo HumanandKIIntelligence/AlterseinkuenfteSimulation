@@ -55,6 +55,9 @@ docker exec altereinkuenfte-app pip install pytest -q
 | `TestBerufsjahre` | Pre-retirement Simulation: Gehalt, Jahresanzahl, Src_Gehalt-Verlauf |
 | `TestAltersentlastungsbetrag` | §24a EStG: Tabellenwerte 2005/2010/2020/2025, Phase-A/B, Cap, bereits_genutzt, Integration berechne_rente |
 | `TestPVKinderstaffelung` | §55 Abs. 3a SGB XI: 0–5 Kinder Beitragssätze, Monotonie, Integration berechne_rente |
+| `TestEinzahlungenEffektiv` | VorsorgeProdukt.einzahlungen_effektiv(): Fallback, Akkumulation, Dynamik, Beitragsbefreiung, Monotonie |
+| `TestKapitalanlagePool` | als_kapitalanlage: Pool-Initialisierung, Timing (Injektion vs. Verzehr), Src_Kapitalverzehr, Kap_Pool, Src_Einmal-Korrektur |
+| `TestOptimiererReferenzStrategien` | netto_alle_monatlich_spaet / einmal_spaet: Schlüssel, Gleichheit bei fix, Unterschied bei Range, optimal ≥ alle Referenzen |
 
 ---
 
@@ -205,7 +208,30 @@ Wenn `gehalt_monatlich > 0` und nicht `bereits_rentner`:
 
 ## VorsorgeProdukt – neue Felder
 
-- **`laufende_kapitalertraege_mono`** (float, default 0.0): Monatliche laufende Kapitalerträge (Zinsen, Dividenden, ETF-Ausschüttungen). Fließen in Abgeltungsteuer-Pool ein; bei freiwillig GKV zusätzlich KV-pflichtig. Eingabe im Vorsorge-Baustein Bearbeitungsdialog.
+- **`laufende_kapitalertraege_mono`** (float, default 0.0): Monatliche laufende Kapitalerträge (Zinsen, Dividenden, ETF-Ausschüttungen). Fließen in Abgeltungsteuer-Pool ein; bei freiwillig GKV zusätzlich KV-pflichtig.
+- **`einzel_einzahlung`** (float, default 0.0): Summe bereits geleisteter Einmaleinzahlungen (Kostenbasis für §20 Abs. 1 Nr. 6 / §20 InvStG).
+- **`jaehrl_einzahlung`** (float, default 0.0): Laufender Jahresbeitrag ab AKTUELLES_JAHR bis Startjahr.
+- **`jaehrl_dynamik`** (float, default 0.0): Jährliche Beitragssteigerung (z.B. 0.02 = 2 %).
+- **`beitragsbefreiung_jahr`** (int, default 0): Ab diesem Jahr zahlt die Versicherung (BU-Schutz); Beitragsbefreiungsleistungen = konservativ als weitere Einzahlungen.
+- **`als_kapitalanlage`** (bool, default False): Einmalauszahlung → interner Kapitalanlage-Pool. Nettobetrag wird reinvestiert und als Annuität über den Planungshorizont verzehrt (Gewinne → Abgeltungsteuer).
+
+`einzahlungen_effektiv(startjahr: int) -> float`: Methode auf VorsorgeProdukt. Berechnet Gesamteinzahlungen bis `startjahr`. Fallback auf `einzahlungen_gesamt` wenn `jaehrl_einzahlung==0`.
+
+## Kapitalanlage-Pool (`_netto_ueber_horizont`)
+
+`_kap_pool` und `_kap_basis` werden vor dem Jahr-Loop initialisiert:
+- **Injektion (Startjahr des Produkts):** `kap_injection_gross_j += betrag` → nach Netto-Berechnung: `kap_net_inj_j = gross * (netto/brutto)`; aus Netto subtrahiert, in Pool überführt.
+- **Entnahme (Folgejahre):** Annuität über verbleibende Jahre; Gewinnanteil `(pool - basis) / pool` → Abgeltungsteuer.
+- **Jahresdaten-Felder:** `Src_Kapitalverzehr` (Entnahmebetrag p.a.), `Kap_Pool` (Poolwert am Jahresende).
+- **Bekannte Vereinfachung:** LV/PrivateRente als_kapitalanlage: Pool-Renditegewinne werden nochmals mit Abgeltungsteuer belastet (konservativ).
+
+## Optimizer – Referenzstrategien
+
+`optimiere_auszahlungen()` gibt neben `netto_alle_monatlich` / `netto_alle_einmal` (frühestmöglich) neu auch aus:
+- **`netto_alle_monatlich_spaet`**: alle Produkte monatlich ab `spaetestes_startjahr`
+- **`netto_alle_einmal_spaet`**: alle Produkte einmal ab `spaetestes_startjahr`
+
+Im Strategievergleich-Balkendiagramm werden 5 Säulen angezeigt.
 
 ## Profil – neue Felder
 

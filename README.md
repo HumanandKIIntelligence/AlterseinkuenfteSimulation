@@ -12,7 +12,9 @@ Eine interaktive Web-App zur Simulation und Optimierung des Renteneinkommens. Be
 - **Kranken- und Pflegeversicherung** – GKV (KVdR-Pflicht vs. freiwillig §240 SGB V) und PKV; korrekte bAV-Freibetragslogik, BBG-Deckelung und PV-Kinderstaffelung (§55 Abs. 3a SGB XI)
 - **PV-Kinderstaffelung** – §55 Abs. 3a SGB XI; 0–5 Kinder: Abschlag von −0,25 % je Kind ab dem 2. Kind (max. −1,0 %)
 - **Szenarien** – Pessimistisch / Neutral / Optimistisch mit exakter Jahres-Simulation je Szenario
-- **Entnahme-Optimierung** – Brute-Force über alle Startjahr × Auszahlungsart-Kombinationen; Kapitalverzehr-Kalkulator
+- **Entnahme-Optimierung** – Brute-Force über alle Startjahr × Auszahlungsart-Kombinationen; 5-Säulen-Strategievergleich (frühest/spätestens × monatlich/einmal); Kapitalverzehr-Kalkulator
+- **Kapitalanlage-Pool** – Einmalauszahlungen wahlweise als reinvestiertes Kapital anlegen; Annuitätenverzehr mit Abgeltungsteuer auf Gewinne; `Src_Kapitalverzehr` im Jahresverlauf
+- **Dynamische Einzahlungsfelder** – je Vorsorgebaustein: Einmaleinzahlungen, jährl. Beitrag, Dynamik %, Beitragsbefreiungsjahr; auto-berechnete Kostenbasis bis Startjahr
 - **Mieteinnahmen** – §21 EStG; jährliche Steigerung konfigurierbar
 - **DUV / BUV** – Dienstunfähigkeits- und Berufsunfähigkeitsversicherung mit Ertragsanteil-Besteuerung
 - **Kaufkraft-Anpassung** – konfigurierbarer Inflationsslider im Dashboard

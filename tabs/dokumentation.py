@@ -368,6 +368,25 @@ def render(T: dict) -> None:
             Auszahlungsbetrag mit der eingegebenen Aufschubrendite (% p.a.) an:
             > Wert bei Startjahr = Maximalwert × (1 + Aufschubrendite)^(Aufschubjahre)
 
+            **Einzahlungsfelder je Vertrag:**
+
+            | Feld | Bedeutung |
+            |---|---|
+            | **Summe Einmaleinzahlungen** | Bereits geleistete Einmalzahlungen (Kostenbasis für Steuerberechnung) |
+            | **Jährl. Einzahlung** | Laufender Jahresbeitrag ab heute bis zum Startjahr |
+            | **Jährl. Dynamik (%)** | Jährliche Beitragssteigerung (z. B. 2 % für Inflation) |
+            | **Jahr Beitragsbefreiung** | Ab diesem Jahr werden keine weiteren Jahresbeiträge gezählt |
+
+            Die **Gesamteinzahlungen bis zum Startjahr** werden automatisch berechnet und
+            als Kostenbasis für die Ertragsermittlung (§ 20 Abs. 1 Nr. 6 EStG, § 20 InvStG)
+            verwendet. Der Range fruehestes–spätestes Startjahr bestimmt den möglichen Bereich
+            der Kostenbasis.
+
+            **Beitragsbefreiung:** Bei einem BU-Ereignis übernimmt die Versicherung die
+            laufenden Beiträge. Diese Leistungen gelten steuerlich als weitere Einzahlungen
+            des Versicherers (konservative Betrachtung; individuelle Behandlung im
+            Einzelfall mit Steuerberater prüfen).
+
             **Laufende Kapitalerträge je Baustein:**
             Zinsen, Dividenden und ETF-Ausschüttungen können je Vertrag als monatlicher
             Betrag erfasst werden. Wirkung:
@@ -384,11 +403,53 @@ def render(T: dict) -> None:
             (Steuer + KV berücksichtigt, Jahr für Jahr) berechnet. Die Kombination mit dem
             höchsten Gesamtnetto wird als optimal ausgegeben.
 
+            **Strategievergleich (5 Referenzstrategien):**
+            Optimal · Alles monatlich frühest · Alles monatlich spätestens ·
+            Alles einmal frühest · Alles einmal spätestens
+
             **Berufsjahre-Simulation:** Bei Angabe eines aktuellen Bruttogehalts
             (in den Optimierungs-Parametern) startet die Simulation ab {AKTUELLES_JAHR}
             und verwendet das Gehalt als zvE-Basis in den Arbeitsjahren (§ 19 EStG, 100 % progressiv).
             Die Charts zeigen Arbeits- und Rentenphasen getrennt mit vertikaler Trennlinie am
             Renteneintritts-Jahr.
+            """)
+
+        # ── Kapitalanlage-Pool ─────────────────────────────────────────────────
+        with st.expander("💼 Kapitalanlage-Pool – Als Kapitalanlage anlegen"):
+            st.markdown("""
+            Das Flag **„Als Kapitalanlage anlegen"** bewirkt, dass die Nettosumme einer
+            Einmalauszahlung nicht sofort ausgezahlt, sondern in einen internen
+            **Kapitalstock** (Pool) überführt wird.
+
+            **Mechanismus:**
+            1. Im Auszahlungsjahr wird Steuer und KV auf den Bruttobetrag berechnet.
+            2. Der verbleibende **Nettobetrag** fließt in den Pool.
+            3. Der Pool wächst jährlich mit der eingestellten Rendite.
+            4. Der Pool wird als **gleichmäßige Annuität** über den Planungshorizont verzehrt.
+            5. Der Gewinnanteil jeder Entnahme unterliegt der **Abgeltungsteuer** (25 %).
+
+            **Gewinnanteils-Tracking:**
+            > Gewinnanteil = max(0, (Pool − Kostenbasis) / Pool)
+
+            Die Kostenbasis (netto eingezahlter Betrag) sinkt mit jeder Tilgungsentnahme;
+            Renditegewinne des Pools erhöhen die Steuerlast entsprechend.
+
+            **Darstellung im Jahresverlauf:**
+            - `Src_Kapitalverzehr` (oliv) zeigt die jährliche Entnahme aus dem Pool.
+            - `Kap_Pool` in den Rohdaten zeigt den Poolwert am Jahresende.
+
+            **Bekannte Vereinfachung:**
+            Bei LV- und PrivateRente-Produkten werden die Gewinne im Auszahlungsjahr
+            bereits über das Halbeinkünfteverfahren oder die Abgeltungsteuer erfasst.
+            Der Pool behandelt das netto eingezahlte Kapital als vollständig versteuert;
+            **Pool-Renditegewinne werden beim Verzehr dennoch nochmals mit Abgeltungsteuer
+            belastet.** Dies führt zu einer konservativen (leicht zu hohen) Steuerbelastung
+            für LV/PrivateRente als Kapitalanlage. Für steuerfreie Altverträge (vor 2005)
+            tritt diese Doppelbelastung nicht auf (da die Erstgewinne steuerfrei waren).
+
+            **Empfehlung:** Das Feature eignet sich besonders für Produkte mit steuerfreier
+            oder niedrig besteuerter Erstentnahme (Altverträge, ETF-TF-Anteil), um eine
+            Steuerprogression durch große Einmalzahlungen zu glätten.
             """)
 
         # ── Mieteinnahmen ──────────────────────────────────────────────────────
@@ -471,6 +532,7 @@ def render(T: dict) -> None:
             - Keine Günstigerprüfung bei Kapitalerträgen
             - Abgeltungsteuer LV/PrivateRV: 25 % ohne Soli/KiSt
             - Kirchensteuer auf Abgeltungsteuer (Kapitalerträge) nicht berücksichtigt
+            - Kapitalanlage-Pool (LV/PrivateRente): Pool-Renditegewinne werden nochmals mit Abgeltungsteuer belastet (konservativ, s. Kapitalanlage-Pool-Expander)
             """)
         with col2:
             st.markdown("""

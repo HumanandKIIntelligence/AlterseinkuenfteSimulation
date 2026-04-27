@@ -1981,3 +1981,345 @@ class TestPVKinderstaffelung:
                         krankenversicherung="GKV", kvdr_pflicht=True)
         e_ref = berechne_rente(p_ref)
         assert e.kv_pv_monatlich == pytest.approx(e_ref.kv_pv_monatlich)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestEinzahlungenEffektiv – VorsorgeProdukt.einzahlungen_effektiv()
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEinzahlungenEffektiv:
+    """Tests für VorsorgeProdukt.einzahlungen_effektiv(startjahr).
+
+    Gesetzliche Grundlage: Kostenbasis für § 20 Abs. 1 Nr. 6 EStG (LV/PrivateRente),
+    § 20 InvStG (ETF). Beitragsbefreiungsleistungen bei BU-Ereignis gelten steuerlich
+    als weitere Einzahlungen des Versicherers (konservative Betrachtung).
+    """
+
+    def _prod(self, **kwargs) -> VorsorgeProdukt:
+        defaults = dict(
+            id="t", typ="LV", name="Test-LV", person="Person 1",
+            max_einmalzahlung=100_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0,
+            fruehestes_startjahr=AKTUELLES_JAHR + 5,
+            spaetestes_startjahr=AKTUELLES_JAHR + 10,
+            aufschub_rendite=0.0,
+            einzahlungen_gesamt=40_000.0,
+        )
+        defaults.update(kwargs)
+        return VorsorgeProdukt(**defaults)
+
+    def test_fallback_wenn_keine_jahrlichen_beitraege(self):
+        """Ohne jaehrl_einzahlung → einzahlungen_gesamt (Rückwärtskompatibilität)."""
+        p = self._prod(einzahlungen_gesamt=40_000.0, jaehrl_einzahlung=0.0)
+        assert p.einzahlungen_effektiv(AKTUELLES_JAHR + 5) == pytest.approx(40_000.0)
+        assert p.einzahlungen_effektiv(AKTUELLES_JAHR + 10) == pytest.approx(40_000.0)
+
+    def test_startjahr_gleich_aktuelles_jahr_keine_beitraege(self):
+        """Startjahr = AKTUELLES_JAHR → keine Beiträge werden addiert."""
+        p = self._prod(
+            einzel_einzahlung=10_000.0, jaehrl_einzahlung=1_200.0,
+            fruehestes_startjahr=AKTUELLES_JAHR,
+        )
+        assert p.einzahlungen_effektiv(AKTUELLES_JAHR) == pytest.approx(10_000.0)
+
+    def test_beitraege_akkumulieren_ueber_jahre(self):
+        """3 Jahre × 1.200 € → Gesamt = Einmal + 3 × Jahresbeitrag."""
+        p = self._prod(
+            einzel_einzahlung=10_000.0, jaehrl_einzahlung=1_200.0,
+            jaehrl_dynamik=0.0,
+            fruehestes_startjahr=AKTUELLES_JAHR + 3,
+        )
+        expected = 10_000.0 + 3 * 1_200.0
+        assert p.einzahlungen_effektiv(AKTUELLES_JAHR + 3) == pytest.approx(expected)
+
+    def test_jaehrliche_dynamik_kumulativ(self):
+        """Jährliche Dynamik 10 %: Beiträge steigen geometrisch."""
+        p = self._prod(
+            einzel_einzahlung=0.0, jaehrl_einzahlung=1_000.0,
+            jaehrl_dynamik=0.10,
+            fruehestes_startjahr=AKTUELLES_JAHR + 3,
+        )
+        # Jahr AKTUELLES_JAHR: +1000, Jahr+1: +1100, Jahr+2: +1210
+        expected = 1_000.0 + 1_100.0 + 1_210.0
+        assert p.einzahlungen_effektiv(AKTUELLES_JAHR + 3) == pytest.approx(expected, rel=1e-6)
+
+    def test_beitragsbefreiung_stoppt_akkumulation(self):
+        """Ab beitragsbefreiung_jahr werden keine weiteren Jahresbeiträge addiert."""
+        bb_j = AKTUELLES_JAHR + 2
+        p = self._prod(
+            einzel_einzahlung=5_000.0, jaehrl_einzahlung=1_000.0,
+            jaehrl_dynamik=0.0,
+            beitragsbefreiung_jahr=bb_j,
+            fruehestes_startjahr=AKTUELLES_JAHR + 5,
+        )
+        # Beiträge nur für Jahr AKTUELLES_JAHR und AKTUELLES_JAHR+1 (2 Jahre vor bb_j)
+        expected = 5_000.0 + 2 * 1_000.0
+        assert p.einzahlungen_effektiv(AKTUELLES_JAHR + 5) == pytest.approx(expected)
+
+    def test_beitragsbefreiung_null_bedeutet_kein_stop(self):
+        """beitragsbefreiung_jahr=0 → keine Unterbrechung der Beiträge."""
+        p = self._prod(
+            einzel_einzahlung=0.0, jaehrl_einzahlung=500.0,
+            jaehrl_dynamik=0.0,
+            beitragsbefreiung_jahr=0,
+            fruehestes_startjahr=AKTUELLES_JAHR + 4,
+        )
+        assert p.einzahlungen_effektiv(AKTUELLES_JAHR + 4) == pytest.approx(4 * 500.0)
+
+    def test_monoton_mit_laengerem_zeitraum(self):
+        """Mehr Jahre → höhere oder gleiche Gesamteinzahlungen."""
+        p = self._prod(
+            einzel_einzahlung=1_000.0, jaehrl_einzahlung=500.0,
+            jaehrl_dynamik=0.02,
+        )
+        prev = p.einzahlungen_effektiv(AKTUELLES_JAHR)
+        for j in range(1, 11):
+            curr = p.einzahlungen_effektiv(AKTUELLES_JAHR + j)
+            assert curr >= prev
+            prev = curr
+
+    def test_frueher_startjahr_weniger_einzahlungen(self):
+        """Frühere Auszahlung → niedrigere Kostenbasis (weniger Beiträge bis dahin)."""
+        p = self._prod(
+            einzel_einzahlung=5_000.0, jaehrl_einzahlung=600.0,
+            jaehrl_dynamik=0.0,
+        )
+        frueh = p.einzahlungen_effektiv(AKTUELLES_JAHR + 3)
+        spaet = p.einzahlungen_effektiv(AKTUELLES_JAHR + 8)
+        assert spaet > frueh
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestKapitalanlagePool – als_kapitalanlage und Kapitalverzehr-Logik
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestKapitalanlagePool:
+    """Tests für die Kapitalanlage-Pool-Logik in _netto_ueber_horizont.
+
+    Das Produkt-Flag als_kapitalanlage bewirkt, dass die Nettosumme
+    einer Einmalauszahlung in einen internen Kapitalstock fließt
+    (statt sofort ausgezahlt zu werden) und als Annuität verzehrt wird.
+    """
+
+    def _profil_rente(self, **kw):
+        defaults = dict(
+            geburtsjahr=1958,
+            renteneintritt_alter=67,
+            aktuelle_punkte=30.0,
+            punkte_pro_jahr=0.0,
+            zusatz_monatlich=0.0,
+            sparkapital=0.0,
+            sparrate=0.0,
+            rendite_pa=0.0,
+            rentenanpassung_pa=0.0,
+            krankenversicherung="GKV",
+            kvdr_pflicht=True,
+            kinder=True,
+            bereits_rentner=True,
+            rentenbeginn_jahr=2025,
+        )
+        defaults.update(kw)
+        return _profil(**defaults)
+
+    def _lv_prod(self, startjahr: int, als_kap: bool = False, **kw) -> VorsorgeProdukt:
+        defaults = dict(
+            id="lv", typ="LV", name="Test-LV", person="Person 1",
+            max_einmalzahlung=60_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0,
+            fruehestes_startjahr=startjahr,
+            spaetestes_startjahr=startjahr,
+            aufschub_rendite=0.0,
+            vertragsbeginn=2005,
+            einzahlungen_gesamt=50_000.0,
+            als_kapitalanlage=als_kap,
+        )
+        defaults.update(kw)
+        return VorsorgeProdukt(**defaults)
+
+    def test_kein_pool_ohne_flag(self):
+        """Ohne als_kapitalanlage: Src_Kapitalverzehr immer 0."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod = self._lv_prod(sj, als_kap=False)
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 10)
+        assert all(row["Src_Kapitalverzehr"] == 0 for row in jd)
+
+    def test_src_kapitalverzehr_vorhanden_im_jahresdaten(self):
+        """Src_Kapitalverzehr muss in jahresdaten enthalten sein."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 5)
+        assert "Src_Kapitalverzehr" in jd[0]
+
+    def test_kap_pool_vorhanden_im_jahresdaten(self):
+        """Kap_Pool muss in jahresdaten enthalten sein."""
+        p = self._profil_rente()
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 5)
+        assert "Kap_Pool" in jd[0]
+
+    def test_kein_verzehr_im_einzahlungsjahr(self):
+        """Im Injektionsjahr ist der Pool noch leer → kein Verzehr."""
+        p = self._profil_rente(rendite_pa=0.0)
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod = self._lv_prod(sj, als_kap=True)
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 5)
+        # Year 0 ist das Injektionsjahr
+        assert jd[0]["Src_Kapitalverzehr"] == 0
+
+    def test_verzehr_beginnt_im_folgejahr(self):
+        """Ab dem Jahr nach der Injektion setzt der Annuitäten-Verzehr ein."""
+        p = self._profil_rente(rendite_pa=0.0)
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod = self._lv_prod(sj, als_kap=True)
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 5)
+        assert jd[1]["Src_Kapitalverzehr"] > 0
+
+    def test_pool_positiv_nach_einzahlung(self):
+        """Kap_Pool muss nach dem Injektionsjahr positiv sein."""
+        p = self._profil_rente(rendite_pa=0.0)
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod = self._lv_prod(sj, als_kap=True)
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 5)
+        assert jd[0]["Kap_Pool"] > 0
+
+    def test_src_einmal_zeigt_keine_kapitalanlage(self):
+        """Src_Einmal muss im Injektionsjahr 0 sein (Pool-Einzahlung wird ausgeblendet)."""
+        p = self._profil_rente(rendite_pa=0.0)
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod = self._lv_prod(sj, als_kap=True)
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 5)
+        assert jd[0]["Src_Einmal"] == 0
+
+    def test_gesamtnetto_kapitalanlage_kleiner_oder_gleich_direkt(self):
+        """Kapitalanlage kann durch Steuer/KV-Glättung leicht anders sein.
+        Grundsatz: Kapitalanlage verteilt dieselben Mittel – ähnlich wie direktes Einkommen."""
+        p = self._profil_rente(rendite_pa=0.0)
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        prod_direkt = self._lv_prod(sj, als_kap=False)
+        prod_pool   = self._lv_prod(sj, als_kap=True)
+        total_direkt, _ = _netto_ueber_horizont(p, e, [(prod_direkt, sj, 1.0)], 10)
+        total_pool,   _ = _netto_ueber_horizont(p, e, [(prod_pool,   sj, 1.0)], 10)
+        # Pool-Variante verteilt Einkommen gleichmäßiger → Steuerglättung
+        # Beide müssen im selben Größenbereich liegen (±20 %)
+        assert abs(total_pool - total_direkt) / max(total_direkt, 1) < 0.20
+
+    def test_pool_wachst_mit_rendite(self):
+        """Pool mit Rendite > 0 → Kap_Pool wächst über die Jahre ohne weitere Einzahlung."""
+        p = self._profil_rente(rendite_pa=0.04)
+        e = berechne_rente(p)
+        sj = AKTUELLES_JAHR
+        # LV: altes Recht → steuerfrei (Altvertrag)
+        prod = VorsorgeProdukt(
+            id="lv_alt", typ="LV", name="LV-Alt", person="Person 1",
+            max_einmalzahlung=100_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0,
+            fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+            vertragsbeginn=1990,  # Altvertrag, steuerfrei
+            einzahlungen_gesamt=80_000.0,
+            als_kapitalanlage=True,
+        )
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 20)
+        # Nach Injektion: Pool in Jahr 1 (nach erster Rendite) > Pool in Jahr 0
+        # (Year 0 = Injektionsjahr; Year 1 = erste Rendite + erste Entnahme)
+        # Der Pool sollte anfangs durch Rendite mehr wachsen als durch Entnahme sinkt
+        assert jd[0]["Kap_Pool"] > 0
+        # Und Verzehr ist positiv in folgenden Jahren
+        assert jd[1]["Src_Kapitalverzehr"] > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestOptimiererReferenzStrategien – netto_alle_monatlich_spaet / einmal_spaet
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOptimiererReferenzStrategien:
+    """Tests für die neuen Referenzstrategien im Optimizer.
+
+    netto_alle_monatlich_spaet: alle Produkte monatlich, ab spätestem Startjahr
+    netto_alle_einmal_spaet:    alle Produkte als Einmal,  ab spätestem Startjahr
+    """
+
+    def _std_profil(self):
+        return _profil(
+            geburtsjahr=1958, renteneintritt_alter=67,
+            aktuelle_punkte=30.0, punkte_pro_jahr=0.0,
+            zusatz_monatlich=0.0, sparkapital=0.0, sparrate=0.0,
+            rendite_pa=0.03, rentenanpassung_pa=0.01,
+        )
+
+    def _bav_fix(self, startjahr: int) -> VorsorgeProdukt:
+        return VorsorgeProdukt(
+            id="bav1", typ="bAV", name="bAV-Test", person="Person 1",
+            max_einmalzahlung=30_000.0, max_monatsrente=400.0,
+            laufzeit_jahre=0,
+            fruehestes_startjahr=startjahr, spaetestes_startjahr=startjahr,
+            aufschub_rendite=0.0,
+        )
+
+    def _bav_range(self, frueh: int, spaet: int) -> VorsorgeProdukt:
+        return VorsorgeProdukt(
+            id="bav2", typ="bAV", name="bAV-Range", person="Person 1",
+            max_einmalzahlung=30_000.0, max_monatsrente=400.0,
+            laufzeit_jahre=0,
+            fruehestes_startjahr=frueh, spaetestes_startjahr=spaet,
+            aufschub_rendite=0.02,
+        )
+
+    def test_schluessel_vorhanden(self):
+        """Optimizer-Ergebnis enthält netto_alle_monatlich_spaet und _einmal_spaet."""
+        p = self._std_profil()
+        e = berechne_rente(p)
+        prod = self._bav_fix(p.eintritt_jahr)
+        opt = optimiere_auszahlungen(p, e, [prod], horizont_jahre=10)
+        assert "netto_alle_monatlich_spaet" in opt
+        assert "netto_alle_einmal_spaet" in opt
+
+    def test_gleich_wenn_startjahr_fix(self):
+        """fruehestes == spaetestes → spaet-Variante identisch mit frueh-Variante."""
+        p = self._std_profil()
+        e = berechne_rente(p)
+        prod = self._bav_fix(p.eintritt_jahr)
+        opt = optimiere_auszahlungen(p, e, [prod], horizont_jahre=10)
+        assert opt["netto_alle_monatlich_spaet"] == pytest.approx(opt["netto_alle_monatlich"])
+        assert opt["netto_alle_einmal_spaet"]    == pytest.approx(opt["netto_alle_einmal"])
+
+    def test_unterschiedlich_wenn_startjahr_range(self):
+        """fruehestes ≠ spaetestes und aufschub_rendite > 0 → spaet-Wert weicht ab."""
+        p = self._std_profil()
+        e = berechne_rente(p)
+        frueh = p.eintritt_jahr
+        spaet = frueh + 4
+        prod = self._bav_range(frueh, spaet)
+        opt = optimiere_auszahlungen(p, e, [prod], horizont_jahre=15)
+        # Aufschub erhöht Rente/Einmalbetrag, aber verkürzt die Auszahlungszeit
+        # → Werte müssen sich unterscheiden
+        assert opt["netto_alle_monatlich_spaet"] != pytest.approx(opt["netto_alle_monatlich"])
+
+    def test_optimal_groesser_gleich_alle_referenzen(self):
+        """Optimales Ergebnis ≥ alle vier Referenzstrategien."""
+        p = self._std_profil()
+        e = berechne_rente(p)
+        prod = self._bav_range(p.eintritt_jahr, p.eintritt_jahr + 3)
+        opt = optimiere_auszahlungen(p, e, [prod], horizont_jahre=15)
+        best = opt["bestes_netto"]
+        for key in ["netto_alle_monatlich", "netto_alle_einmal",
+                    "netto_alle_monatlich_spaet", "netto_alle_einmal_spaet"]:
+            assert best >= opt[key] - 1.0, f"bestes_netto < {key}"
+
+    def test_werte_endlich_und_positiv(self):
+        """Alle Referenzstrategien müssen endliche, positive Werte liefern."""
+        p = self._std_profil()
+        e = berechne_rente(p)
+        prod = self._bav_range(p.eintritt_jahr, p.eintritt_jahr + 5)
+        opt = optimiere_auszahlungen(p, e, [prod], horizont_jahre=20)
+        for key in ["netto_alle_monatlich_spaet", "netto_alle_einmal_spaet"]:
+            val = opt[key]
+            assert math.isfinite(val)
+            assert val > 0

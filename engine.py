@@ -539,6 +539,12 @@ class VorsorgeProdukt:
     # Relevant für freiwillig GKV-Versicherte: zählen zur beitragspflichtigen Bemessungsgrundlage
     # Abgeltungsteuer wird darauf berechnet (Sparerpauschbetrag berücksichtigt)
     laufende_kapitalertraege_mono: float = 0.0
+    # Einzahlungsfelder zur automatischen Berechnung der Gesamteinzahlungen
+    einzel_einzahlung: float = 0.0      # Summe geleisteter Einmalzahlungen (Kostenbasis)
+    jaehrl_einzahlung: float = 0.0      # Laufender Jahresbeitrag ab AKTUELLES_JAHR
+    jaehrl_dynamik: float = 0.0         # Jährl. Beitragssteigerung (z.B. 0.02 = 2 %)
+    beitragsbefreiung_jahr: int = 0     # Ab diesem Jahr keine Beiträge mehr (0 = nie)
+    als_kapitalanlage: bool = False     # Einmalauszahlung → Kapitalanlage-Pool statt Einkommen
 
     @property
     def ist_lebensversicherung(self) -> bool:
@@ -548,6 +554,23 @@ class VorsorgeProdukt:
     def ist_nur_monatsrente(self) -> bool:
         """Rürup/Basisrente: kein Kapitalwahlrecht (§ 10 Abs. 1 Nr. 2b EStG)."""
         return self.typ == "Rürup"
+
+    def einzahlungen_effektiv(self, startjahr: int) -> float:
+        """Gesamteinzahlungen bis startjahr (Kostenbasis für Ertragsberechnung).
+
+        Verwendet die laufenden Beitragsfelder wenn jaehrl_einzahlung > 0,
+        sonst Fallback auf einzahlungen_gesamt (Rückwärtskompatibilität).
+        """
+        if self.jaehrl_einzahlung <= 0:
+            return self.einzahlungen_gesamt
+        total = self.einzel_einzahlung
+        beitrag = self.jaehrl_einzahlung
+        for j in range(AKTUELLES_JAHR, startjahr):
+            if self.beitragsbefreiung_jahr > 0 and j >= self.beitragsbefreiung_jahr:
+                break
+            total += beitrag
+            beitrag *= (1 + self.jaehrl_dynamik)
+        return total
 
 
 def _annuitaet(kapital: float, rendite_pa: float, jahre: int) -> float:
@@ -716,6 +739,9 @@ def _netto_ueber_horizont(
 
     total_netto = 0.0
     jahresdaten: list[dict] = []
+    # Kapitalanlage-Pool: sammelt Netto-Auszahlungen von als_kapitalanlage-Produkten
+    _kap_pool: float = 0.0   # aktueller Poolwert
+    _kap_basis: float = 0.0  # Kostenbasis (eingezahlte Nettosumme)
 
     for y in range(_gesamt_jahre):
         jahr = _sim_start + y
@@ -794,6 +820,19 @@ def _netto_ueber_horizont(
             if hat_partner and p.person == "Person 2"
         )
 
+        # ── Kapitalanlage-Pool: Entnahme-Annuität (Jahresbeginn, vor Produkt-Loop) ──
+        kap_verzehr_j = 0.0
+        kap_verzehr_gains_j = 0.0
+        if _kap_pool > 0.0:
+            _remaining = _gesamt_jahre - y
+            if _remaining > 0:
+                kap_verzehr_j = _annuitaet(_kap_pool, profil.rendite_pa, _remaining) * 12
+                _gains_ratio = max(0.0, (_kap_pool - _kap_basis) / _kap_pool)
+                kap_verzehr_gains_j = kap_verzehr_j * _gains_ratio
+                _kap_basis = max(0.0, _kap_basis - (kap_verzehr_j - kap_verzehr_gains_j))
+        lfd_kap_j += kap_verzehr_gains_j   # Gewinne → Abgeltungsteuer-Pool
+        kap_injection_gross_j = 0.0        # Tracker für Kapitalanlage-Einzahlungen
+
         for prod, startjahr, anteil in entscheidungen:
             if jahr < startjahr:
                 continue
@@ -809,10 +848,13 @@ def _netto_ueber_horizont(
             # ── Einmalauszahlung ──────────────────────────────────────────────
             if anteil > 0:
                 betrag = einmal_wert * anteil
+                _einz_eff = prod.einzahlungen_effektiv(startjahr)
                 if jahr == startjahr:
+                    if prod.als_kapitalanlage:
+                        kap_injection_gross_j += betrag
                     if ist_etf:
                         gain_ratio = (
-                            max(0.0, 1.0 - prod.einzahlungen_gesamt / einmal_wert)
+                            max(0.0, 1.0 - _einz_eff / einmal_wert)
                             if einmal_wert > 0 else 0.0
                         )
                         _abgelt = betrag * gain_ratio * (1.0 - prod.teilfreistellung)
@@ -836,7 +878,7 @@ def _netto_ueber_horizont(
                             else: einmal_progr_j += _bp
                         else:
                             # LV / PrivateRente: § 20 Abs. 1 Nr. 6 EStG
-                            ertrag = max(0.0, betrag - prod.einzahlungen_gesamt * anteil)
+                            ertrag = max(0.0, betrag - _einz_eff * anteil)
                             if prod.vertragsbeginn < 2005:
                                 pass                           # Altvertrag: steuerfrei
                             else:
@@ -1019,11 +1061,26 @@ def _netto_ueber_horizont(
             gesetzl_j + bav_lfd_j + riester_lfd_j
             + ruerup_brutto_j + priv_brutto_j
             + einmal_brutto_j + etf_brutto_j + miet_j
+            + kap_verzehr_j                 # Kapitalanlage-Pool-Entnahme
             + p2_brutto_j   # P2-Rente/Pension (Basis)
             + p2_bav_lfd_j + p2_riester_j + p2_ruerup_brutto_j + p2_priv_brutto_j
             + p2_einmal_brutto_j + p2_etf_brutto_j
         )
         netto = brutto - steuer - kv
+
+        # ── Kapitalanlage-Pool-Einzahlung: Netto-Anteil aus der Auszahlung umleiten ──
+        # Steuer + KV auf die Einzahlung sind bereits in obiger steuer/kv-Berechnung
+        # enthalten. Der verbleibende Nettobetrag wird in den Pool verschoben.
+        kap_net_inj_j = 0.0
+        if kap_injection_gross_j > 0 and brutto > 0:
+            _eff_net = max(0.0, netto / brutto)
+            kap_net_inj_j = kap_injection_gross_j * _eff_net
+            netto -= kap_net_inj_j   # nicht zum Ausgeben, geht in Pool
+            brutto -= kap_injection_gross_j  # Anzeige: keine Doppelzählung
+        # Pool-Update: Entnahme + Rendite + neue Einzahlung
+        _kap_pool = max(0.0, _kap_pool - kap_verzehr_j) * (1.0 + profil.rendite_pa) + kap_net_inj_j
+        _kap_basis += kap_net_inj_j
+
         total_netto += netto
         zvE_display = zvE_p1 + (p2_zvE_j if zusammen else 0.0)
         jahresdaten.append({
@@ -1034,15 +1091,18 @@ def _netto_ueber_horizont(
             "KV_P1": round(kv_p1),
             "KV_P2": round(p2_kv_j),
             "Netto": round(netto),
-            "Src_Gehalt":     round(gesetzl_j if not in_rente else 0.0),
-            "Src_GesRente":   round(gesetzl_j if in_rente else 0.0),
-            "Src_P2_Rente":   round(p2_brutto_j),
-            "Src_Versorgung": round(bav_lfd_j + riester_lfd_j + ruerup_brutto_j + priv_brutto_j
-                                    + p2_bav_lfd_j + p2_riester_j + p2_ruerup_brutto_j + p2_priv_brutto_j),
-            "Src_Einmal":     round(einmal_brutto_j + etf_brutto_j
-                                    + p2_einmal_brutto_j + p2_etf_brutto_j),
-            "Src_Miete":      round(miet_j),
-            "zvE":            round(zvE_display),
+            "Src_Gehalt":       round(gesetzl_j if not in_rente else 0.0),
+            "Src_GesRente":     round(gesetzl_j if in_rente else 0.0),
+            "Src_P2_Rente":     round(p2_brutto_j),
+            "Src_Versorgung":   round(bav_lfd_j + riester_lfd_j + ruerup_brutto_j + priv_brutto_j
+                                      + p2_bav_lfd_j + p2_riester_j + p2_ruerup_brutto_j + p2_priv_brutto_j),
+            "Src_Einmal":       round(einmal_brutto_j + etf_brutto_j
+                                      + p2_einmal_brutto_j + p2_etf_brutto_j
+                                      - kap_injection_gross_j),  # Kapitalanlage-Einzahlung ausblenden
+            "Src_Kapitalverzehr": round(kap_verzehr_j),
+            "Kap_Pool":         round(_kap_pool),
+            "Src_Miete":        round(miet_j),
+            "zvE":              round(zvE_display),
             "Steuer_Progressiv": round(steuer_progr),
             "Steuer_Abgeltung":  round(steuer_abgelt),
         })

@@ -115,6 +115,16 @@ def _migriere(p: dict) -> dict:
         p["startjahr_fix"] = False
     if "laufende_kapitalertraege_mono" not in p:
         p["laufende_kapitalertraege_mono"] = 0.0
+    if "einzel_einzahlung" not in p:
+        p["einzel_einzahlung"] = p.get("einzahlungen_gesamt", 0.0)
+    if "jaehrl_einzahlung" not in p:
+        p["jaehrl_einzahlung"] = 0.0
+    if "jaehrl_dynamik" not in p:
+        p["jaehrl_dynamik"] = 0.0
+    if "beitragsbefreiung_jahr" not in p:
+        p["beitragsbefreiung_jahr"] = 0
+    if "als_kapitalanlage" not in p:
+        p["als_kapitalanlage"] = False
     return p
 
 
@@ -129,10 +139,15 @@ def _aus_dict(d: dict) -> VorsorgeProdukt:
         spaetestes_startjahr=d["spaetestes_startjahr"],
         aufschub_rendite=d["aufschub_rendite"],
         vertragsbeginn=d["vertragsbeginn"],
-        einzahlungen_gesamt=d["einzahlungen_gesamt"],
+        einzahlungen_gesamt=d.get("einzel_einzahlung", d.get("einzahlungen_gesamt", 0.0)),
         teilfreistellung=d["teilfreistellung"],
         erzwungener_anteil=d.get("erzwungener_anteil"),
         laufende_kapitalertraege_mono=d.get("laufende_kapitalertraege_mono", 0.0),
+        einzel_einzahlung=d.get("einzel_einzahlung", 0.0),
+        jaehrl_einzahlung=d.get("jaehrl_einzahlung", 0.0),
+        jaehrl_dynamik=d.get("jaehrl_dynamik", 0.0),
+        beitragsbefreiung_jahr=d.get("beitragsbefreiung_jahr", 0),
+        als_kapitalanlage=d.get("als_kapitalanlage", False),
     )
 
 
@@ -212,21 +227,9 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
                 key=f"ve_vbeg_{pid}",
                 help="Vor 2005 = Altvertrag (steuerfrei); ab 2005 = § 20 Abs. 1 Nr. 6 EStG.",
             ))
-            new_einz = float(st.number_input(
-                "Gesamte Einzahlungen (€)", 0.0, 2_000_000.0,
-                value=float(p.get("einzahlungen_gesamt", 0.0)), step=500.0,
-                key=f"ve_einz_{pid}",
-                help="Summe aller eingezahlten Beiträge.",
-            ))
             new_tf = float(p.get("teilfreistellung", 0.30))
         elif typ_key == "ETF":
             new_vbeg = int(p.get("vertragsbeginn", _AJ))
-            new_einz = float(st.number_input(
-                "Eingezahltes Kapital (€)", 0.0, 2_000_000.0,
-                value=float(p.get("einzahlungen_gesamt", 0.0)), step=500.0,
-                key=f"ve_einz_{pid}",
-                help="Kaufkostenanteil; nur Kursgewinn ist steuerpflichtig.",
-            ))
             cur_tf = float(p.get("teilfreistellung", 0.30))
             tf_default = min(_TF_OPTS, key=lambda k: abs(_TF_OPTS[k] - cur_tf))
             tf_label = st.selectbox(
@@ -237,8 +240,64 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
             new_tf = _TF_OPTS[tf_label]
         else:
             new_vbeg = int(p.get("vertragsbeginn", 2010))
-            new_einz = float(p.get("einzahlungen_gesamt", 0.0))
             new_tf = float(p.get("teilfreistellung", 0.30))
+
+        # ── Einzahlungsfelder ─────────────────────────────────────────────────
+        st.markdown("**Einzahlungen**")
+        new_einzel_einz = float(st.number_input(
+            "Summe Einmaleinzahlungen (€)", 0.0, 2_000_000.0,
+            value=float(p.get("einzel_einzahlung", p.get("einzahlungen_gesamt", 0.0))),
+            step=500.0, key=f"ve_einzel_{pid}",
+            help="Summe aller geleisteten Einmaleinzahlungen (Kostenbasis für Steuerberechnung). "
+                 "Ersetzt das frühere Feld 'Gesamte Einzahlungen'.",
+        ))
+        new_jaehrl_einz = float(st.number_input(
+            "Jährl. Einzahlung (€/Jahr)", 0.0, 100_000.0,
+            value=float(p.get("jaehrl_einzahlung", 0.0)),
+            step=100.0, key=f"ve_jaehrl_{pid}",
+            help="Laufender Jahresbeitrag ab heute bis zum Auszahlungsjahr. "
+                 "Wird mit Dynamik jährlich gesteigert und zur Kostenbasis addiert.",
+        ))
+        new_jaehrl_dyn = float(st.number_input(
+            "Jährl. Dynamik (%)", 0.0, 10.0,
+            value=round(float(p.get("jaehrl_dynamik", 0.0)) * 100, 2),
+            step=0.5, key=f"ve_dynamik_{pid}",
+            help="Jährliche Beitragssteigerung in %. Typisch: 2–3 % für Inflation.",
+        )) / 100
+        new_bb_jahr = int(st.number_input(
+            "Jahr Beitragsbefreiung (0 = keine)", 0, _AJ + 50,
+            value=int(p.get("beitragsbefreiung_jahr", 0)),
+            step=1, key=f"ve_bbj_{pid}",
+            help="Ab diesem Jahr werden keine laufenden Beiträge mehr gezählt "
+                 "(z. B. bei BU-Schutz zahlt die Versicherung). "
+                 "Die von der Versicherung übernommenen Beiträge gelten steuerlich "
+                 "als weitere Einzahlungen (§ 10 EStG, konservative Betrachtung).",
+        ))
+
+        # Berechnete Gesamteinzahlungen als Info anzeigen
+        if new_jaehrl_einz > 0:
+            _frueh_disp = max(_AJ, int(p.get("fruehestes_startjahr", _AJ)))
+            _spaet_disp = max(_frueh_disp, int(p.get("spaetestes_startjahr", _frueh_disp)))
+
+            def _eff_einz(startjahr: int) -> float:
+                tot = new_einzel_einz
+                bei = new_jaehrl_einz
+                for _j in range(_AJ, startjahr):
+                    if new_bb_jahr > 0 and _j >= new_bb_jahr:
+                        break
+                    tot += bei
+                    bei *= (1 + new_jaehrl_dyn)
+                return tot
+
+            _eff_f = _eff_einz(_frueh_disp)
+            _eff_s = _eff_einz(_spaet_disp)
+            if _frueh_disp == _spaet_disp:
+                st.caption(f"Gesamteinzahlungen bei Start {_frueh_disp}: **{_de(_eff_f)} €**")
+            else:
+                st.caption(
+                    f"Gesamteinzahlungen: **{_de(_eff_f)} €** (Start {_frueh_disp}) "
+                    f"– **{_de(_eff_s)} €** (Start {_spaet_disp})"
+                )
 
     with ec3:
         fix_jahr = st.checkbox(
@@ -304,6 +363,20 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
                  "Relevant für freiwillig GKV-Versicherte: zählen zur KV-Bemessungsgrundlage.",
         ))
 
+        # Als Kapitalanlage: nur wenn Einmalauszahlung möglich
+        if not nur_mono_typ:
+            new_als_ka = st.checkbox(
+                "Als Kapitalanlage anlegen",
+                value=bool(p.get("als_kapitalanlage", False)),
+                key=f"ve_alskapanlage_{pid}",
+                help="Einmalauszahlung wird nicht sofort als Einkommen ausgezahlt, sondern "
+                     "in den internen Kapitalstock investiert. Der Pool wächst mit der "
+                     "eingestellten Rendite und wird gleichmäßig als Annuität über den "
+                     "Planungshorizont verzehrt. Steuer und KV werden dabei berücksichtigt.",
+            )
+        else:
+            new_als_ka = False
+
     return {
         **p,
         "name": new_name.strip() or p["name"],
@@ -316,10 +389,15 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
         "startjahr_fix": fix_jahr,
         "aufschub_rendite": new_aufschub,
         "vertragsbeginn": new_vbeg,
-        "einzahlungen_gesamt": new_einz,
+        "einzahlungen_gesamt": new_einzel_einz,  # backward compat
         "teilfreistellung": new_tf,
         "erzwungener_anteil": new_anteil,
         "laufende_kapitalertraege_mono": new_lfd_kap,
+        "einzel_einzahlung": new_einzel_einz,
+        "jaehrl_einzahlung": new_jaehrl_einz,
+        "jaehrl_dynamik": new_jaehrl_dyn,
+        "beitragsbefreiung_jahr": new_bb_jahr,
+        "als_kapitalanlage": new_als_ka,
     }
 
 

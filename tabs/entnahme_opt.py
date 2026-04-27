@@ -638,12 +638,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         fig_src = go.Figure()
         src_cols = [
-            ("Src_Gehalt",     "Bruttogehalt (aktiv)",    "#78909C", None),
-            ("Src_GesRente",   "Gesetzl. Rente P1",       "#4CAF50", None),
-            ("Src_P2_Rente",   "Gesetzl. Rente P2",       "#81C784", None),
-            ("Src_Versorgung", "Betriebliche Versorgung", "#2196F3", _cd_versorg),
-            ("Src_Einmal",     "Einmalauszahlungen",      "#FF9800", _cd_einmal),
-            ("Src_Miete",      "Mieteinnahmen",           "#9C27B0", None),
+            ("Src_Gehalt",       "Bruttogehalt (aktiv)",    "#78909C", None),
+            ("Src_GesRente",     "Gesetzl. Rente P1",       "#4CAF50", None),
+            ("Src_P2_Rente",     "Gesetzl. Rente P2",       "#81C784", None),
+            ("Src_Versorgung",   "Betriebliche Versorgung", "#2196F3", _cd_versorg),
+            ("Src_Einmal",       "Einmalauszahlungen",      "#FF9800", _cd_einmal),
+            ("Src_Kapitalverzehr", "Kapitalverzehr (Pool)", "#9E9D24", None),
+            ("Src_Miete",        "Mieteinnahmen",           "#9C27B0", None),
         ]
         for col, label, color, customdata in src_cols:
             if col in df_jd.columns and df_jd[col].sum() > 0:
