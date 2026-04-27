@@ -62,6 +62,10 @@ docker exec altereinkuenfte-app pip install pytest -q
 | `TestEtfAusschuettend` | etf_ausschuettend=True: keine Teilfreistellung, Abgeltungsteuer auf vollen Betrag |
 | `TestProfilNeueFelder` | grundfreibetrag_wachstum_pa, kap_pool_rendite_pa: Defaults, GFB-Wachstum senkt Steuer, Pool-Rendite überschreibt Profil-Rendite |
 | `TestOptimiererReferenzStrategien` | netto_alle_monatlich_spaet / einmal_spaet: Schlüssel, Gleichheit bei fix, Unterschied bei Range, optimal ≥ alle Referenzen |
+| `TestP2RentenEintritt` | P2-Einkommen = 0 vor P2 eintritt_jahr; Brutto-Sprung bei P2-Eintritt; gleichzeitig ab Jahr 0 |
+| `TestGetrenntSteuer` | Getrennt-Netto = P1_solo + P2_solo; nicht inflationiert durch fehlende P2-Steuer; Zusammen > Getrennt bei ungleichem Einkommen |
+| `TestKapFehlbetrag` | Kein Fehlbetrag ohne Pool (0 statt Sonderausgabe); direkter Netto-Abzug bleibt; Fehlbetrag gesetzt wenn Pool unzureichend |
+| `TestVorsorgeBeitraege` | jaehrl_einzahlung → Vorsorge_Beitraege pro Jahr; Netto-Differenz exakt; Beitragsbefreiung stoppt Abzug; einzel_einzahlung kein laufender Abzug |
 
 ---
 
@@ -223,11 +227,41 @@ Wenn `gehalt_monatlich > 0` und nicht `bereits_rentner`:
 - `Src_Gehalt` in jahresdaten = Bruttogehalt in Arbeitsjahren, 0 in Rentenjahren
 - Gesamtlänge jahresdaten = `max(0, eintritt_jahr - AKTUELLES_JAHR) + horizont_jahre`
 
+## Person 2 Renteneintritt (`_netto_ueber_horizont`)
+
+P2-Einkommen (Rente/Pension + Produkte) erscheint erst ab `profil2.eintritt_jahr`:
+```python
+_p2_in_rente = profil2.bereits_rentner or (jahr >= profil2.eintritt_jahr)
+_r2_y        = max(0, jahr - _p2_eintritt) if _p2_in_rente else 0
+p2_fak       = (1 + p2_anp) ** _r2_y if _p2_in_rente else 0.0
+```
+Vor `eintritt_jahr`: `p2_fak = 0` → P2-Brutto, P2-zvE, P2-KV alle = 0. Getrennte Jahresoffsets für Rentenanpassung (P1 nutzt `_r_y`, P2 nutzt `_r2_y`).
+
+## Getrenntveranlagung mit Partner (`_netto_ueber_horizont`)
+
+Für `veranlagung="Getrennt"` mit `hat_partner=True` werden P1 und P2 **einzeln veranlagt** (§ 25 EStG):
+- `_est_p1 = einkommensteuer(zvE_p1)`, `_est_p2 = einkommensteuer(p2_zvE_j)`
+- `steuer_progr = _est_p1 + _est_p2`
+- Soli je separat: `solidaritaetszuschlag(_est_p1) + solidaritaetszuschlag(_est_p2)`
+- Invariante: `netto_Getrennt ≈ netto_P1_solo + netto_P2_solo`
+
+## Vorsorge-Beiträge (`_netto_ueber_horizont`)
+
+`jaehrl_einzahlung` reduziert das Netto während der Beitragsphase (`jahr < startjahr`):
+```python
+_beitrag = prod.jaehrl_einzahlung * (1.0 + prod.jaehrl_dynamik) ** max(0, jahr - AKTUELLES_JAHR)
+if prod.beitragsbefreiung_jahr <= 0 or jahr < prod.beitragsbefreiung_jahr:
+    vorsorge_beitraege_j += _beitrag
+netto -= vorsorge_beitraege_j
+```
+`einzel_einzahlung` (bereits geleistete Einmalzahlung) erzeugt keinen laufenden Abzug – nur Kostenbasis für Steuerberechnung. Jahresdaten-Feld: `Vorsorge_Beitraege`.
+
 ## Ausgaben-Plan / Hypothek (`_netto_ueber_horizont`)
 
 `ausgaben_plan: dict[int, float]` – optionaler Parameter; Keys = Jahre, Values = Jahresausgaben.
 
-- **Kapitalanlage-Pool first:** Im jeweiligen Jahr wird zunächst aus dem Pool entnommen; Fehlbetrag reduziert `netto`.
+- **Kapitalanlage-Pool first:** Im jeweiligen Jahr wird zunächst aus dem Pool entnommen; Restbetrag reduziert `netto`.
+- **`Kap_Fehlbetrag`**: Nur > 0 wenn ein `als_kapitalanlage`-Pool konfiguriert war und nicht ausgereicht hat. Ohne Pool = 0 (direkte Netto-Kürzung, kein Warnsignal).
 - **Herkunft:** `tabs/hypothek.get_ausgaben_plan()` – erzeugt den Plan aus `raten_in_simulation` (laufende Raten) und/oder Restschuld-Behandlung.
 - **`raten_in_simulation`** (bool, default False): Bezieht die Hypothek-Jahresraten ins Ausgaben-Plan ein, sodass sie im Jahresverlauf der Entnahme-Optimierung sichtbar sind.
 
@@ -265,6 +299,8 @@ _ka_prods:  list[VorsorgeProdukt]  # alle als_kapitalanlage-Produkte
 - **Rückwärtskompatibilität:** `Src_Kapitalverzehr` und `Kap_Pool` (aggregiert) bleiben erhalten.
 - **`Kap_Injektion`** (int): Netto-Injektionsbetrag ins Kapitalanlage-Pool im Injektionsjahr; für Annotations in `entnahme_opt.py`.
 - **`LHK`** (int): Jährliche Lebenshaltungskosten (`profil.lebenshaltungskosten_monatlich × 12`); bereits im Netto abgezogen.
+- **`Vorsorge_Beitraege`** (int): Summe laufender Jahresbeiträge (`jaehrl_einzahlung`) aller Produkte in Beitragsphase (`jahr < startjahr`); im Netto abgezogen. Null wenn kein laufender Beitrag.
+- **`Kap_Fehlbetrag`** (int): Pool-Warnsignal – nur > 0 wenn `als_kapitalanlage`-Pool konfiguriert war aber nicht ausgereicht hat. Ohne Pool = 0 (Sonderausgabe trotzdem direkt von Netto abgezogen).
 - **Bekannte Vereinfachung:** Pool-Renditegewinne werden nochmals mit Abgeltungsteuer belastet (konservativ).
 
 ## Optimizer – Referenzstrategien

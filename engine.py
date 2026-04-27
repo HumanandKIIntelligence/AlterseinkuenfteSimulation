@@ -843,12 +843,19 @@ def _netto_ueber_horizont(
 
         miet_j = mieteinnahmen_monatlich * 12 * (1 + mietsteigerung_pa) ** y
 
-        # Person 2: wächst ab Renteneintritt (Basis GRV/Pension)
-        p2_fak             = (1 + p2_anp) ** _r_y
-        p2_zvE_j           = p2_zvE_0      * p2_fak
+        # Person 2: Renteneinkommen erst ab P2-Renteneintritt (eigener Jahresoffset)
+        if hat_partner:
+            _p2_eintritt     = profil2.rentenbeginn_jahr if profil2.bereits_rentner else profil2.eintritt_jahr
+            _p2_in_rente     = profil2.bereits_rentner or (jahr >= profil2.eintritt_jahr)
+            _r2_y            = max(0, jahr - _p2_eintritt) if _p2_in_rente else 0
+            p2_fak           = (1 + p2_anp) ** _r2_y if _p2_in_rente else 0.0
+        else:
+            _p2_in_rente     = False
+            p2_fak           = 0.0
+        p2_zvE_j            = p2_zvE_0        * p2_fak
         p2_gesetzl_mono_fak = p2_gesetzl_mono0 * p2_fak
-        p2_brutto_j        = p2_brutto_mo0 * 12 * p2_fak
-        p2_kv_j            = 0.0   # dynamisch nach Produkt-Loop berechnet
+        p2_brutto_j         = p2_brutto_mo0   * 12 * p2_fak
+        p2_kv_j             = 0.0   # dynamisch nach Produkt-Loop berechnet
 
         # Mieteinnahmen-Anteil für P1-Steuer:
         # Getrenntveranlagung mit Partner → 50/50; sonst voller Betrag
@@ -930,8 +937,15 @@ def _netto_ueber_horizont(
                   if profil.grundfreibetrag_wachstum_pa > 0.0
                   else None)
 
+        vorsorge_beitraege_j = 0.0
         for prod, startjahr, anteil in entscheidungen:
             if jahr < startjahr:
+                # Beitragsphase: laufende Jahresbeiträge als Ausgabe erfassen
+                if prod.jaehrl_einzahlung > 0.0:
+                    _yrs = max(0, jahr - AKTUELLES_JAHR)
+                    _beitrag = prod.jaehrl_einzahlung * (1.0 + prod.jaehrl_dynamik) ** _yrs
+                    if prod.beitragsbefreiung_jahr <= 0 or jahr < prod.beitragsbefreiung_jahr:
+                        vorsorge_beitraege_j += _beitrag
                 continue
             einmal_wert, mono_wert = _wert_bei_start(prod, startjahr)
             ist_bav     = prod.typ == "bAV"
@@ -1104,21 +1118,32 @@ def _netto_ueber_horizont(
         steuer_abgelt = max(0.0, abgelt_pool - _spe) * 0.25
         if zusammen:
             steuer_progr = einkommensteuer_splitting(zvE_p1 + p2_zvE_j, _gfb_y)
-        else:
-            steuer_progr = einkommensteuer(zvE_p1, _gfb_y)
-        _soli_j = solidaritaetszuschlag(steuer_progr)
-        steuer = steuer_progr + _soli_j + steuer_abgelt
-        # Kirchensteuer § 51a EStG (auf die progressive Einkommensteuer)
-        if zusammen:
-            # Splitting: KiSt je Ehegatte auf die ihm zuzurechnende Hälfte
+            _soli_j = solidaritaetszuschlag(steuer_progr)
             _kist = 0.0
             if profil.kirchensteuer:
                 _kist += profil.kirchensteuer_satz * steuer_progr * 0.5
             if profil2 is not None and profil2.kirchensteuer:
                 _kist += profil2.kirchensteuer_satz * steuer_progr * 0.5
-            steuer += _kist
-        elif profil.kirchensteuer:
-            steuer += profil.kirchensteuer_satz * steuer_progr
+        elif hat_partner:
+            # Getrenntveranlagung mit Partner: jede Person einzeln veranlagt (§ 25 EStG)
+            _gfb_p2_y = (GRUNDFREIBETRAG_2024
+                         * (1.0 + profil2.grundfreibetrag_wachstum_pa) ** y
+                         if profil2.grundfreibetrag_wachstum_pa > 0.0
+                         else None)
+            _est_p1 = einkommensteuer(zvE_p1, _gfb_y)
+            _est_p2 = einkommensteuer(max(0.0, p2_zvE_j), _gfb_p2_y)
+            steuer_progr = _est_p1 + _est_p2
+            _soli_j = solidaritaetszuschlag(_est_p1) + solidaritaetszuschlag(_est_p2)
+            _kist = 0.0
+            if profil.kirchensteuer:
+                _kist += profil.kirchensteuer_satz * _est_p1
+            if profil2 is not None and profil2.kirchensteuer:
+                _kist += profil2.kirchensteuer_satz * _est_p2
+        else:
+            steuer_progr = einkommensteuer(zvE_p1, _gfb_y)
+            _soli_j = solidaritaetszuschlag(steuer_progr)
+            _kist = profil.kirchensteuer_satz * steuer_progr if profil.kirchensteuer else 0.0
+        steuer = steuer_progr + _soli_j + steuer_abgelt + _kist
 
         # ── KV / PV ───────────────────────────────────────────────────────────
         if ist_pkv:
@@ -1211,8 +1236,13 @@ def _netto_ueber_horizont(
                     _kap_pools[_pid] = max(0.0, _pool_val - _this_tilg)
                     kap_tilgung_sonder_j += _this_tilg
                     _noch_zu_tilgen -= _this_tilg
-            fehlbetrag_j = max(0.0, _noch_zu_tilgen)
-            netto -= fehlbetrag_j
+            # Fehlbetrag: nur als Warnsignal setzen wenn ein Pool konfiguriert war
+            if _ka_prods:
+                fehlbetrag_j = max(0.0, _noch_zu_tilgen)
+            netto -= max(0.0, _noch_zu_tilgen)
+
+        # Vorsorge-Beiträge: laufende Jahresbeiträge vor Produktstart
+        netto -= vorsorge_beitraege_j
 
         # Lebenshaltungskosten: monatlicher Fixbetrag × 12 vom Netto abziehen
         lhk_j = profil.lebenshaltungskosten_monatlich * 12
@@ -1245,6 +1275,7 @@ def _netto_ueber_horizont(
             "Kap_Fehlbetrag":     round(fehlbetrag_j),
             "Kap_Injektion":      round(kap_net_inj_j),
             "LHK":                round(lhk_j),
+            "Vorsorge_Beitraege": round(vorsorge_beitraege_j),
             "Src_Miete":        round(miet_j),
             "zvE":              round(zvE_display),
             "Steuer_Progressiv": round(steuer_progr),

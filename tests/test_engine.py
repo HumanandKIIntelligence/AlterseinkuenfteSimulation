@@ -1426,7 +1426,9 @@ class TestP2Produkte:
         bav = self._bav("Person 2", 100.0, sj)   # unter KVdR-Freibetrag, aber freiwillig voll zählend
         _, jd_ohne = _netto_ueber_horizont(p1, e1, [], 5, profil2=p2, ergebnis2=e2)
         _, jd_mit  = _netto_ueber_horizont(p1, e1, [(bav, sj, 0.0)], 5, profil2=p2, ergebnis2=e2)
-        assert jd_mit[0]["KV_P2"] > jd_ohne[0]["KV_P2"]
+        # P2 eintritt_jahr > P1 eintritt_jahr → P2 erst ab Eintritt in Rente (korrektes Verhalten)
+        gap = p2.eintritt_jahr - p1.eintritt_jahr
+        assert jd_mit[gap]["KV_P2"] > jd_ohne[gap]["KV_P2"]
 
     def test_p2_kvdr_bav_einmal_spreading_10_jahre(self):
         """KVdR P2: bAV-Einmalauszahlung wird 10 Jahre auf KV_P2 verteilt (§229 SGB V)."""
@@ -1743,13 +1745,14 @@ class TestKirchensteuer:
 
     def test_kist_zusammen_mit_vs_ohne_kist(self):
         """Zusammenveranlagung: KiSt aktiviert erhöht Steuer gegenüber ohne KiSt."""
+        # Beide Partner gleiche eintritt_jahre → P2-Einkommen ab Index 0 vorhanden
         p1_kist = self._profil_kist()
-        p2_kist = _profil(geburtsjahr=1960, renteneintritt_alter=67,
+        p2_kist = _profil(geburtsjahr=1958, renteneintritt_alter=67,
                           aktuelle_punkte=25.0, punkte_pro_jahr=0.0,
                           kirchensteuer=True, kirchensteuer_satz=0.09)
         p1_kein = _profil(geburtsjahr=1958, renteneintritt_alter=67,
                           aktuelle_punkte=40.0, punkte_pro_jahr=0.0)
-        p2_kein = _profil(geburtsjahr=1960, renteneintritt_alter=67,
+        p2_kein = _profil(geburtsjahr=1958, renteneintritt_alter=67,
                           aktuelle_punkte=25.0, punkte_pro_jahr=0.0)
         e1k, e2k = berechne_rente(p1_kist), berechne_rente(p2_kist)
         e1n, e2n = berechne_rente(p1_kein), berechne_rente(p2_kein)
@@ -2444,8 +2447,8 @@ class TestAusgabenPlan:
             if j != ziel_j:
                 assert r["Sonderausgabe"] == 0
 
-    def test_fehlbetrag_ohne_pool_gleich_sonderausgabe(self):
-        """Ohne Kapitalanlage-Pool: Fehlbetrag = Sonderausgabe (aus Netto)."""
+    def test_fehlbetrag_ohne_pool_gleich_null(self):
+        """Ohne Kapitalanlage-Pool: Kap_Fehlbetrag = 0 (direkte Netto-Kürzung, kein Pool-Warnsignal)."""
         p = self._std()
         e = berechne_rente(p)
         ziel_j = p.eintritt_jahr + 1
@@ -2453,7 +2456,7 @@ class TestAusgabenPlan:
         _, jd = _netto_ueber_horizont(p, e, [], 10, ausgaben_plan={ziel_j: betrag})
         row = next(r for r in jd if r["Jahr"] == ziel_j)
         assert row["Sonderausgabe"] == betrag
-        assert row["Kap_Fehlbetrag"] == betrag
+        assert row["Kap_Fehlbetrag"] == 0
 
     def test_netto_reduziert_um_fehlbetrag(self):
         """Fehlbetrag reduziert das Netto im betroffenen Jahr."""
@@ -2843,3 +2846,233 @@ class TestProfilNeueFelder:
         total0, _ = _netto_ueber_horizont(p0, e, [], 10)
         total_ref, _ = _netto_ueber_horizont(p_ref, e, [], 10)
         assert total0 == pytest.approx(total_ref, abs=1.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P2 Renteneintritt – Einkommen erst ab P2-eintritt_jahr
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestP2RentenEintritt:
+    """P2-Rente darf erst ab P2-eintritt_jahr im Haushalt erscheinen."""
+
+    def _p1(self) -> Profil:
+        # eintritt_jahr = 1958 + 67 = 2025
+        return _profil(geburtsjahr=1958, renteneintritt_alter=67,
+                       aktuelle_punkte=30.0, punkte_pro_jahr=0.0)
+
+    def _p2_spaeter(self) -> Profil:
+        # eintritt_jahr = 1962 + 67 = 2029 → 4 Jahre nach P1
+        return _profil(geburtsjahr=1962, renteneintritt_alter=67,
+                       aktuelle_punkte=25.0, punkte_pro_jahr=0.0)
+
+    def test_p2_rente_null_vor_eintritt(self):
+        """Src_P2_Rente = 0 in Jahren vor P2-Renteneintritt."""
+        p1, p2 = self._p1(), self._p2_spaeter()
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        gap = p2.eintritt_jahr - p1.eintritt_jahr  # 4
+        _, jd = _netto_ueber_horizont(p1, e1, [], gap + 2, profil2=p2, ergebnis2=e2)
+        for i in range(gap):
+            assert jd[i]["Src_P2_Rente"] == 0, f"Jahr-Index {i}: P2 noch nicht in Rente"
+        assert jd[gap]["Src_P2_Rente"] > 0
+
+    def test_brutto_steigt_bei_p2_eintritt(self):
+        """Haushalt-Brutto wächst sprunghaft zum P2-Renteneintrittsjahr."""
+        p1, p2 = self._p1(), self._p2_spaeter()
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        gap = p2.eintritt_jahr - p1.eintritt_jahr
+        _, jd = _netto_ueber_horizont(p1, e1, [], gap + 2, profil2=p2, ergebnis2=e2)
+        assert jd[gap]["Brutto"] > jd[gap - 1]["Brutto"]
+
+    def test_p2_gleichzeitig_kein_gap(self):
+        """P2 gleiche eintritt_jahre wie P1 → Src_P2_Rente ab Jahr 0 > 0."""
+        p1 = self._p1()
+        p2_gleich = _profil(geburtsjahr=1958, renteneintritt_alter=67,
+                             aktuelle_punkte=25.0, punkte_pro_jahr=0.0)
+        e1, e2 = berechne_rente(p1), berechne_rente(p2_gleich)
+        _, jd = _netto_ueber_horizont(p1, e1, [], 3, profil2=p2_gleich, ergebnis2=e2)
+        assert jd[0]["Src_P2_Rente"] > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Getrenntveranlagung – Haushalt-Netto = P1-Netto + P2-Netto
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGetrenntSteuer:
+    """Netto (Getrennt) = Netto(P1 solo) + Netto(P2 solo) — Additivitätsinvariante."""
+
+    def _p(self, gbj: int, punkte: float) -> Profil:
+        return _profil(geburtsjahr=gbj, renteneintritt_alter=67,
+                       aktuelle_punkte=punkte, punkte_pro_jahr=0.0)
+
+    def test_getrennt_netto_gleich_summe_solo(self):
+        """Netto (Getrennt, keine Produkte) ≈ Netto(P1 solo) + Netto(P2 solo)."""
+        p1 = self._p(1958, 35.0)
+        p2 = self._p(1958, 25.0)
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        total_getrennt, _ = _netto_ueber_horizont(
+            p1, e1, [], 5, profil2=p2, ergebnis2=e2, veranlagung="Getrennt",
+        )
+        total_solo_p1, _ = _netto_ueber_horizont(p1, e1, [], 5)
+        total_solo_p2, _ = _netto_ueber_horizont(p2, e2, [], 5)
+        assert total_getrennt == pytest.approx(total_solo_p1 + total_solo_p2, rel=1e-4)
+
+    def test_getrennt_nicht_inflationiert_durch_fehlende_p2_steuer(self):
+        """Vor dem Fix war Getrennt-Netto > P1_solo + P2_solo (P2-Steuer fehlte)."""
+        p1 = self._p(1958, 35.0)
+        p2 = self._p(1958, 35.0)  # hohes Einkommen → signifikante Steuer
+        e1, e2 = berechne_rente(p1), berechne_rente(p2)
+        total_getrennt, _ = _netto_ueber_horizont(
+            p1, e1, [], 5, profil2=p2, ergebnis2=e2, veranlagung="Getrennt",
+        )
+        total_solo_p1, _ = _netto_ueber_horizont(p1, e1, [], 5)
+        total_solo_p2, _ = _netto_ueber_horizont(p2, e2, [], 5)
+        # Darf nicht wesentlich höher sein als die Solo-Summe (Toleranz 1 €/Jahr)
+        assert total_getrennt <= total_solo_p1 + total_solo_p2 + 5.0
+
+    def test_zusammen_vorteilhafter_bei_stark_ungleichem_einkommen(self):
+        """Splitting-Vorteil: Zusammen > Getrennt bei sehr ungleichen Einkommen."""
+        p1_hoch = self._p(1958, 50.0)
+        p2_niedrig = self._p(1958, 5.0)
+        e1, e2 = berechne_rente(p1_hoch), berechne_rente(p2_niedrig)
+        total_getrennt, _ = _netto_ueber_horizont(
+            p1_hoch, e1, [], 5, profil2=p2_niedrig, ergebnis2=e2, veranlagung="Getrennt",
+        )
+        total_zusammen, _ = _netto_ueber_horizont(
+            p1_hoch, e1, [], 5, profil2=p2_niedrig, ergebnis2=e2, veranlagung="Zusammen",
+        )
+        assert total_zusammen > total_getrennt
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Kap_Fehlbetrag – nur setzen wenn Pool konfiguriert war
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestKapFehlbetrag:
+    """Kap_Fehlbetrag = 0 ohne Pool, auch wenn ausgaben_plan vorhanden."""
+
+    def _p(self) -> Profil:
+        return _profil(geburtsjahr=1958, renteneintritt_alter=67,
+                       aktuelle_punkte=30.0, punkte_pro_jahr=0.0)
+
+    def test_kein_fehlbetrag_ohne_pool(self):
+        """Sonderausgabe ohne als_kapitalanlage-Produkt → Kap_Fehlbetrag = 0."""
+        p = self._p()
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        ausgaben = {sj + 1: 50_000.0}
+        _, jd = _netto_ueber_horizont(p, e, [], 5, ausgaben_plan=ausgaben)
+        assert jd[1]["Kap_Fehlbetrag"] == 0
+
+    def test_netto_trotzdem_reduziert_ohne_pool(self):
+        """Ohne Pool wird Sonderausgabe trotzdem direkt vom Netto abgezogen."""
+        p = self._p()
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        ausgaben = {sj + 1: 20_000.0}
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 5)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [], 5, ausgaben_plan=ausgaben)
+        assert jd_mit[1]["Netto"] < jd_ohne[1]["Netto"] - 15_000
+
+    def test_fehlbetrag_gesetzt_wenn_pool_unzureichend(self):
+        """Pool konfiguriert aber zu klein → Kap_Fehlbetrag > 0."""
+        p = self._p()
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr
+        prod = VorsorgeProdukt(
+            id="lv-pool", typ="LV", name="LV Pool", person="Person 1",
+            max_einmalzahlung=5_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, einzahlungen_gesamt=5_000.0, als_kapitalanlage=True,
+        )
+        ausgaben = {sj + 1: 50_000.0}  # Bedarf 50.000 >> Pool ~5.000
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 5, ausgaben_plan=ausgaben)
+        assert jd[1]["Kap_Fehlbetrag"] > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vorsorge-Beiträge – jaehrl_einzahlung in Beitragsphase abziehen
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVorsorgeBeitraege:
+    """jaehrl_einzahlung reduziert Netto vor dem Produktstartjahr; einzel_einzahlung nicht."""
+
+    def _p(self) -> Profil:
+        # eintritt_jahr = 1960 + 67 = 2027
+        return _profil(geburtsjahr=1960, renteneintritt_alter=67,
+                       aktuelle_punkte=20.0, punkte_pro_jahr=0.0)
+
+    def test_jaehrl_einzahlung_setzt_vorsorge_beitraege(self):
+        """Produkt in Beitragsphase: Vorsorge_Beitraege = jaehrl_einzahlung."""
+        p = self._p()
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr + 3  # = 2030
+        prod = VorsorgeProdukt(
+            id="rv-beitrag", typ="PrivateRente", name="RV", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=200.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, jaehrl_einzahlung=1_200.0,
+        )
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 0.0)], 6)
+        for i in range(3):  # Indices 0–2 = Jahre 2027–2029 → Beitragsphase
+            assert jd[i]["Vorsorge_Beitraege"] == pytest.approx(1_200.0)
+        for i in range(3, 6):  # ab Startjahr: kein Beitrag mehr
+            assert jd[i]["Vorsorge_Beitraege"] == 0.0
+
+    def test_netto_reduziert_in_beitragsphase(self):
+        """Netto mit Beitrag < Netto ohne Beitrag in der Beitragsphase."""
+        p = self._p()
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr + 3
+        prod_mit = VorsorgeProdukt(
+            id="rv-mit", typ="PrivateRente", name="RV", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=200.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, jaehrl_einzahlung=1_200.0,
+        )
+        prod_ohne = VorsorgeProdukt(
+            id="rv-ohne", typ="PrivateRente", name="RV", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=200.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, jaehrl_einzahlung=0.0,
+        )
+        _, jd_mit  = _netto_ueber_horizont(p, e, [(prod_mit, sj, 0.0)], 6)
+        _, jd_ohne = _netto_ueber_horizont(p, e, [(prod_ohne, sj, 0.0)], 6)
+        for i in range(3):
+            assert jd_mit[i]["Netto"] == pytest.approx(jd_ohne[i]["Netto"] - 1_200.0)
+
+    def test_beitragsbefreiung_stoppt_abzug(self):
+        """Ab beitragsbefreiung_jahr kein Beitragsabzug mehr."""
+        p = self._p()
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr + 4  # = 2031
+        befreiung_j = p.eintritt_jahr + 2  # = 2029
+        prod = VorsorgeProdukt(
+            id="rv-befreiung", typ="PrivateRente", name="RV", person="Person 1",
+            max_einmalzahlung=0.0, max_monatsrente=200.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, jaehrl_einzahlung=1_200.0,
+            beitragsbefreiung_jahr=befreiung_j,
+        )
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 0.0)], 6)
+        # Vor Befreiung (Indizes 0–1): Beitrag
+        assert jd[0]["Vorsorge_Beitraege"] == pytest.approx(1_200.0)
+        assert jd[1]["Vorsorge_Beitraege"] == pytest.approx(1_200.0)
+        # Ab Befreiungsjahr (Index 2+) bis Startjahr: kein Beitrag
+        for i in range(2, 4):
+            assert jd[i]["Vorsorge_Beitraege"] == 0.0
+
+    def test_einzel_einzahlung_kein_laufender_abzug(self):
+        """einzel_einzahlung (bereits geleistete Einmalzahlung) darf netto nicht reduzieren."""
+        p = self._p()
+        e = berechne_rente(p)
+        sj = p.eintritt_jahr + 3
+        prod = VorsorgeProdukt(
+            id="lv-einzel", typ="LV", name="LV", person="Person 1",
+            max_einmalzahlung=50_000.0, max_monatsrente=0.0,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0, einzahlungen_gesamt=50_000.0,
+            jaehrl_einzahlung=0.0,
+        )
+        _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 5)
+        for i in range(3):  # Beitragsphase
+            assert jd[i]["Vorsorge_Beitraege"] == 0.0
