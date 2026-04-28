@@ -26,7 +26,12 @@ def _de(v: float, dec: int = 0) -> str:
 
 def _vorsorge_non_bav_monatlich(produkte: list[dict], jahr: int) -> float:
     """Monatliche Vorsorge-Beiträge (ohne bAV) für das gegebene Jahr."""
-    total = 0.0
+    return sum(b for _, b in _vorsorge_non_bav_einzeln(produkte, jahr))
+
+
+def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int) -> list[tuple[str, float]]:
+    """Liste von (Name, €/Mon.) für aktive nicht-bAV Vorsorge-Beiträge im Jahr."""
+    result: list[tuple[str, float]] = []
     for vp in produkte:
         if vp.get("typ") == "bAV":
             continue
@@ -39,8 +44,9 @@ def _vorsorge_non_bav_monatlich(produkte: list[dict], jahr: int) -> float:
         if bbj > 0 and jahr >= bbj:
             continue
         dyn = float(vp.get("jaehrl_dynamik", 0.0))
-        total += je * (1.0 + dyn) ** max(0, jahr - AKTUELLES_JAHR) / 12.0
-    return total
+        monatlich = je * (1.0 + dyn) ** max(0, jahr - AKTUELLES_JAHR) / 12.0
+        result.append((vp.get("name", "Vorsorge"), monatlich))
+    return result
 
 
 def render(
@@ -418,26 +424,29 @@ def render(
 
         # ── Brutto → Netto / Verfügbar Wasserfall ────────────────────────────
         if not _no_data:
-            _vorsorge_nbav_m = _vorsorge_non_bav_monatlich(_vp_produkte, betrachtungsjahr)
-            _fix_m_wf = sum(
-                fa["betrag_monatlich"]
-                for fa in _fixausgaben
+            _vorsorge_nbav_einzeln = _vorsorge_non_bav_einzeln(_vp_produkte, betrachtungsjahr)
+            _vorsorge_nbav_m = sum(b for _, b in _vorsorge_nbav_einzeln)
+            _aktive_fix = [
+                fa for fa in _fixausgaben
                 if fa["startjahr"] <= betrachtungsjahr <= fa["endjahr"]
-            )
+            ]
+            _fix_m_wf = sum(fa["betrag_monatlich"] for fa in _aktive_fix)
             _wf_x    = ["Brutto", "− Einkommensteuer", "− KV / PV"]
             _wf_meas = ["absolute", "relative", "relative"]
             _wf_y    = [_b, -_s, -_k]
             _wf_t    = [f"{_de(_b)} €", f"−{_de(_s)} €", f"−{_de(_k)} €"]
-            if _vorsorge_nbav_m > 0:
-                _wf_x.append("− Vorsorge\n(ohne bAV)")
+            for _vn, _vm in _vorsorge_nbav_einzeln:
+                _short = _vn if len(_vn) <= 16 else _vn[:14] + "…"
+                _wf_x.append(f"− {_short}")
                 _wf_meas.append("relative")
-                _wf_y.append(-_vorsorge_nbav_m)
-                _wf_t.append(f"−{_de(_vorsorge_nbav_m)} €")
-            if _fix_m_wf > 0:
-                _wf_x.append("− Fixausgaben")
+                _wf_y.append(-_vm)
+                _wf_t.append(f"−{_de(_vm)} €")
+            for _fa in _aktive_fix:
+                _short = _fa["name"] if len(_fa["name"]) <= 16 else _fa["name"][:14] + "…"
+                _wf_x.append(f"− {_short}")
                 _wf_meas.append("relative")
-                _wf_y.append(-_fix_m_wf)
-                _wf_t.append(f"−{_de(_fix_m_wf)} €")
+                _wf_y.append(-_fa["betrag_monatlich"])
+                _wf_t.append(f"−{_de(_fa['betrag_monatlich'])} €")
             _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf
             _wf_x.append("Verfügbar")
             _wf_meas.append("total")
