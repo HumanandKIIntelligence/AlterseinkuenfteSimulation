@@ -304,7 +304,7 @@ def _restschuld_vergleich_ui(restschuld: float, endjahr: int, d: dict, _rc: int)
     rk_jahresbelastung = rate_j
 
     st.info(
-        f"**Ratenkredit** belastet das Netto mit **{_de(rate_j)} €/Jahr** "
+        f"**Anschluss-Ratenkredit** belastet das Netto mit **{_de(rate_j)} €/Jahr** "
         f"({_de(rate_j / 12, 0)} €/Monat) über {anschluss_laufzeit} Jahre. "
         f"Das verfügbare Netto muss in dieser Zeit um mind. {_de(rate_j)} €/Jahr über "
         f"dem Zielwert ({_de(mindest_jahres)} €/Jahr) liegen, "

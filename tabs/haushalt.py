@@ -89,6 +89,30 @@ def render(
             f"**Person 2:** {_status(p2)}"
         )
 
+        # ── Lebenshaltungskosten ───────────────────────────────────────────────
+        with st.expander("💸 Lebenshaltungskosten"):
+            lhk1, lhk2 = st.columns(2)
+            with lhk1:
+                st.number_input(
+                    "Person 1 – Lebenshaltungskosten (€/Mon.)", 0.0, 15_000.0,
+                    value=float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0)),
+                    step=100.0, key=f"rc{_rc}_p1_lhk",
+                    help=(
+                        "Monatliche Fixausgaben (Miete, Lebensmittel, Versicherungen …). "
+                        "Wird im Planungshorizont jährlich vom Nettoeinkommen abgezogen."
+                    ),
+                )
+            with lhk2:
+                st.number_input(
+                    "Person 2 – Lebenshaltungskosten (€/Mon.)", 0.0, 15_000.0,
+                    value=float(st.session_state.get(f"rc{_rc}_p2_lhk", 0.0)),
+                    step=100.0, key=f"rc{_rc}_p2_lhk",
+                    help=(
+                        "Monatliche Fixausgaben (Miete, Lebensmittel, Versicherungen …). "
+                        "Wird im Planungshorizont jährlich vom Nettoeinkommen abgezogen."
+                    ),
+                )
+
         # ── Jahres- und Personenfilter ─────────────────────────────────────────
         fil1, fil2 = st.columns([2, 3])
         with fil1:

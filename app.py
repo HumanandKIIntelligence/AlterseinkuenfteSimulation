@@ -430,29 +430,16 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int,
             st.session_state[f"rc{_RC}_{pfx}_kist_satz"] = _kist_val
 
     with st.expander("⚙️ Erweiterte Einstellungen"):
-        ea1, ea2 = st.columns(2)
-        with ea1:
-            st.slider(
-                "GFB-Wachstum p.a. (%)", 0.0, 3.0,
-                value=float(_get(pfx, "gfb_wachstum", 0.0)),
-                step=0.1, key=f"rc{_RC}_{pfx}_gfb_wachstum",
-                help=(
-                    "Jährliche Steigerung des Grundfreibetrags (§ 32a EStG) im Planungshorizont. "
-                    "Historisch ca. 1–2 % p.a. Wirkt nur in der Jahressimulation "
-                    "(Entnahme-Optimierung), nicht im Basisdashboard."
-                ),
-            )
-        with ea2:
-            st.number_input(
-                "Lebenshaltungskosten (€/Mon.)", 0.0, 15_000.0,
-                value=float(_get(pfx, "lhk", 0.0)),
-                step=100.0, key=f"rc{_RC}_{pfx}_lhk",
-                help=(
-                    "Monatliche Fixausgaben (Miete, Lebensmittel, Versicherungen …). "
-                    "Wird im Planungshorizont jährlich vom Nettoeinkommen abgezogen. "
-                    "Zeigt, ob das Renteneinkommen den Lebensstandard deckt."
-                ),
-            )
+        st.slider(
+            "GFB-Wachstum p.a. (%)", 0.0, 3.0,
+            value=float(_get(pfx, "gfb_wachstum", 0.0)),
+            step=0.1, key=f"rc{_RC}_{pfx}_gfb_wachstum",
+            help=(
+                "Jährliche Steigerung des Grundfreibetrags (§ 32a EStG) im Planungshorizont. "
+                "Historisch ca. 1–2 % p.a. Wirkt nur in der Jahressimulation "
+                "(Entnahme-Optimierung), nicht im Basisdashboard."
+            ),
+        )
         if not ist_pensionaer and not bereits_rentner:
             st.number_input(
                 "Zusatzentgelt / Aufstockungsbetrag (§ 32b EStG, €/Jahr)", 0.0, 200_000.0,

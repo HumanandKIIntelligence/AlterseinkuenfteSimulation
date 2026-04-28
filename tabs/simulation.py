@@ -47,6 +47,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         zusammen_modus = wahl == "Zusammen"
 
+        _profil1_kap = profil  # P1 vor potenziellem Swap – für Gesamtkapital-Anzeige
+
         if wahl == "Person 2":
             profil, ergebnis = profil2, ergebnis2
 
@@ -54,6 +56,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             sz1 = simuliere_szenarien(profil)
             sz2 = simuliere_szenarien(profil2)
             szenarien = sz1
+        elif hat_partner:
+            sz1 = simuliere_szenarien(_profil1_kap)
+            sz2 = simuliere_szenarien(profil2)
+            szenarien = simuliere_szenarien(profil)
         else:
             szenarien = simuliere_szenarien(profil)
 
@@ -163,13 +169,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 _netto_val  = _row_n["Netto"]  / 12 if _row_n else 0.0
                 _bav_val    = _row_n.get("Src_bAV_P1", 0) / 12 if _row_n else 0.0
                 _rie_val    = _row_n.get("Src_Riester_P1", 0) / 12 if _row_n else 0.0
+                _kap_gesamt = (sz1[name].kapital_bei_renteneintritt + sz2[name].kapital_bei_renteneintritt
+                               if hat_partner else erg.kapital_bei_renteneintritt)
                 _row_dict = {
                     "Szenario": name,
                     "Rentenanpassung p.a.": f"{ren_pa:.1%}".replace(".", ","),
                     "Kapitalrendite p.a.": f"{kap_pa:.1%}".replace(".", ","),
                     "Brutto (€/Mon.)": _de(_brutto_val),
                     "Netto (€/Mon.)": _de(_netto_val),
-                    "Kapital bei Eintritt (€)": _de(erg.kapital_bei_renteneintritt),
+                    "Kapital gesamt (€)": _de(_kap_gesamt),
                     "Rentenpunkte": f"{erg.gesamtpunkte:.1f}".replace(".", ","),
                 }
                 if _bav_val > 0: _row_dict["davon bAV (€/Mon.)"] = _de(_bav_val)
@@ -217,8 +225,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             st.plotly_chart(fig_bar, use_container_width=True)
 
         with col_r:
-            st.subheader("Kapital bei Renteneintritt")
-            if zusammen_modus:
+            st.subheader("Kapital bei Renteneintritt (Haushalt gesamt)")
+            if hat_partner:
                 kapital_vals = [
                     sz1[n].kapital_bei_renteneintritt + sz2[n].kapital_bei_renteneintritt
                     for n in namen
@@ -245,21 +253,23 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         st.divider()
 
         # ── Kapitalwachstum über die Jahre ────────────────────────────────────
-        st.subheader("Kapitalentwicklung bis Renteneintritt")
-        jahre_range = list(range(profil.jahre_bis_rente + 1))
+        st.subheader("Kapitalentwicklung bis Renteneintritt (Haushalt gesamt)" if hat_partner
+                     else "Kapitalentwicklung bis Renteneintritt")
+        _kap_profil = _profil1_kap  # immer P1-Kapital als Basis (Haushaltsvermögen)
+        jahre_range = list(range(_kap_profil.jahre_bis_rente + 1))
         jahre_labels = [AKTUELLES_JAHR + j for j in jahre_range]
 
         renditen = {
             "Pessimistisch": 0.03,
-            "Neutral":       profil.rendite_pa,
+            "Neutral":       _kap_profil.rendite_pa,
             "Optimistisch":  0.07,
         }
 
         fig_k = go.Figure()
         for name, r in renditen.items():
-            werte = [kapitalwachstum(profil.sparkapital, profil.sparrate, r, j)
+            werte = [kapitalwachstum(_kap_profil.sparkapital, _kap_profil.sparrate, r, j)
                      for j in jahre_range]
-            if zusammen_modus and profil2 is not None:
+            if hat_partner and profil2 is not None:
                 werte2 = [kapitalwachstum(profil2.sparkapital, profil2.sparrate, r, j)
                           for j in jahre_range]
                 werte = [a + b for a, b in zip(werte, werte2)]
@@ -289,7 +299,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         st.divider()
 
         # ── Renteneintrittsalter-Sensitivität ────────────────────────────────
-        if not zusammen_modus:
+        if not zusammen_modus and not profil.ist_pensionaer:
             _person_label = wahl if hat_partner else ""
             st.subheader(
                 f"Nettorente nach Renteneintrittsalter"
