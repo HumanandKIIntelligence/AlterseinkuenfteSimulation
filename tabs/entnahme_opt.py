@@ -866,6 +866,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             line=dict(color="black", width=2),
             hovertemplate="%{x}: %{y:,.0f} € Netto<extra></extra>",
         ))
+        # Netto nach Hypotheken-Rate – nur wenn Hypothek aktiv
+        _sched_src = get_hyp_schedule()
+        if _sched_src:
+            _hyp_rate_map_src = {s["Jahr"]: s["Jahresausgabe"] for s in _sched_src}
+            _nh_yrs = [yr for yr in df_jd.index if _hyp_rate_map_src.get(yr, 0) > 0]
+            if _nh_yrs:
+                _nh_vals = [df_jd.loc[yr, "Netto"] - _hyp_rate_map_src[yr] for yr in _nh_yrs]
+                fig_src.add_trace(go.Scatter(
+                    name="Netto nach Hyp.-Rate",
+                    x=_nh_yrs, y=_nh_vals,
+                    mode="lines+markers",
+                    line=dict(color="#D32F2F", width=2, dash="dot"),
+                    hovertemplate="%{x}: %{y:,.0f} € nach Hyp.-Rate<extra></extra>",
+                ))
         if not _profil_eo.bereits_rentner:
             _vline_label_src = "P1 Renteneintritt" if _profil2_eo else "Renteneintritt"
             fig_src.add_vline(
