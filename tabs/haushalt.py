@@ -435,12 +435,11 @@ def render(
             _wf_meas = ["absolute", "relative", "relative"]
             _wf_y    = [_b, -_s, -_k]
             _wf_t    = [f"{_de(_b)} €", f"−{_de(_s)} €", f"−{_de(_k)} €"]
-            for _vn, _vm in _vorsorge_nbav_einzeln:
-                _short = _vn if len(_vn) <= 16 else _vn[:14] + "…"
-                _wf_x.append(f"− {_short}")
+            if _vorsorge_nbav_m > 0:
+                _wf_x.append("− Vorsorge\n(ohne bAV)")
                 _wf_meas.append("relative")
-                _wf_y.append(-_vm)
-                _wf_t.append(f"−{_de(_vm)} €")
+                _wf_y.append(-_vorsorge_nbav_m)
+                _wf_t.append(f"−{_de(_vorsorge_nbav_m)} €")
             for _fa in _aktive_fix:
                 _short = _fa["name"] if len(_fa["name"]) <= 16 else _fa["name"][:14] + "…"
                 _wf_x.append(f"− {_short}")
@@ -468,6 +467,12 @@ def render(
                 separators=",.",
             )
             st.plotly_chart(fig_wf_hh, use_container_width=True)
+            if _vorsorge_nbav_einzeln:
+                _vb_lines = "  \n".join(
+                    f"**{_vn}:** {_de(_vm)} €/Mon."
+                    for _vn, _vm in _vorsorge_nbav_einzeln
+                )
+                st.caption(f"Vorsorge-Abzüge (ohne bAV):  \n{_vb_lines}")
 
         st.divider()
 
