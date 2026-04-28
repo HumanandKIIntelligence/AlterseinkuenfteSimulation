@@ -1144,16 +1144,52 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _eo_entnahmen.sort(key=lambda e: e["jahr"])
                     st.session_state["eo_entnahmen"] = _eo_entnahmen
                     st.rerun()
+            _en_edit_idx = st.session_state.get("eo_entnahmen_edit_idx")
             if _eo_entnahmen:
                 for _ei, _ee in enumerate(_eo_entnahmen):
-                    _ec1, _ec2 = st.columns([5, 1])
-                    with _ec1:
-                        st.write(f"**{_ee['jahr']}**: {_de(_ee['betrag'])} €")
-                    with _ec2:
-                        if st.button("✕", key=f"rc{_rc}_en_del_{_ei}"):
-                            _eo_entnahmen.pop(_ei)
-                            st.session_state["eo_entnahmen"] = _eo_entnahmen
-                            st.rerun()
+                    if _en_edit_idx == _ei:
+                        _ee_cols = st.columns([2, 2, 1, 1])
+                        with _ee_cols[0]:
+                            _edit_j = int(st.number_input(
+                                "Jahr", min_value=AKTUELLES_JAHR, max_value=AKTUELLES_JAHR + 60,
+                                value=int(_ee["jahr"]), step=1, key=f"rc{_rc}_en_ej_{_ei}",
+                            ))
+                        with _ee_cols[1]:
+                            _edit_b = float(st.number_input(
+                                "Betrag (€)", min_value=0.0, max_value=5_000_000.0,
+                                value=float(_ee["betrag"]), step=1_000.0, key=f"rc{_rc}_en_eb_{_ei}",
+                            ))
+                        with _ee_cols[2]:
+                            st.write("")
+                            st.write("")
+                            if st.button("✓", key=f"rc{_rc}_en_save_{_ei}", help="Speichern"):
+                                _eo_entnahmen[_ei] = {"jahr": _edit_j, "betrag": _edit_b}
+                                _eo_entnahmen.sort(key=lambda e: e["jahr"])
+                                st.session_state["eo_entnahmen"] = _eo_entnahmen
+                                st.session_state.pop("eo_entnahmen_edit_idx", None)
+                                st.rerun()
+                        with _ee_cols[3]:
+                            st.write("")
+                            st.write("")
+                            if st.button("✕", key=f"rc{_rc}_en_del_{_ei}", help="Entfernen"):
+                                _eo_entnahmen.pop(_ei)
+                                st.session_state["eo_entnahmen"] = _eo_entnahmen
+                                st.session_state.pop("eo_entnahmen_edit_idx", None)
+                                st.rerun()
+                    else:
+                        _ec1, _ec2, _ec3 = st.columns([5, 1, 1])
+                        with _ec1:
+                            st.write(f"**{_ee['jahr']}**: {_de(_ee['betrag'])} €")
+                        with _ec2:
+                            if st.button("✏", key=f"rc{_rc}_en_edit_{_ei}", help="Bearbeiten"):
+                                st.session_state["eo_entnahmen_edit_idx"] = _ei
+                                st.rerun()
+                        with _ec3:
+                            if st.button("✕", key=f"rc{_rc}_en_del_{_ei}", help="Entfernen"):
+                                _eo_entnahmen.pop(_ei)
+                                st.session_state["eo_entnahmen"] = _eo_entnahmen
+                                st.session_state.pop("eo_entnahmen_edit_idx", None)
+                                st.rerun()
 
         _show_kap_chart = _spkap_orig > 0 or _spkap2_orig > 0 or len(_real_pool_pids) > 0
         if _show_kap_chart:
