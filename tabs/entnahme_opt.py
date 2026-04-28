@@ -604,21 +604,28 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 elif _behandlung == "kapitalanlage":
                     _pool_tilgung = True
                     _einmal_tilgung = True
-                elif _behandlung == "einmalzahlungen" and _hyp_ezl:
-                    _pool_tilgung = True
-                    _primary_ez_sum = sum(
-                        float(e["betrag"]) for e in _hyp_ezl if int(e["jahr"]) <= _endjahr_hyp
-                    )
-                    _ak_zeitleiste_rs = max(0.0, _rs - _primary_ez_sum)
-                    _ak_zeitleiste_startjahr = _endjahr_hyp
-                    _spkap_pool_startjahr = min(int(e["jahr"]) for e in _hyp_ezl)
-                    _spkap_pool_wert = kapitalwachstum(
-                        _spkap_orig, _spkap_sparrate, _spkap_rendite,
-                        max(0, _spkap_pool_startjahr - AKTUELLES_JAHR),
-                    )
                 elif _behandlung == "einmalzahlungen":
-                    _ak_zeitleiste_rs = _rs
-                    _ak_zeitleiste_startjahr = _endjahr_hyp
+                    _pool_tilgung = True  # immer aus Kapitalpool
+                    if _hyp_ezl:
+                        _primary_ez_sum = sum(
+                            float(e["betrag"]) for e in _hyp_ezl if int(e["jahr"]) <= _endjahr_hyp
+                        )
+                        _ak_zeitleiste_rs = max(0.0, _rs - _primary_ez_sum)
+                        _ak_zeitleiste_startjahr = _endjahr_hyp
+                        _spkap_pool_startjahr = min(int(e["jahr"]) for e in _hyp_ezl)
+                        _spkap_pool_wert = kapitalwachstum(
+                            _spkap_orig, _spkap_sparrate, _spkap_rendite,
+                            max(0, _spkap_pool_startjahr - AKTUELLES_JAHR),
+                        )
+                    else:
+                        _ak_zeitleiste_rs = _rs
+                        _ak_zeitleiste_startjahr = _endjahr_hyp
+
+        # Geplante Entnahmen in Ausgabenplan einrechnen (aus Kapitalpool)
+        _eo_entnahmen_early: list[dict] = list(st.session_state.get("eo_entnahmen", []))
+        _entnahmen_dict: dict[int, float] = {e["jahr"]: e["betrag"] for e in _eo_entnahmen_early}
+        for _entr_jr, _entr_btr in _entnahmen_dict.items():
+            _ausgaben_plan[_entr_jr] = _ausgaben_plan.get(_entr_jr, 0.0) + _entr_btr
 
         # ── Optimierung ausführen ─────────────────────────────────────────────
         st.subheader("🔍 Optimale Auszahlungsstrategie")
@@ -759,10 +766,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 help="Jährliche Inflationsrate für Kaufkraftkorrektur.",
             ) if _real_toggle else 2.0
         df_jd = pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
-
-        # Geplante Entnahmen (session_state – wird im Expander unten befüllt)
-        _eo_entnahmen_early: list[dict] = list(st.session_state.get("eo_entnahmen", []))
-        _entnahmen_dict: dict[int, float] = {e["jahr"]: e["betrag"] for e in _eo_entnahmen_early}
 
         # Reale Werte: alle numerischen Spalten mit Inflationsdeflaktor skalieren
         _start_j = int(df_jd.index[0]) if len(df_jd) > 0 else 0
@@ -912,6 +915,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 x=_profil2_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#E91E63",
                 annotation_text="P2 Renteneintritt", annotation_position="bottom left",
             )
+        # Einmalige Auszahlungen als vertikale Markierungen oben (wie Renteneintritt)
+        for _ej in _jahre:
+            if _einmal_info.get(_ej):
+                fig_src.add_vline(
+                    x=_ej, line_width=1, line_dash="dot", line_color="#FF9800",
+                    annotation_text="<br>".join(_einmal_info[_ej]),
+                    annotation_position="top left",
+                    annotation_font=dict(color="#FF9800", size=9),
+                )
         # Sonderausgaben (Hypothek-Raten / Einmaltilgung) als Annotationen unterhalb der Balken
         _hat_sonder = "Sonderausgabe" in df_jd.columns and df_jd["Sonderausgabe"].sum() > 0
         if _hat_sonder:
@@ -970,6 +982,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     f"über {_anschluss_lz} Jahre ab {_hyp_info['endjahr'] + 1} "
                     f"(Nominalzins {_markt_zins_pa*100:.2f} %)."
                 )
+
+        # Kapital-Fehlbetrag Warnung (Pool konfiguriert aber unzureichend)
+        if "Kap_Fehlbetrag" in df_jd.columns and df_jd["Kap_Fehlbetrag"].sum() > 0:
+            _fb_j = df_jd[df_jd["Kap_Fehlbetrag"] > 0]
+            _fb_total = _fb_j["Kap_Fehlbetrag"].sum()
+            st.warning(
+                f"⚠️ Kapital-Fehlbetrag: Kapital reicht in {len(_fb_j)} Jahr(en) nicht "
+                f"für alle geplanten Zahlungen (Fehlbetrag gesamt: **{_de(_fb_total)} €**). "
+                "Kapital oder Strategie anpassen."
+            )
 
         # ── Hypothek-Jahresraten: farbliche Quelle-Tabelle ───────────────────
         if _ausgaben_plan and _hyp_info:
@@ -1204,6 +1226,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
             def _kap_hover(series: pd.Series, pool_pids: list[str],
                            label: str, df: "pd.DataFrame",
+                           rendite_pa: float = 0.05,
                            sparrate_p1: float = 0.0, eintritt_j_p1: int = 0,
                            sparrate_p2: float = 0.0, eintritt_j_p2: int = 0,
                            ) -> tuple[pd.Series, list[str]]:
@@ -1213,7 +1236,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 for i, j in enumerate(yrs):
                     curr = series[j]
                     prev = series[yrs[i - 1]] if i > 0 else curr
-                    delta = curr - prev
                     entn = sum(
                         float(df.loc[j, f"Src_Kap_{pid}"])
                         for pid in pool_pids
@@ -1221,18 +1243,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     )
                     inj = float(df.loc[j, "Kap_Injektion"]) if ("Kap_Injektion" in df.columns and j in df.index) else 0.0
                     sonder = float(df.loc[j, "Sonderausgabe"]) if ("Sonderausgabe" in df.columns and j in df.index) else 0.0
-                    # Sparrate-Beiträge herausrechnen (kein Rendite-Anteil)
                     sparrate_j = 0.0
                     if eintritt_j_p1 > 0 and j < eintritt_j_p1:
                         sparrate_j += sparrate_p1 * 12
                     if eintritt_j_p2 > 0 and j < eintritt_j_p2:
                         sparrate_j += sparrate_p2 * 12
-                    rendite = delta + entn - inj + sonder - sparrate_j
+                    # Rendite direkt aus konfigurierter Rate (nicht aus Delta berechnen)
+                    rendite_amt = prev * rendite_pa
                     parts = []
                     if i > 0:
-                        if rendite > 0.5:
-                            _pct = rendite / prev * 100 if prev > 0 else 0.0
-                            parts.append(f"+{_de(rendite)} € Rendite ({_pct:.1f} %)")
+                        if rendite_amt > 0.5:
+                            parts.append(f"+{_de(rendite_amt)} € Rendite ({rendite_pa * 100:.1f} %)")
                         if sparrate_j > 0.5:
                             parts.append(f"+{_de(sparrate_j)} € Spareinlage")
                         if entn > 0.5:
@@ -1286,6 +1307,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 _eintritt_p2_spar = 0 if (_profil2_eo is None or _profil2_eo.bereits_rentner) else _spkap2_eintritt_j
                 _, _kap_cd = _kap_hover(
                     _df_kap, _p1_pool_pids + _p2_pool_pids, "Kapital", df_jd,
+                    rendite_pa=_spkap_rendite,
                     sparrate_p1=_spkap_sparrate, eintritt_j_p1=_eintritt_p1_spar,
                     sparrate_p2=(_spkap2_sparrate if _hat_partner_kap else 0.0),
                     eintritt_j_p2=(_eintritt_p2_spar if _hat_partner_kap else 0),
