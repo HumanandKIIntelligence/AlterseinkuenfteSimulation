@@ -1212,7 +1212,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
             # ── Anschlusskredit-Restschuld ───────────────────────────────────
             if _rs > 0 and not _einmal_tilgung and _hyp_info and _anschluss_lz > 0:
-                _ak_start = _hyp_info["endjahr"] + 1
+                _ak_start = _hyp_info["endjahr"]
                 _ak_bal = _rs
                 if _markt_zins_pa > 0:
                     _ak_rate = (_ak_bal * _markt_zins_pa
