@@ -1163,19 +1163,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _p2_post_series_gesamt: pd.Series | None = None
             _hat_partner_kap = _spkap2_orig > 0 or bool(_p2_pool_pids)
 
-            # ── P1 Kapital (ab Renteneintritt, verzinst ohne Entnahme-Abzug) ──
+            # ── P1 Kapital (ab AKTUELLES_JAHR, verzinst ohne Sparrate) ──────
             if _spkap_orig > 0 or _p1_pool_pids:
-                _post_yrs_p1 = list(range(_spkap_eintritt_j, _x_chart_end + 1))
+                _all_yrs_p1 = list(range(AKTUELLES_JAHR, _x_chart_end + 1))
                 _p1_label_post = "P1 Kapital" if _hat_partner_kap else "Kapital"
-                _df_p1_post = pd.Series(
-                    [kapitalwachstum(_spkap, 0.0, _spkap_rendite, j - _spkap_eintritt_j)
-                     for j in _post_yrs_p1],
-                    index=_post_yrs_p1,
-                )
+                def _p1_kap(j: int) -> float:
+                    if j < _spkap_eintritt_j and not _profil_eo.bereits_rentner:
+                        # Vorrentenphase: aktuelles Sparkapital wächst mit Rendite (ohne Sparrate)
+                        return kapitalwachstum(_spkap_orig, 0.0, _spkap_rendite, j - AKTUELLES_JAHR)
+                    return kapitalwachstum(_spkap, 0.0, _spkap_rendite, max(0, j - _spkap_eintritt_j))
+                _df_p1_post = pd.Series([_p1_kap(j) for j in _all_yrs_p1], index=_all_yrs_p1)
                 for _pid in _p1_pool_pids:
                     _c = f"Kap_Pool_{_pid}"
                     if _c in df_jd.columns:
-                        _pool_s = df_jd[_c].reindex(_post_yrs_p1, fill_value=0)
+                        _pool_s = df_jd[_c].reindex(_all_yrs_p1, fill_value=0)
                         _df_p1_post = _df_p1_post + _pool_s
                 _p1_post_series_gesamt = _df_p1_post
                 fig_spar.add_trace(go.Scatter(
@@ -1184,20 +1185,23 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     hovertemplate="%{x}: %{y:,.0f} €<extra>" + _p1_label_post + "</extra>",
                 ))
 
-            # ── P2 Kapital (ab P2-Renteneintritt, verzinst ohne Entnahme-Abzug) ──
+            # ── P2 Kapital (ab AKTUELLES_JAHR, verzinst ohne Sparrate) ──────
             if _hat_partner_kap:
-                _post_yrs2 = list(range(_spkap2_eintritt_j, _x_chart_end + 1))
-                _p2_post_series = pd.Series(
-                    [kapitalwachstum(_spkap2, 0.0, _spkap2_rendite, j - _spkap2_eintritt_j)
-                     for j in _post_yrs2]
-                    if _spkap2_orig > 0 else [0.0] * len(_post_yrs2),
-                    index=_post_yrs2,
-                )
+                _all_yrs_p2 = list(range(AKTUELLES_JAHR, _x_chart_end + 1))
+                def _p2_kap(j: int) -> float:
+                    if _spkap2_orig <= 0:
+                        return 0.0
+                    if (j < _spkap2_eintritt_j
+                            and _profil2_eo is not None
+                            and not _profil2_eo.bereits_rentner):
+                        return kapitalwachstum(_spkap2_orig, 0.0, _spkap2_rendite, j - AKTUELLES_JAHR)
+                    return kapitalwachstum(_spkap2, 0.0, _spkap2_rendite, max(0, j - _spkap2_eintritt_j))
+                _p2_post_series = pd.Series([_p2_kap(j) for j in _all_yrs_p2], index=_all_yrs_p2)
                 for _pid in _p2_pool_pids:
                     _c = f"Kap_Pool_{_pid}"
                     if _c in df_jd.columns:
-                        _pool_s = df_jd[_c].reindex(_post_yrs2, fill_value=0)
-                        _p2_post_series = _p2_post_series + _pool_s  # index-basiert
+                        _pool_s = df_jd[_c].reindex(_all_yrs_p2, fill_value=0)
+                        _p2_post_series = _p2_post_series + _pool_s
                 _p2_post_series_gesamt = _p2_post_series
                 fig_spar.add_trace(go.Scatter(
                     name="P2 Kapital", x=_p2_post_series.index, y=_p2_post_series.values,
