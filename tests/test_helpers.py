@@ -14,8 +14,8 @@ from session_io import save_session, load_session, list_saves, _load_profil, _PR
 from engine import Profil, AKTUELLES_JAHR
 from tabs.entnahme_opt import (
     _kv_label_und_wert, _steuer_steckbrief, _de, _analyse_schenkungspotenzial,
-    _einmalzahlungen_ausgaben_plan,
 )
+from tabs.hypothek import _ez_ausgaben_plan as _einmalzahlungen_ausgaben_plan
 
 
 # ─────────────────────────────────────────────────────────────────────────────

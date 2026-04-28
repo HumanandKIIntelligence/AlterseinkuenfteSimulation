@@ -22,10 +22,12 @@ def _default_hyp_daten() -> dict:
         "jaehrl_rate": 15_000.0,
         "zins_pa": 0.035,
         "sondertilgungen": [],
-        # Restschuld-Behandlung
-        "restschuld_behandlung": "keine",   # "keine", "kapitalanlage", "ratenkredit"
+        # Restschuld-Strategie
+        "restschuld_behandlung": "keine",   # "keine", "ratenkredit", "kapitalanlage", "einmalzahlungen"
         "anschluss_zins_pa": 0.04,
         "anschluss_laufzeit": 10,
+        "raten_aus_kapital": False,
+        "anschluss_einmalzahlungen": [],
         # Laufende Raten in Simulation berücksichtigen
         "raten_in_simulation": False,
     }
@@ -175,72 +177,127 @@ def get_hyp_info() -> dict | None:
         "restschuld_end":   get_restschuld_end(),
         "anschluss_zins_pa":  float(d.get("anschluss_zins_pa", 0.04)),
         "anschluss_laufzeit": int(d.get("anschluss_laufzeit", 10)),
+        "restschuld_behandlung": d.get("restschuld_behandlung", "keine"),
+        "raten_aus_kapital": bool(d.get("raten_aus_kapital", False)),
+        "anschluss_einmalzahlungen": list(d.get("anschluss_einmalzahlungen", [])),
     }
 
 
-def get_ausgaben_plan_optimierung(
+def _ez_ausgaben_plan(
+    einmalzahlungen: list[dict],
+    hyp_schedule: list[dict],
+    restschuld_endjahr: float,
+    endjahr: int,
     markt_zins_pa: float,
-    anschluss_laufzeit: int,
-    als_einmaltilgung: bool = False,
+    anschluss_lz: int,
 ) -> dict[int, float]:
-    """
-    Ausgaben-Plan für Entnahme-Optimierung:
-    - Laufende Jahresraten aus dem Tilgungsplan (bestehender Nominalzins)
-    - Restschuld-Behandlung nach Endjahr:
-        als_einmaltilgung=True  → Einmalbetrag im Endjahr (aus Vorsorgevertrag)
-        als_einmaltilgung=False → Ratenkredit mit markt_zins_pa über anschluss_laufzeit
-    """
+    """Ausgaben-Plan für Einmalzahlungs-Strategie: laufende Raten + EZ + Anschlusskredit auf Rest."""
+    def _rate(k: float, z: float, n: int) -> float:
+        if n <= 0 or k <= 0:
+            return 0.0
+        return k / n if z <= 0 else k * z * (1 + z) ** n / ((1 + z) ** n - 1)
+
+    plan: dict[int, float] = {}
+    for row in hyp_schedule:
+        plan[row["Jahr"]] = plan.get(row["Jahr"], 0.0) + row["Jahresausgabe"]
+
+    sorted_ezl = sorted(einmalzahlungen, key=lambda e: e["jahr"])
+    for e in sorted_ezl:
+        plan[e["jahr"]] = plan.get(e["jahr"], 0.0) + float(e["betrag"])
+
+    primary_sum = sum(float(e["betrag"]) for e in sorted_ezl if int(e["jahr"]) <= endjahr)
+    ak_bal = max(0.0, restschuld_endjahr - primary_sum)
+    if ak_bal <= 0.01 or anschluss_lz <= 0:
+        return plan
+
+    ak_payments = sorted(
+        [(int(e["jahr"]), float(e["betrag"])) for e in sorted_ezl if int(e["jahr"]) > endjahr],
+        key=lambda x: x[0],
+    )
+    ak_start_yr, years_used, pidx = endjahr, 0, 0
+    while ak_bal > 0.01 and years_used < anschluss_lz:
+        lz_rem = anschluss_lz - years_used
+        rate = _rate(ak_bal, markt_zins_pa, lz_rem)
+        next_ep_yr = ak_payments[pidx][0] if pidx < len(ak_payments) else endjahr + anschluss_lz + 1
+        seg_end = min(next_ep_yr, endjahr + anschluss_lz)
+        for yr in range(ak_start_yr + 1, seg_end + 1):
+            if ak_bal <= 0.01 or years_used >= anschluss_lz:
+                break
+            plan[yr] = plan.get(yr, 0.0) + rate
+            ak_bal = max(0.0, ak_bal - max(0.0, rate - ak_bal * markt_zins_pa))
+            years_used += 1
+        if pidx < len(ak_payments) and ak_payments[pidx][0] == seg_end:
+            ak_bal = max(0.0, ak_bal - ak_payments[pidx][1])
+            ak_start_yr = ak_payments[pidx][0]
+            pidx += 1
+        else:
+            break
+    return plan
+
+
+def get_ausgaben_plan_optimierung() -> dict[int, float]:
+    """Ausgaben-Plan für Entnahme-Optimierung: laufende Raten + konfigurierte Restschuld-Strategie."""
     d = st.session_state.get("hyp_daten", {})
     if not d.get("aktiv", False):
         return {}
 
     plan: dict[int, float] = {}
-
     for row in get_hyp_schedule():
         plan[row["Jahr"]] = plan.get(row["Jahr"], 0.0) + row["Jahresausgabe"]
 
     restschuld = get_restschuld_end()
-    if restschuld > 0.0:
-        endjahr = int(d.get("endjahr", AKTUELLES_JAHR + 20))
-        if als_einmaltilgung:
-            plan[endjahr] = plan.get(endjahr, 0.0) + restschuld
-        elif anschluss_laufzeit > 0:
-            rate = _annuitaet_rate(restschuld, markt_zins_pa, anschluss_laufzeit)
-            for i in range(anschluss_laufzeit):
-                plan[endjahr + 1 + i] = plan.get(endjahr + 1 + i, 0.0) + rate
+    if restschuld <= 0.0:
+        return plan
 
+    behandlung = d.get("restschuld_behandlung", "keine")
+    endjahr = int(d.get("endjahr", AKTUELLES_JAHR + 20))
+    zins = float(d.get("anschluss_zins_pa", 0.04))
+    laufzeit = int(d.get("anschluss_laufzeit", 10))
+
+    if behandlung == "kapitalanlage":
+        plan[endjahr] = plan.get(endjahr, 0.0) + restschuld
+    elif behandlung == "ratenkredit":
+        rate = _annuitaet_rate(restschuld, zins, laufzeit)
+        for i in range(laufzeit):
+            plan[endjahr + 1 + i] = plan.get(endjahr + 1 + i, 0.0) + rate
+    elif behandlung == "einmalzahlungen":
+        plan = _ez_ausgaben_plan(
+            list(d.get("anschluss_einmalzahlungen", [])),
+            get_hyp_schedule(), restschuld, endjahr, zins, laufzeit,
+        )
     return plan
 
 
 def _restschuld_vergleich_ui(restschuld: float, endjahr: int, d: dict, _rc: int) -> None:
-    """Zeigt Vergleich Kapitalanlage vs. Ratenkredit, inkl. Mindest-Netto-Check."""
-    st.subheader("⚖️ Restschuld-Behandlung")
-    st.caption(f"Verbleibende Restschuld zum Endjahr {endjahr}: **{_de(restschuld)} €**")
+    """Strategie für die verbleibende Restschuld nach Hypothek-Endjahr."""
+    st.subheader("⚖️ Restschuld-Strategie")
 
+    _opts = ["keine", "ratenkredit", "kapitalanlage", "einmalzahlungen"]
+    _cur = d.get("restschuld_behandlung", "keine")
+    if _cur not in _opts:
+        _cur = "keine"
     behandlung = st.radio(
-        "Wie soll die Restschuld behandelt werden?",
-        ["keine", "kapitalanlage", "ratenkredit"],
+        "Strategie",
+        _opts,
         format_func=lambda x: {
-            "keine": "⬜ Keine gesonderte Planung",
-            "kapitalanlage": "💰 Einmaltilgung aus Kapitalanlage (im Endjahr)",
-            "ratenkredit": "🏦 Anschlussfinanzierung / Ratenkredit (nach Endjahr)",
+            "keine":           "⬜ Keine Planung (Restschuld offen lassen)",
+            "ratenkredit":     "🏦 Anschluss-Ratenkredit",
+            "kapitalanlage":   "💰 Einmalige Kapital-Tilgung (im Endjahr aus Pool)",
+            "einmalzahlungen": "📅 Sondertilgungen (Einmalzahlungen, Rest als Anschlusskredit)",
         }[x],
-        index=["keine", "kapitalanlage", "ratenkredit"].index(
-            d.get("restschuld_behandlung", "keine")
-        ),
+        index=_opts.index(_cur),
         key=f"rc{_rc}_hyp_behandlung",
     )
     st.session_state["hyp_daten"]["restschuld_behandlung"] = behandlung
 
-    # Anschluss-Parameter (nur bei Ratenkredit sichtbar)
     anschluss_zins = float(d.get("anschluss_zins_pa", 0.04))
     anschluss_laufzeit = int(d.get("anschluss_laufzeit", 10))
 
-    if behandlung == "ratenkredit":
+    if behandlung in ("ratenkredit", "einmalzahlungen"):
         rc1, rc2 = st.columns(2)
         with rc1:
             anschluss_zins_pct = st.number_input(
-                "Zinssatz Anschlussfinanzierung (%)", 0.0, 20.0,
+                "Zinssatz Anschluss (%)", 0.0, 20.0,
                 value=anschluss_zins * 100, step=0.05, format="%.2f",
                 key=f"rc{_rc}_hyp_anschl_zins",
             )
@@ -248,89 +305,111 @@ def _restschuld_vergleich_ui(restschuld: float, endjahr: int, d: dict, _rc: int)
             st.session_state["hyp_daten"]["anschluss_zins_pa"] = anschluss_zins
         with rc2:
             anschluss_laufzeit = st.number_input(
-                "Laufzeit Ratenkredit (Jahre)", 1, 30,
+                "Laufzeit (Jahre)", 1, 30,
                 value=anschluss_laufzeit, step=1,
                 key=f"rc{_rc}_hyp_anschl_lz",
             )
             st.session_state["hyp_daten"]["anschluss_laufzeit"] = int(anschluss_laufzeit)
 
-    # ── Vergleichsrechnung ────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("**Kostenvergleich**")
-
-    # Ratenkredit-Kennzahlen
-    rate_j = _annuitaet_rate(restschuld, anschluss_zins, anschluss_laufzeit)
-    zinslast_ratenkredit = rate_j * anschluss_laufzeit - restschuld
-
-    col_ka, col_rk = st.columns(2)
-
-    with col_ka:
-        st.markdown("**💰 Kapitalanlage-Tilgung**")
-        st.metric("Einmalige Belastung", f"{_de(restschuld)} €")
-        st.metric("Laufende Mehrbelastung", "0 €/Jahr")
-        st.caption(
-            "Der Kapitalanlage-Pool wird um die Restschuld reduziert. "
-            "Fehlbetrag (wenn Pool < Restschuld) verringert das verfügbare Netto im Endjahr."
-        )
-
-    with col_rk:
-        st.markdown("**🏦 Ratenkredit**")
-        st.metric("Jahresrate", f"{_de(rate_j)} €/Jahr")
-        st.metric("Gesamtzinslast", f"{_de(zinslast_ratenkredit)} €")
-        st.caption(
-            f"Laufzeit: {anschluss_laufzeit} Jahre ab {endjahr + 1}. "
-            "Die Jahresrate reduziert das verfügbare Netto in jedem Jahr der Laufzeit."
-        )
-
-    # Mindest-Netto Eingabe für Empfehlung
-    st.markdown("---")
-    st.markdown("**🎯 Empfehlung unter Liquiditätsvorgabe**")
-    mindest_netto = st.number_input(
-        "Mindest-Haushaltsnetto (€/Monat)",
-        min_value=0, max_value=20_000,
-        value=int(st.session_state.get(f"rc{_rc}_hyp_mindest_netto", 2000)),
-        step=100,
-        key=f"rc{_rc}_hyp_mindest_netto",
-        help="Wie viel Netto monatlich mindestens verfügbar sein soll (Eingabe dient nur dem Vergleich hier)",
-    )
-
-    mindest_jahres = mindest_netto * 12
-
-    # Heuristischer Vergleich ohne engine-Aufruf
-    # Kapitalanlage: kritisches Jahr = Endjahr (Pool-Entnahme)
-    ka_kritisch = restschuld  # Einmalbelastung
-
-    # Ratenkredit: jährliche Mehrbelastung
-    rk_jahresbelastung = rate_j
-
-    st.info(
-        f"**Anschluss-Ratenkredit** belastet das Netto mit **{_de(rate_j)} €/Jahr** "
-        f"({_de(rate_j / 12, 0)} €/Monat) über {anschluss_laufzeit} Jahre. "
-        f"Das verfügbare Netto muss in dieser Zeit um mind. {_de(rate_j)} €/Jahr über "
-        f"dem Zielwert ({_de(mindest_jahres)} €/Jahr) liegen, "
-        f"damit das Mindest-Netto erreicht wird.\n\n"
-        f"**Kapitalanlage** reduziert den Anlagestock einmalig um {_de(ka_kritisch)} €. "
-        f"Laufendes Netto bleibt unverändert – sofern der Pool ausreicht.",
-        icon="ℹ️",
-    )
-
-    if rate_j / 12 > mindest_netto * 0.3:
-        st.warning(
-            f"⚠️ Die monatliche Ratenkredit-Rate ({_de(rate_j / 12, 0)} €) übersteigt 30 % "
-            f"des angestrebten Mindest-Nettos ({mindest_netto} €/Monat). "
-            "Kapitalanlage-Tilgung empfohlen, sofern der Pool ausreicht."
-        )
-    elif zinslast_ratenkredit < restschuld * 0.15:
-        st.success(
-            f"✅ Die Gesamtzinslast des Ratenkredits ({_de(zinslast_ratenkredit)} €) ist gering "
-            "(< 15 % der Restschuld). Der Ratenkredit schont die Kapitalanlage und ist hier sinnvoll."
-        )
-    else:
+    if behandlung == "ratenkredit":
+        rate_j = _annuitaet_rate(restschuld, anschluss_zins, anschluss_laufzeit)
+        zinslast = rate_j * anschluss_laufzeit - restschuld
         st.info(
-            "Beide Optionen sind plausibel. Der vollständige Vergleich "
-            "(inkl. Steuerwirkung und Pool-Rendite) erscheint im Tab "
-            "**💡 Entnahme-Optimierung** im Jahresverlauf."
+            f"Jahresrate: **{_de(rate_j)} €** ({_de(rate_j / 12, 0)} €/Mon.) · "
+            f"Laufzeit: {anschluss_laufzeit} J. ab {endjahr + 1} · "
+            f"Gesamtzinslast: {_de(zinslast)} €",
+            icon="🏦",
         )
+        raten_aus_kapital = st.checkbox(
+            "💳 Raten vorrangig aus Kapital decken (wenn ausreichend)",
+            value=bool(d.get("raten_aus_kapital", False)),
+            key=f"rc{_rc}_hyp_raten_kapital",
+            help="Anschluss-Raten werden vorrangig aus dem Sparkapital gedeckt. "
+                 "Reicht das Kapital nicht, übernimmt das laufende Einkommen.",
+        )
+        st.session_state["hyp_daten"]["raten_aus_kapital"] = raten_aus_kapital
+
+    elif behandlung == "kapitalanlage":
+        st.info(
+            f"Am Endjahr {endjahr} wird die Restschuld **{_de(restschuld)} €** "
+            "einmalig aus dem Kapitalanlage-Pool entnommen. "
+            "Ein Fehlbetrag (Pool < Restschuld) verringert das verfügbare Netto.",
+            icon="💰",
+        )
+
+    elif behandlung == "einmalzahlungen":
+        ezl: list[dict] = list(d.get("anschluss_einmalzahlungen", []))
+        _ez_edit_idx = st.session_state.get("hyp_ez_edit_idx")
+        _ez_max_jahr = endjahr + anschluss_laufzeit
+
+        na, nb, nc = st.columns([2, 2, 1])
+        with na:
+            ez_j_new = int(st.number_input(
+                "Jahr der Einmalzahlung", AKTUELLES_JAHR, _ez_max_jahr,
+                value=min(endjahr, _ez_max_jahr), step=1,
+                key=f"rc{_rc}_hyp_ez_j_new",
+            ))
+        with nb:
+            ez_b_new = float(st.number_input(
+                "Betrag (€)", 0.0, float(max(restschuld, 1.0)),
+                value=float(min(restschuld, max(restschuld, 0.0))),
+                step=1_000.0, key=f"rc{_rc}_hyp_ez_b_new",
+            ))
+        with nc:
+            st.write(""); st.write("")
+            if st.button("＋", key=f"rc{_rc}_hyp_ez_add", help="Hinzufügen"):
+                ezl.append({"jahr": ez_j_new, "betrag": ez_b_new})
+                ezl.sort(key=lambda e: e["jahr"])
+                st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
+                st.rerun()
+
+        for zi, ze in enumerate(ezl):
+            if _ez_edit_idx == zi:
+                ec1, ec2, ec3 = st.columns([2, 2, 1])
+                with ec1:
+                    edit_j = int(st.number_input("Jahr", AKTUELLES_JAHR, _ez_max_jahr,
+                        value=int(ze["jahr"]), step=1, key=f"rc{_rc}_hyp_ez_ej_{zi}"))
+                with ec2:
+                    edit_b = float(st.number_input("Betrag (€)", 0.0, float(max(restschuld, 1.0)),
+                        value=float(ze["betrag"]), step=1_000.0, key=f"rc{_rc}_hyp_ez_eb_{zi}"))
+                with ec3:
+                    st.write(""); st.write("")
+                    if st.button("✓", key=f"rc{_rc}_hyp_ez_save_{zi}", help="Speichern"):
+                        ezl[zi] = {"jahr": edit_j, "betrag": edit_b}
+                        ezl.sort(key=lambda e: e["jahr"])
+                        st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
+                        st.session_state.pop("hyp_ez_edit_idx", None)
+                        st.rerun()
+            else:
+                zc1, zc2, zc3 = st.columns([5, 1, 1])
+                with zc1:
+                    st.write(f"**{ze['jahr']}**: {_de(ze['betrag'])} €")
+                with zc2:
+                    if st.button("✏", key=f"rc{_rc}_hyp_ez_edit_{zi}", help="Bearbeiten"):
+                        st.session_state["hyp_ez_edit_idx"] = zi
+                        st.rerun()
+                with zc3:
+                    if st.button("✕", key=f"rc{_rc}_hyp_ez_del_{zi}", help="Entfernen"):
+                        ezl.pop(zi)
+                        st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
+                        st.session_state.pop("hyp_ez_edit_idx", None)
+                        st.rerun()
+
+        if ezl:
+            _total_ez = sum(float(e["betrag"]) for e in ezl)
+            _ak_rs = max(0.0, restschuld - sum(
+                float(e["betrag"]) for e in ezl if int(e["jahr"]) <= endjahr
+            ))
+            if _ak_rs < 0.01:
+                st.caption(f"✅ Einmalzahlungen ({len(ezl)}×) decken Restschuld **{_de(restschuld)} €** vollständig.")
+            else:
+                st.caption(
+                    f"Einmalzahlungen: **{_de(_total_ez)} €** · "
+                    f"Anschlusskredit auf **{_de(_ak_rs)} €** ab {endjahr + 1} "
+                    f"({anschluss_zins * 100:.2f} %, {anschluss_laufzeit} J.)"
+                )
+        else:
+            st.caption("Noch keine Einmalzahlungen erfasst.")
 
 
 def render(T: dict, _rc: int) -> None:

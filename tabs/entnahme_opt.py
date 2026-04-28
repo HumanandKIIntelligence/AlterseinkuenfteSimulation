@@ -32,8 +32,7 @@ except ImportError:
         return 0.0
     def get_hyp_info():
         return None
-    def get_ausgaben_plan_optimierung(markt_zins_pa: float, anschluss_laufzeit: int,
-                                      als_einmaltilgung: bool = False) -> dict:
+    def get_ausgaben_plan_optimierung() -> dict:
         return {}
     def get_hyp_schedule() -> list:
         return []
@@ -41,71 +40,6 @@ except ImportError:
         return []
 
 
-def _einmalzahlungen_ausgaben_plan(
-    einmalzahlungen: list[dict],
-    hyp_schedule: list[dict],
-    restschuld_endjahr: float,
-    endjahr: int,
-    markt_zins_pa: float,
-    anschluss_lz: int,
-) -> dict[int, float]:
-    """
-    Baut ausgaben_plan für Primärhypothek + beliebig viele Einmalzahlungen.
-
-    Einmalzahlungen vor/am endjahr reduzieren die Restschuld für den Anschlusskredit.
-    Einmalzahlungen im Anschlusszeitraum kürzen das verbleibende Anschlusskapital;
-    die Annuität wird für den Restabschnitt neu berechnet.
-    """
-    def _rate(k: float, z: float, n: int) -> float:
-        if n <= 0 or k <= 0:
-            return 0.0
-        if z <= 0:
-            return k / n
-        return k * z * (1 + z) ** n / ((1 + z) ** n - 1)
-
-    plan: dict[int, float] = {}
-    for row in hyp_schedule:
-        plan[row["Jahr"]] = plan.get(row["Jahr"], 0.0) + row["Jahresausgabe"]
-
-    sorted_ezl = sorted(einmalzahlungen, key=lambda e: e["jahr"])
-    for e in sorted_ezl:
-        plan[e["jahr"]] = plan.get(e["jahr"], 0.0) + float(e["betrag"])
-
-    primary_sum = sum(float(e["betrag"]) for e in sorted_ezl if int(e["jahr"]) <= endjahr)
-    ak_bal = max(0.0, restschuld_endjahr - primary_sum)
-    if ak_bal <= 0.01 or anschluss_lz <= 0:
-        return plan
-
-    ak_payments = sorted(
-        [(int(e["jahr"]), float(e["betrag"])) for e in sorted_ezl if int(e["jahr"]) > endjahr],
-        key=lambda x: x[0],
-    )
-    ak_start_yr = endjahr
-    years_used = 0
-    pidx = 0
-
-    while ak_bal > 0.01 and years_used < anschluss_lz:
-        lz_rem = anschluss_lz - years_used
-        rate = _rate(ak_bal, markt_zins_pa, lz_rem)
-        next_ep_yr = ak_payments[pidx][0] if pidx < len(ak_payments) else endjahr + anschluss_lz + 1
-        seg_end = min(next_ep_yr, endjahr + anschluss_lz)
-
-        for yr in range(ak_start_yr + 1, seg_end + 1):
-            if ak_bal <= 0.01 or years_used >= anschluss_lz:
-                break
-            plan[yr] = plan.get(yr, 0.0) + rate
-            zinsen = ak_bal * markt_zins_pa
-            ak_bal = max(0.0, ak_bal - max(0.0, rate - zinsen))
-            years_used += 1
-
-        if pidx < len(ak_payments) and ak_payments[pidx][0] == seg_end:
-            ak_bal = max(0.0, ak_bal - ak_payments[pidx][1])
-            ak_start_yr = ak_payments[pidx][0]
-            pidx += 1
-        else:
-            break
-
-    return plan
 
 
 def _aus_dict(d: dict) -> VorsorgeProdukt:
@@ -622,190 +556,69 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "🏠 Hypothek in Optimierung berücksichtigen",
                 value=True,
                 key=f"rc{_rc}_eo_hyp_aktiv",
-                help="Berücksichtigt laufende Hypothekraten und Restschuld-Behandlung "
-                     "im Ausgaben-Plan der Optimierung.",
+                help="Berücksichtigt laufende Hypothekraten und die im Tab 🏠 Hypothek "
+                     "konfigurierte Restschuld-Strategie.",
             )
             if _hyp_checkbox:
                 _de_h = lambda v: f"{v:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                _rs = _hyp_info["restschuld_end"]
+                _rs            = _hyp_info["restschuld_end"]
                 _markt_zins_pa = _hyp_info["anschluss_zins_pa"]
                 _anschluss_lz  = _hyp_info["anschluss_laufzeit"]
+                _behandlung    = _hyp_info.get("restschuld_behandlung", "keine")
+                _raten_aus_kapital = _hyp_info.get("raten_aus_kapital", False)
+                _hyp_ezl       = _hyp_info.get("anschluss_einmalzahlungen", [])
+                _endjahr_hyp   = _hyp_info["endjahr"]
+
+                _st_labels = {
+                    "keine":           "Keine Restschuld-Planung",
+                    "ratenkredit":     (
+                        f"Anschluss-Ratenkredit {_markt_zins_pa*100:.2f} % · {_anschluss_lz} J."
+                        + (" · Raten aus Kapital" if _raten_aus_kapital else "")
+                    ),
+                    "kapitalanlage":   "Kapital-Einmaltilgung im Endjahr",
+                    "einmalzahlungen": (
+                        f"Sondertilgungen ({len(_hyp_ezl)} EZ)" if _hyp_ezl
+                        else "Sondertilgungen (keine EZ erfasst)"
+                    ),
+                }
                 st.caption(
-                    f"Hypothek {_hyp_info['startjahr']}–{_hyp_info['endjahr']} · "
+                    f"Hypothek {_hyp_info['startjahr']}–{_endjahr_hyp} · "
                     f"Rate {_de_h(_hyp_info['jaehrl_rate'])} €/Jahr · "
-                    f"Nominalzins {_hyp_info['zins_pa']*100:.2f} % · "
-                    f"Restschuld Endjahr {_hyp_info['endjahr']}: **{_de_h(_rs)} €**"
+                    f"Restschuld {_de_h(_rs)} € · "
+                    f"Strategie: **{_st_labels.get(_behandlung, '–')}**  \n"
+                    "↳ Strategie und Parameter im Tab **🏠 Hypothek** konfigurieren."
                 )
-                _endjahr_hyp = _hyp_info['endjahr']
-                if _spkap > 0:
-                    _raten_aus_kapital = st.checkbox(
-                        "💳 Laufende Raten aus Kapital (wenn ausreichend)",
-                        value=False,
-                        key=f"rc{_rc}_eo_hyp_raten_kapital",
-                        help="Wenn aktiviert, werden laufende Hypothekenraten vorrangig aus "
-                             "dem Sparkapital gedeckt. Reicht das Kapital nicht, übernimmt das "
-                             "Einkommen. In der Tabelle unter dem Jahresverlauf-Diagramm wird "
-                             "die Quelle farblich markiert (blau = Kapital, rot = Einkommen).",
-                    )
+
+                _ausgaben_plan = get_ausgaben_plan_optimierung()
+
+                if _behandlung == "ratenkredit":
+                    _anschluss_spar = _raten_aus_kapital
+                    _ak_zeitleiste_rs = _rs
+                    _ak_zeitleiste_startjahr = _endjahr_hyp
                     if _raten_aus_kapital:
                         _spkap_pool_startjahr = _hyp_info["startjahr"]
                         _spkap_pool_wert = kapitalwachstum(
                             _spkap_orig, _spkap_sparrate, _spkap_rendite,
                             max(0, _spkap_pool_startjahr - AKTUELLES_JAHR),
                         )
-                if _rs > 0:
-                    # Anschluss-Zinssatz und Laufzeit kommen direkt aus dem Hypothek-Tab
-                    st.caption(
-                        f"Anschlussfinanzierung: {_markt_zins_pa*100:.2f} % · "
-                        f"{_anschluss_lz} Jahre · Zinssatz/Laufzeit im Tab **🏠 Hypothek-Verwaltung** ändern."
+                elif _behandlung == "kapitalanlage":
+                    _pool_tilgung = True
+                    _einmal_tilgung = True
+                elif _behandlung == "einmalzahlungen" and _hyp_ezl:
+                    _pool_tilgung = True
+                    _primary_ez_sum = sum(
+                        float(e["betrag"]) for e in _hyp_ezl if int(e["jahr"]) <= _endjahr_hyp
                     )
-
-                    # Kapitaleinsatz-Strategie
-                    if _spkap > 0:
-                        _kapital_einsatz = st.radio(
-                            "Kapital einsetzen",
-                            ["anschlussraten", "einmalzahlung"],
-                            format_func=lambda x: {
-                                "anschlussraten": "💰 Kapital für Anschlussraten (Pool deckt Raten vorrangig, Rest aus Einkommen)",
-                                "einmalzahlung":  "🏦 Kapital für Einmalzahlung; verbleibende Restschuld als Anschlusskredit aus Einkommen",
-                            }[x],
-                            key=f"rc{_rc}_eo_hyp_kapital_einsatz",
-                        )
-                    else:
-                        _kapital_einsatz = "kein_kapital"
-
-                    if _kapital_einsatz == "anschlussraten":
-                        _anschluss_spar = True
-                        _ausgaben_plan = get_ausgaben_plan_optimierung(_markt_zins_pa, _anschluss_lz)
-                        _ak_zeitleiste_rs        = _rs
-                        _ak_zeitleiste_startjahr = _endjahr_hyp
-
-                    elif _kapital_einsatz == "einmalzahlung":
-                        _hyp_ezl = list(st.session_state.get("eo_hyp_einmalzahlungen", []))
-                        _ez_max_jahr = _endjahr_hyp + _anschluss_lz
-                        hc3, hc4, hc5 = st.columns([2, 2, 1])
-                        with hc3:
-                            _ez_jahr_new = int(st.number_input(
-                                "Jahr der Einmalzahlung",
-                                min_value=AKTUELLES_JAHR,
-                                max_value=_ez_max_jahr,
-                                value=min(_endjahr_hyp, _ez_max_jahr),
-                                step=1,
-                                key=f"rc{_rc}_eo_hyp_ez_jahr_new",
-                            ))
-                        with hc4:
-                            _spkap_at_ez_new = kapitalwachstum(
-                                _spkap_orig, _spkap_sparrate, _spkap_rendite,
-                                max(0, _ez_jahr_new - AKTUELLES_JAHR),
-                            )
-                            _ez_betrag_new = float(st.number_input(
-                                "Betrag (€)",
-                                min_value=0.0,
-                                max_value=float(max(_rs, _spkap_at_ez_new, 1.0)),
-                                value=float(min(_spkap_at_ez_new, _rs)),
-                                step=1_000.0,
-                                key=f"rc{_rc}_eo_hyp_ez_betrag_new",
-                            ))
-                        with hc5:
-                            st.write("")
-                            st.write("")
-                            if st.button("＋", key=f"rc{_rc}_eo_hyp_ez_add",
-                                         help="Einmalzahlung hinzufügen"):
-                                _hyp_ezl.append({"jahr": _ez_jahr_new, "betrag": _ez_betrag_new})
-                                _hyp_ezl.sort(key=lambda e: e["jahr"])
-                                st.session_state["eo_hyp_einmalzahlungen"] = _hyp_ezl
-                                st.rerun()
-                        _ez_edit_idx: int | None = st.session_state.get("eo_hyp_ez_edit_idx")
-                        if _hyp_ezl:
-                            for _zi, _ze in enumerate(_hyp_ezl):
-                                if _ez_edit_idx == _zi:
-                                    # Inline-Bearbeitung
-                                    _ec1, _ec2, _ec3 = st.columns([2, 2, 1])
-                                    with _ec1:
-                                        _edit_jahr = int(st.number_input(
-                                            "Jahr",
-                                            min_value=AKTUELLES_JAHR,
-                                            max_value=_endjahr_hyp + _anschluss_lz,
-                                            value=int(_ze["jahr"]),
-                                            step=1,
-                                            key=f"rc{_rc}_eo_hyp_ez_edit_j_{_zi}",
-                                        ))
-                                    with _ec2:
-                                        _edit_betrag = float(st.number_input(
-                                            "Betrag (€)",
-                                            min_value=0.0,
-                                            max_value=float(max(_rs, 1.0)),
-                                            value=float(_ze["betrag"]),
-                                            step=1_000.0,
-                                            key=f"rc{_rc}_eo_hyp_ez_edit_b_{_zi}",
-                                        ))
-                                    with _ec3:
-                                        st.write(""); st.write("")
-                                        if st.button("✓", key=f"rc{_rc}_eo_hyp_ez_save_{_zi}",
-                                                     help="Speichern"):
-                                            _hyp_ezl[_zi] = {"jahr": _edit_jahr, "betrag": _edit_betrag}
-                                            _hyp_ezl.sort(key=lambda e: e["jahr"])
-                                            st.session_state["eo_hyp_einmalzahlungen"] = _hyp_ezl
-                                            st.session_state.pop("eo_hyp_ez_edit_idx", None)
-                                            st.rerun()
-                                else:
-                                    _zc1, _zc2, _zc3 = st.columns([5, 1, 1])
-                                    with _zc1:
-                                        st.write(f"**{_ze['jahr']}**: {_de_h(_ze['betrag'])} €")
-                                    with _zc2:
-                                        if st.button("✏", key=f"rc{_rc}_eo_hyp_ez_edit_{_zi}",
-                                                     help="Bearbeiten"):
-                                            st.session_state["eo_hyp_ez_edit_idx"] = _zi
-                                            st.rerun()
-                                    with _zc3:
-                                        if st.button("✕", key=f"rc{_rc}_eo_hyp_ez_del_{_zi}",
-                                                     help="Entfernen"):
-                                            _hyp_ezl.pop(_zi)
-                                            st.session_state["eo_hyp_einmalzahlungen"] = _hyp_ezl
-                                            st.session_state.pop("eo_hyp_ez_edit_idx", None)
-                                            st.rerun()
-                        _ausgaben_plan = _einmalzahlungen_ausgaben_plan(
-                            _hyp_ezl, get_hyp_schedule(), _rs, _endjahr_hyp,
-                            _markt_zins_pa, _anschluss_lz,
-                        )
-                        if _hyp_ezl:
-                            _pool_tilgung = True
-                            _spkap_pool_startjahr = min(e["jahr"] for e in _hyp_ezl)
-                            _spkap_pool_wert = kapitalwachstum(
-                                _spkap_orig, _spkap_sparrate, _spkap_rendite,
-                                max(0, _spkap_pool_startjahr - AKTUELLES_JAHR),
-                            )
-                            _primary_ez_sum = sum(
-                                float(e["betrag"]) for e in _hyp_ezl
-                                if int(e["jahr"]) <= _endjahr_hyp
-                            )
-                            _ak_zeitleiste_rs        = max(0.0, _rs - _primary_ez_sum)
-                            _ak_zeitleiste_startjahr = _endjahr_hyp
-                            _total_ez = sum(e["betrag"] for e in _hyp_ezl)
-                            if max(0.0, _rs - _total_ez) < 0.01:
-                                st.caption(
-                                    f"Einmalzahlungen ({len(_hyp_ezl)}×) decken Restschuld "
-                                    f"**{_de_h(_rs)} €** vollständig."
-                                )
-                            else:
-                                st.caption(
-                                    f"Einmalzahlungen ({len(_hyp_ezl)}×): **{_de_h(_total_ez)} €** · "
-                                    f"Anschlusskredit auf Restschuld "
-                                    f"**{_de_h(_ak_zeitleiste_rs)} €** "
-                                    f"ab {_endjahr_hyp + 1} aus Einkommen."
-                                )
-                        else:
-                            st.caption("Noch keine Einmalzahlungen hinzugefügt.")
-                            _ak_zeitleiste_rs        = _rs
-                            _ak_zeitleiste_startjahr = _endjahr_hyp
-
-                    else:  # kein_kapital
-                        _ausgaben_plan = get_ausgaben_plan_optimierung(_markt_zins_pa, _anschluss_lz)
-                        _ak_zeitleiste_rs        = _rs
-                        _ak_zeitleiste_startjahr = _endjahr_hyp
-                else:
-                    # Keine Restschuld – nur laufende Raten
-                    _ausgaben_plan = get_ausgaben_plan_optimierung(_markt_zins_pa, _anschluss_lz)
+                    _ak_zeitleiste_rs = max(0.0, _rs - _primary_ez_sum)
+                    _ak_zeitleiste_startjahr = _endjahr_hyp
+                    _spkap_pool_startjahr = min(int(e["jahr"]) for e in _hyp_ezl)
+                    _spkap_pool_wert = kapitalwachstum(
+                        _spkap_orig, _spkap_sparrate, _spkap_rendite,
+                        max(0, _spkap_pool_startjahr - AKTUELLES_JAHR),
+                    )
+                elif _behandlung == "einmalzahlungen":
+                    _ak_zeitleiste_rs = _rs
+                    _ak_zeitleiste_startjahr = _endjahr_hyp
 
         # ── Optimierung ausführen ─────────────────────────────────────────────
         st.subheader("🔍 Optimale Auszahlungsstrategie")
@@ -1316,7 +1129,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             with _en_cols[0]:
                 _en_jahr = st.number_input(
                     "Jahr", min_value=AKTUELLES_JAHR, max_value=AKTUELLES_JAHR + 60,
-                    value=_spkap_eintritt_j, step=1, key=f"rc{_rc}_en_jahr",
+                    value=max(AKTUELLES_JAHR, _spkap_eintritt_j), step=1, key=f"rc{_rc}_en_jahr",
                 )
             with _en_cols[1]:
                 _en_betrag = st.number_input(
