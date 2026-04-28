@@ -512,9 +512,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                                " p.a. und erhöhen die Steuerprogression.")
         with oc3:
             if not _profil_eo.bereits_rentner:
-                gehalt = float(st.session_state.get("opt_gehalt_mono", 0.0))
-                if eo_person == "Person 2":
+                if _profil_eo.ist_pensionaer:
                     gehalt = 0.0
+                elif eo_person == "Person 2":
+                    gehalt = _profil_eo.aktuelles_brutto_monatlich
+                else:
+                    gehalt = float(st.session_state.get("opt_gehalt_mono", 0.0))
                 st.metric("Bruttogehalt (aktiv)",
                           f"{_de(gehalt)} €/Mon." if gehalt > 0 else "–",
                           help="Im Tab ⚙️ Profil einstellbar. "

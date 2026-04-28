@@ -78,6 +78,31 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         # Ersetzt die bisherige Näherung netto_eintritt × (1+anp)^n durch
         # vollständige Jahressimulation mit korrekter Steuerprogression.
         # gehalt_monatlich wird mitgegeben, damit Vorjahre (vor Renteneintritt) abgedeckt sind.
+        def _sim_laufende_entsch(person: str | None = None) -> list:
+            try:
+                from tabs.vorsorge import _aus_dict as _vd, _migriere as _vm
+            except ImportError:
+                return []
+            _entsch = []
+            for d in st.session_state.get("vp_produkte", []):
+                d = _vm(d)
+                if d.get("als_kapitalanlage", False):
+                    continue
+                if float(d.get("max_monatsrente", 0.0)) <= 0:
+                    continue
+                if person is not None and d.get("person", "Person 1") != person:
+                    continue
+                try:
+                    _entsch.append((_vd(d), int(d.get("fruehestes_startjahr", AKTUELLES_JAHR + 5)), 0.0))
+                except Exception:
+                    pass
+            return _entsch
+
+        _entsch_sim_all = _sim_laufende_entsch(None)
+        _entsch_sim_p1  = _sim_laufende_entsch("Person 1") if not zusammen_modus else []
+        _person_label_sim = "Person 2" if wahl == "Person 2" else "Person 1"
+        _entsch_sim_ep  = _sim_laufende_entsch(_person_label_sim)
+
         _sz_jd: dict[str, dict[int, dict]] = {}
         for _nm in ["Pessimistisch", "Neutral", "Optimistisch"]:
             _rpa, _kpa = _PARAMS[_nm]
@@ -90,14 +115,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 _p2_n = _dc_replace(profil2, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
                 _e2_n = berechne_rente(_p2_n)
                 _, _jd_n = _netto_ueber_horizont(
-                    _p1_n, _e1_n, [], 32, mieteinnahmen, 0.0,
+                    _p1_n, _e1_n, _entsch_sim_all, 32, mieteinnahmen, 0.0,
                     profil2=_p2_n, ergebnis2=_e2_n, veranlagung=veranlagung,
                     gehalt_monatlich=_g_sim,
                 )
             else:
                 _p_n = _dc_replace(profil, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
                 _e_n = berechne_rente(_p_n)
-                _, _jd_n = _netto_ueber_horizont(_p_n, _e_n, [], 32, 0.0, 0.0,
+                _, _jd_n = _netto_ueber_horizont(_p_n, _e_n, _entsch_sim_ep, 32, 0.0, 0.0,
                                                   gehalt_monatlich=_g_sim)
             _sz_jd[_nm] = {r["Jahr"]: r for r in _jd_n}
 
@@ -119,19 +144,26 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                            + sz2[name].kapital_bei_renteneintritt)
                 _brutto_hh = _row_n["Brutto"] / 12 if _row_n else 0.0
                 _netto_hh  = _row_n["Netto"]  / 12 if _row_n else 0.0
-                rows.append({
+                _bav_hh    = (_row_n.get("Src_bAV_P1", 0) + _row_n.get("Src_bAV_P2", 0)) / 12 if _row_n else 0.0
+                _rie_hh    = (_row_n.get("Src_Riester_P1", 0) + _row_n.get("Src_Riester_P2", 0)) / 12 if _row_n else 0.0
+                _row_dict = {
                     "Szenario": name,
                     "Rentenanpassung p.a.": f"{ren_pa:.1%}".replace(".", ","),
                     "Kapitalrendite p.a.": f"{kap_pa:.1%}".replace(".", ","),
                     "Brutto Haushalt (€/Mon.)": _de(_brutto_hh),
                     "Netto Haushalt (€/Mon.)": _de(_netto_hh),
                     "Kapital gesamt (€)": _de(kapital),
-                })
+                }
+                if _bav_hh > 0: _row_dict["davon bAV (€/Mon.)"] = _de(_bav_hh)
+                if _rie_hh > 0: _row_dict["davon Riester (€/Mon.)"] = _de(_rie_hh)
+                rows.append(_row_dict)
             else:
                 erg = szenarien[name]
                 _brutto_val = _row_n["Brutto"] / 12 if _row_n else 0.0
                 _netto_val  = _row_n["Netto"]  / 12 if _row_n else 0.0
-                rows.append({
+                _bav_val    = _row_n.get("Src_bAV_P1", 0) / 12 if _row_n else 0.0
+                _rie_val    = _row_n.get("Src_Riester_P1", 0) / 12 if _row_n else 0.0
+                _row_dict = {
                     "Szenario": name,
                     "Rentenanpassung p.a.": f"{ren_pa:.1%}".replace(".", ","),
                     "Kapitalrendite p.a.": f"{kap_pa:.1%}".replace(".", ","),
@@ -139,7 +171,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     "Netto (€/Mon.)": _de(_netto_val),
                     "Kapital bei Eintritt (€)": _de(erg.kapital_bei_renteneintritt),
                     "Rentenpunkte": f"{erg.gesamtpunkte:.1f}".replace(".", ","),
-                })
+                }
+                if _bav_val > 0: _row_dict["davon bAV (€/Mon.)"] = _de(_bav_val)
+                if _rie_val > 0: _row_dict["davon Riester (€/Mon.)"] = _de(_rie_val)
+                rows.append(_row_dict)
         st.dataframe(
             pd.DataFrame(rows).set_index("Szenario"),
             use_container_width=True,

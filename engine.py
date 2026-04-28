@@ -1288,6 +1288,10 @@ def _netto_ueber_horizont(
             "Src_Zusatzentgelt": round(_pv_zusatz),
             "Src_GesRente":     round(gesetzl_j if in_rente else 0.0),
             "Src_P2_Rente":     round(p2_brutto_j),
+            "Src_bAV_P1":       round(bav_lfd_j),
+            "Src_Riester_P1":   round(riester_lfd_j),
+            "Src_bAV_P2":       round(p2_bav_lfd_j),
+            "Src_Riester_P2":   round(p2_riester_j),
             "Src_Versorgung":   round(bav_lfd_j + riester_lfd_j + ruerup_brutto_j + priv_brutto_j
                                       + p2_bav_lfd_j + p2_riester_j + p2_ruerup_brutto_j + p2_priv_brutto_j),
             "Src_Einmal":       round(einmal_brutto_j + etf_brutto_j

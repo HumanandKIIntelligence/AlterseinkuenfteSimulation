@@ -110,22 +110,47 @@ def render(
                 help="Zeigt projizierte Einkommenswerte für das gewählte Jahr (mit Rentenanpassung).",
             )
 
-        # Jahresverlauf berechnen (keine Produkte); individuelle Horizonte je Person
+        # Laufende Produkte für die Jahressimulation laden
+        def _hh_laufende_entsch(person: str | None = None) -> list:
+            try:
+                from tabs.vorsorge import _aus_dict as _vd, _migriere as _vm
+            except ImportError:
+                return []
+            _entsch = []
+            for d in _vp_produkte:
+                d = _vm(d)
+                if d.get("als_kapitalanlage", False):
+                    continue
+                if float(d.get("max_monatsrente", 0.0)) <= 0:
+                    continue
+                if person is not None and d.get("person", "Person 1") != person:
+                    continue
+                try:
+                    _entsch.append((_vd(d), int(d.get("fruehestes_startjahr", AKTUELLES_JAHR + 5)), 0.0))
+                except Exception:
+                    pass
+            return _entsch
+
+        _entsch_all = _hh_laufende_entsch(None)
+        _entsch_p1  = _hh_laufende_entsch("Person 1")
+        _entsch_p2  = _hh_laufende_entsch("Person 2")
+
+        # Jahresverlauf berechnen (mit laufenden Produkten); individuelle Horizonte je Person
         _horizont_hh = _end_j - _start_j_ret + 1
         _horizont_p1 = max(1, _end_j - _start_p1 + 1)
         _horizont_p2 = max(1, _end_j - _start_p2 + 1)
         _, _jd_zus = _netto_ueber_horizont(
-            p1, e1, [], _horizont_hh, mieteinnahmen, mietsteigerung,
+            p1, e1, _entsch_all, _horizont_hh, mieteinnahmen, mietsteigerung,
             profil2=p2, ergebnis2=e2, veranlagung="Zusammen",
         )
         _, _jd_get = _netto_ueber_horizont(
-            p1, e1, [], _horizont_hh, mieteinnahmen, mietsteigerung,
+            p1, e1, _entsch_all, _horizont_hh, mieteinnahmen, mietsteigerung,
             profil2=p2, ergebnis2=e2, veranlagung="Getrennt",
         )
         _jd_hh = _jd_zus if veranlagung == "Zusammen" else _jd_get
-        _, _jd_p1 = _netto_ueber_horizont(p1, e1, [], _horizont_p1, 0.0, 0.0,
+        _, _jd_p1 = _netto_ueber_horizont(p1, e1, _entsch_p1, _horizont_p1, 0.0, 0.0,
                                            gehalt_monatlich=_gehalt_p1)
-        _, _jd_p2 = _netto_ueber_horizont(p2, e2, [], _horizont_p2, 0.0, 0.0,
+        _, _jd_p2 = _netto_ueber_horizont(p2, e2, _entsch_p2, _horizont_p2, 0.0, 0.0,
                                            gehalt_monatlich=_gehalt_p2)
 
         def _row_for_year(jd: list[dict], jahr: int) -> dict | None:
@@ -153,6 +178,14 @@ def render(
                     "Netto":  (_r1["Netto"]  if _r1 else 0) + (_r2["Netto"]  if _r2 else 0),
                     "Steuer": (_r1["Steuer"] if _r1 else 0) + (_r2["Steuer"] if _r2 else 0),
                     "KV_PV":  (_r1["KV_PV"]  if _r1 else 0) + (_r2["KV_PV"]  if _r2 else 0),
+                    "Src_GesRente": (_r1.get("Src_GesRente", 0) if _r1 else 0),
+                    "Src_Gehalt":   (_r1.get("Src_Gehalt", 0) if _r1 else 0),
+                    "Src_P2_Rente": (_r2.get("Src_GesRente", 0) + _r2.get("Src_Gehalt", 0) if _r2 else 0),
+                    "Src_bAV_P1":    (_r1.get("Src_bAV_P1", 0) if _r1 else 0),
+                    "Src_Riester_P1":(_r1.get("Src_Riester_P1", 0) if _r1 else 0),
+                    "Src_bAV_P2":    (_r2.get("Src_bAV_P1", 0) if _r2 else 0),
+                    "Src_Riester_P2":(_r2.get("Src_Riester_P1", 0) if _r2 else 0),
+                    "Src_Miete":     (_r1.get("Src_Miete", 0) if _r1 else 0),
                 })
 
         _row_comb = _row_for_year(_jd_combined, betrachtungsjahr)
@@ -433,10 +466,37 @@ def render(
                 if fa["startjahr"] <= betrachtungsjahr <= fa["endjahr"]
             ]
             _fix_m_wf = sum(fa["betrag_monatlich"] for fa in _aktive_fix)
-            _wf_x    = ["Brutto", "− Einkommensteuer", "− KV / PV"]
+
+            # bAV und Riester aus der aktuellen Zeile extrahieren
+            if ansicht == "Haushalt gesamt" and _row_comb:
+                _bav_m_wf     = (_row_comb.get("Src_bAV_P1", 0) + _row_comb.get("Src_bAV_P2", 0)) / 12
+                _riester_m_wf = (_row_comb.get("Src_Riester_P1", 0) + _row_comb.get("Src_Riester_P2", 0)) / 12
+            elif ansicht == "Person 1" and _row_p1:
+                _bav_m_wf     = _row_p1.get("Src_bAV_P1", 0) / 12
+                _riester_m_wf = _row_p1.get("Src_Riester_P1", 0) / 12
+            elif ansicht == "Person 2" and _row_p2:
+                _bav_m_wf     = _row_p2.get("Src_bAV_P1", 0) / 12
+                _riester_m_wf = _row_p2.get("Src_Riester_P1", 0) / 12
+            else:
+                _bav_m_wf = _riester_m_wf = 0.0
+            _b_basis = _b - _bav_m_wf - _riester_m_wf
+
+            _wf_x    = ["Rente/Pension", "− Einkommensteuer", "− KV / PV"]
             _wf_meas = ["absolute", "relative", "relative"]
-            _wf_y    = [_b, -_s, -_k]
-            _wf_t    = [f"{_de(_b)} €", f"−{_de(_s)} €", f"−{_de(_k)} €"]
+            _wf_y    = [_b_basis, -_s, -_k]
+            _wf_t    = [f"{_de(_b_basis)} €", f"−{_de(_s)} €", f"−{_de(_k)} €"]
+            # bAV / Riester als separate Schritte (vor Steuer, grün eingefärbt via increasing)
+            if _bav_m_wf > 0:
+                _wf_x.insert(1, "+ bAV")
+                _wf_meas.insert(1, "relative")
+                _wf_y.insert(1, _bav_m_wf)
+                _wf_t.insert(1, f"+{_de(_bav_m_wf)} €")
+            if _riester_m_wf > 0:
+                _ins = 2 if _bav_m_wf > 0 else 1
+                _wf_x.insert(_ins, "+ Riester")
+                _wf_meas.insert(_ins, "relative")
+                _wf_y.insert(_ins, _riester_m_wf)
+                _wf_t.insert(_ins, f"+{_de(_riester_m_wf)} €")
             if _vorsorge_nbav_m > 0:
                 _wf_x.append("− Vorsorge\n(ohne bAV)")
                 _wf_meas.append("relative")
@@ -485,6 +545,22 @@ def render(
                 separators=",.",
             )
             st.plotly_chart(fig_wf_hh, use_container_width=True)
+            # Infobox für bAV / Riester
+            if _bav_m_wf > 0 or _riester_m_wf > 0:
+                _info_parts = []
+                if _bav_m_wf > 0:
+                    _info_parts.append(
+                        f"**+ bAV ({_de(_bav_m_wf)} €/Mon.):** Betriebliche Altersversorgung – "
+                        f"laufende monatliche Auszahlungen aus Vorsorge-Bausteinen. "
+                        f"100 % steuerpflichtig (§ 19/§ 22 Nr. 5 EStG), KVdR-pflichtig (§ 229 SGB V, Freibetrag {_de(187.25)} €/Mon.)."
+                    )
+                if _riester_m_wf > 0:
+                    _info_parts.append(
+                        f"**+ Riester ({_de(_riester_m_wf)} €/Mon.):** Riester-Rente – "
+                        f"laufende monatliche Auszahlungen. "
+                        f"100 % steuerpflichtig (§ 22 Nr. 5 EStG), nicht KVdR-pflichtig."
+                    )
+                st.info("  \n".join(_info_parts))
             if _vorsorge_nbav_einzeln:
                 _vb_lines = "  \n".join(
                     f"**{_vn}:** {_de(_vm)} €/Mon."

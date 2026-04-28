@@ -18,6 +18,29 @@ def _de(v: float, dec: int = 0) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _load_laufende_entsch(person: str | None = None) -> list:
+    """VorsorgeProdukt-Entscheidungen für laufende (nicht als_kapitalanlage) Produkte."""
+    try:
+        from tabs.vorsorge import _aus_dict as _vd, _migriere as _vm
+    except ImportError:
+        return []
+    entsch = []
+    for d in st.session_state.get("vp_produkte", []):
+        d = _vm(d)
+        if d.get("als_kapitalanlage", False):
+            continue
+        if float(d.get("max_monatsrente", 0.0)) <= 0:
+            continue
+        if person is not None and d.get("person", "Person 1") != person:
+            continue
+        try:
+            prod = _vd(d)
+            entsch.append((prod, prod.fruehestes_startjahr, 0.0))
+        except Exception:
+            pass
+    return entsch
+
+
 def _grenzsteuersatz(zvE: float) -> float:
     if zvE <= 11_604:
         return 0.0
@@ -163,13 +186,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             _start_slider_hh = AKTUELLES_JAHR if (_g_p1 > 0 or _g_p2 > 0) else _start_hh
             _hz_p1 = _end_hh - _start_p1_ret + 1
             _hz_p2 = _end_hh - _start_p2_ret + 1
+            _entsch_all = _load_laufende_entsch(None)
+            _entsch_p1  = _load_laufende_entsch("Person 1")
+            _entsch_p2  = _load_laufende_entsch("Person 2")
             _, _jd_dash    = _netto_ueber_horizont(
-                profil, ergebnis, [], _hz_p1, mieteinnahmen, mietsteigerung,
+                profil, ergebnis, _entsch_all, _hz_p1, mieteinnahmen, mietsteigerung,
                 profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
                 gehalt_monatlich=_g_p1,
             )
-            _, _jd_dash_p1 = _netto_ueber_horizont(profil,  ergebnis,  [], _hz_p1, 0.0, 0.0, gehalt_monatlich=_g_p1)
-            _, _jd_dash_p2 = _netto_ueber_horizont(profil2, ergebnis2, [], _hz_p2, 0.0, 0.0, gehalt_monatlich=_g_p2)
+            _, _jd_dash_p1 = _netto_ueber_horizont(profil,  ergebnis,  _entsch_p1, _hz_p1, 0.0, 0.0, gehalt_monatlich=_g_p1)
+            _, _jd_dash_p2 = _netto_ueber_horizont(profil2, ergebnis2, _entsch_p2, _hz_p2, 0.0, 0.0, gehalt_monatlich=_g_p2)
             _sel_j_dash = st.slider(
                 "Betrachtungsjahr", _start_slider_hh, _end_hh,
                 min(_end_hh, max(_start_slider_hh, _start_hh)), key=f"rc{_rc}_dash_jahr",
@@ -178,13 +204,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             _row_dash    = next((r for r in _jd_dash    if r["Jahr"] == _sel_j_dash), None)
             _row_dash_p1 = next((r for r in _jd_dash_p1 if r["Jahr"] == _sel_j_dash), None)
             _row_dash_p2 = next((r for r in _jd_dash_p2 if r["Jahr"] == _sel_j_dash), None)
-            # Einzelnetto für P1 vs P2 Chart (keine Mieteinnahmen → nur Rente)
+            # Einzelnetto für P1 vs P2 Chart (inkl. Produkteinkommen)
             _p1_n_y = _row_dash_p1["Netto"]  / 12 if _row_dash_p1 else ergebnis.netto_monatlich
             _p2_n_y = _row_dash_p2["Netto"]  / 12 if _row_dash_p2 else ergebnis2.netto_monatlich
-            # P1/P2 Brutto aus Src-Feldern des HH-Datensatzes (ohne Produkte = nur Rente/Gehalt)
+            # P1/P2 Basis-Brutto (Rente/Pension/Gehalt, ohne bAV/Riester)
             _p1_b_y = (_row_dash.get("Src_GesRente", 0) + _row_dash.get("Src_Gehalt", 0)) / 12 \
                       if _row_dash else ergebnis.brutto_monatlich
             _p2_b_y = _row_dash.get("Src_P2_Rente", 0) / 12 if _row_dash else ergebnis2.brutto_monatlich
+            # bAV und Riester (P1 + P2 zusammen, aus HH-Simulation)
+            _zus_bav = (_row_dash.get("Src_bAV_P1", 0) + _row_dash.get("Src_bAV_P2", 0)) / 12 \
+                       if _row_dash else 0.0
+            _zus_riester = (_row_dash.get("Src_Riester_P1", 0) + _row_dash.get("Src_Riester_P2", 0)) / 12 \
+                           if _row_dash else 0.0
             _miete_y = _row_dash.get("Src_Miete", 0) / 12 if _row_dash else mieteinnahmen
             # zvE für Steuerampel
             _zvE_dash = _row_dash["zvE"] if _row_dash else (ergebnis.zvE_jahres + ergebnis2.zvE_jahres + mieteinnahmen * 12)
@@ -268,18 +299,35 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
             # ── Wasserfall Haushalt Brutto → Netto ───────────────────────────
             st.subheader(f"Haushalt Brutto → Netto {_sel_j_dash} (monatlich)")
-            _wf_x = ["P1 Brutto", "P2 Brutto"]
+            _wf_x = ["P1 Rente/Pension", "P2 Rente/Pension"]
             _wf_m = ["absolute", "relative"]
             _wf_y = [_p1_b_y, _p2_b_y]
             _wf_t = [
                 f"{_de(_p1_b_y)} €",
                 f"+{_de(_p2_b_y)} €",
             ]
+            if _zus_bav > 0:
+                _wf_x.append("+ bAV")
+                _wf_m.append("relative")
+                _wf_y.append(_zus_bav)
+                _wf_t.append(f"+{_de(_zus_bav)} €")
+            if _zus_riester > 0:
+                _wf_x.append("+ Riester")
+                _wf_m.append("relative")
+                _wf_y.append(_zus_riester)
+                _wf_t.append(f"+{_de(_zus_riester)} €")
             if _miete_y > 0:
                 _wf_x.append("Mieteinnahmen")
                 _wf_m.append("relative")
                 _wf_y.append(_miete_y)
                 _wf_t.append(f"+{_de(_miete_y)} €")
+            # Sonstige Einnahmen (Rürup, PrivRV, Kapitalverzehr etc.)
+            _sonst_zus = _hh_brutto - _p1_b_y - _p2_b_y - _zus_bav - _zus_riester - _miete_y
+            if _sonst_zus > 0.5:
+                _wf_x.append("+ Sonstige")
+                _wf_m.append("relative")
+                _wf_y.append(_sonst_zus)
+                _wf_t.append(f"+{_de(_sonst_zus)} €")
             _wf_x += ["− Einkommensteuer", "− KV/PV", "Netto Haushalt"]
             _wf_m += ["relative", "relative", "total"]
             _wf_y += [-_hh_steuer, -_hh_kv, _hh_netto]
@@ -398,12 +446,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         # EINZELPERSON-ANSICHT (Person 1 oder Person 2)
         # ══════════════════════════════════════════════════════════════════════
 
-        # Jahressimulation für Slider (keine Produkte)
+        # Jahressimulation für Slider (mit laufenden Produkten)
         _start_einzel = profil.rentenbeginn_jahr if profil.bereits_rentner else profil.eintritt_jahr
         _g_einzel = 0.0 if profil.ist_pensionaer or profil.bereits_rentner else profil.aktuelles_brutto_monatlich
         _start_slider_einzel = AKTUELLES_JAHR if _g_einzel > 0 else _start_einzel
         _end_einzel = _start_einzel + 30
-        _, _jd_dash = _netto_ueber_horizont(profil, ergebnis, [], 31, mieteinnahmen, mietsteigerung, gehalt_monatlich=_g_einzel)
+        _person_label_einzel = "Person 2" if wahl == "Person 2" else "Person 1"
+        _entsch_einzel = _load_laufende_entsch(_person_label_einzel)
+        _, _jd_dash = _netto_ueber_horizont(profil, ergebnis, _entsch_einzel, 31, mieteinnahmen, mietsteigerung, gehalt_monatlich=_g_einzel)
         _sel_j_dash = st.slider(
             "Betrachtungsjahr", _start_slider_einzel, _end_einzel,
             min(_end_einzel, max(_start_slider_einzel, _start_einzel)), key=f"rc{_rc}_dash_jahr",
@@ -415,6 +465,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         _d_steuer = _row_dash["Steuer"] / 12 if _row_dash else ergebnis.steuer_monatlich
         _d_kv     = _row_dash["KV_PV"]  / 12 if _row_dash else ergebnis.kv_monatlich
         _d_zvE    = _row_dash["zvE"]         if _row_dash else ergebnis.zvE_jahres
+        _d_bav    = _row_dash.get("Src_bAV_P1", 0) / 12 if _row_dash else 0.0
+        _d_riester= _row_dash.get("Src_Riester_P1", 0) / 12 if _row_dash else 0.0
+        # Basis = alles außer bAV/Riester (gesetzl. Rente/Pension + Rürup + PrivRV + Miete etc.)
+        _d_basis  = _d_brutto - _d_bav - _d_riester
 
         abschlag_info = (
             f"  |  **Rentenabschlag:** {ergebnis.rentenabschlag:.1%}".replace(".", ",") +
@@ -505,24 +559,31 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         # ── Wasserfall Brutto → Netto ─────────────────────────────────────────
         st.subheader(f"Brutto → Netto {_sel_j_dash} (monatlich)")
+        _wf_x_e = ["Rente/Pension"]
+        _wf_m_e = ["absolute"]
+        _wf_y_e = [_d_basis]
+        _wf_t_e = [f"{_de(_d_basis)} €"]
+        if _d_bav > 0:
+            _wf_x_e.append("+ bAV")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(_d_bav)
+            _wf_t_e.append(f"+{_de(_d_bav)} €")
+        if _d_riester > 0:
+            _wf_x_e.append("+ Riester")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(_d_riester)
+            _wf_t_e.append(f"+{_de(_d_riester)} €")
+        _wf_x_e += ["− Einkommensteuer", "− KV", "− PV", "Nettorente"]
+        _wf_m_e += ["relative", "relative", "relative", "total"]
+        _wf_y_e += [-_d_steuer, -gkv_mono, -pv_mono, _d_netto]
+        _wf_t_e += [f"−{_de(_d_steuer)} €", f"−{_de(gkv_mono)} €",
+                    f"−{_de(pv_mono)} €", f"{_de(_d_netto)} €"]
         fig_wf = go.Figure(go.Waterfall(
             orientation="v",
-            measure=["absolute", "relative", "relative", "relative", "total"],
-            x=["Bruttorente", "− Einkommensteuer", "− KV", "− PV", "Nettorente"],
-            y=[
-                _d_brutto,
-                -_d_steuer,
-                -gkv_mono,
-                -pv_mono,
-                _d_netto,
-            ],
-            text=[
-                f"{_de(_d_brutto)} €",
-                f"−{_de(_d_steuer)} €",
-                f"−{_de(gkv_mono)} €",
-                f"−{_de(pv_mono)} €",
-                f"{_de(_d_netto)} €",
-            ],
+            measure=_wf_m_e,
+            x=_wf_x_e,
+            y=_wf_y_e,
+            text=_wf_t_e,
             textposition="outside",
             connector=dict(line=dict(color="#888")),
             increasing=dict(marker=dict(color="#4CAF50")),
@@ -545,8 +606,24 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         with left:
             st.subheader("Rentenbausteine")
-            labels = ["Gesetzl. Rente", "Zusatzrente (bAV/privat)"]
-            values = [ergebnis.brutto_gesetzlich, profil.zusatz_monatlich]
+            # Basis: gesetzl. Rente/Pension + sonstige (Rürup, PrivRV etc.) – ohne bAV/Riester
+            _pie_basis = max(0.0, _d_basis)
+            _pie_bav = max(0.0, _d_bav)
+            _pie_riester = max(0.0, _d_riester)
+            labels = []
+            values = []
+            if _pie_basis > 0:
+                labels.append("Gesetzl. Rente/Pension")
+                values.append(_pie_basis)
+            if _pie_bav > 0:
+                labels.append("bAV")
+                values.append(_pie_bav)
+            if _pie_riester > 0:
+                labels.append("Riester")
+                values.append(_pie_riester)
+            if not labels:
+                labels = ["Gesetzl. Rente/Pension", "Zusatzrente"]
+                values = [ergebnis.brutto_gesetzlich, profil.zusatz_monatlich]
             if any(v > 0 for v in values):
                 fig_pie = go.Figure(go.Pie(
                     labels=labels,
