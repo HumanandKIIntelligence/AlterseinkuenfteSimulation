@@ -533,12 +533,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # ── Hypothek ──────────────────────────────────────────────────────────
         _hyp_info = get_hyp_info()
         _ausgaben_plan: dict[int, float] = {}
-        _rs             = 0.0
-        _pool_tilgung   = False
-        _anschluss_spar = False
-        _einmal_tilgung = False
-        _markt_zins_pa  = 0.04
-        _anschluss_lz   = 10
+        _rs              = 0.0
+        _pool_tilgung    = False
+        _anschluss_spar  = False
+        _einmal_tilgung  = False
+        _markt_zins_pa   = 0.04
+        _anschluss_lz    = 10
+        _ak_zeitleiste_rs        = 0.0
+        _ak_zeitleiste_startjahr = 0
+        _spkap_pool_startjahr    = _spkap_eintritt_j
+        _spkap_pool_wert         = _spkap
 
         if _hyp_info:
             _hyp_checkbox = st.checkbox(
@@ -559,64 +563,111 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     f"Nominalzins {_hyp_info['zins_pa']*100:.2f} % · "
                     f"Restschuld Endjahr {_hyp_info['endjahr']}: **{_de_h(_rs)} €**"
                 )
+                _endjahr_hyp = _hyp_info['endjahr']
                 if _rs > 0:
-                    # Kapital am Hypothek-Endjahr berechnen
-                    _endjahr_hyp = _hyp_info['endjahr']
-                    if _endjahr_hyp <= _spkap_eintritt_j:
-                        _spkap_at_endjahr = kapitalwachstum(
-                            _spkap_orig, _spkap_sparrate, _spkap_rendite,
-                            max(0, _endjahr_hyp - AKTUELLES_JAHR)
+                    # Anschlusskredit-Parameter (immer bei offener Restschuld)
+                    hc1, hc2 = st.columns(2)
+                    with hc1:
+                        _markt_zins_pct = st.number_input(
+                            "Anschluss-Zinssatz (%)", 0.0, 20.0,
+                            value=round(_hyp_info["anschluss_zins_pa"] * 100, 2),
+                            step=0.05, format="%.2f",
+                            key=f"rc{_rc}_eo_hyp_markt_zins",
                         )
-                    else:
-                        _spkap_at_endjahr = kapitalwachstum(
-                            _spkap, 0.0, _spkap_rendite,
-                            max(0, _endjahr_hyp - _spkap_eintritt_j)
-                        )
-                    _tilg_opts = ["Anschlussfinanzierung (Ratenkredit)"]
-                    if _spkap_at_endjahr >= _rs:
-                        _tilg_opts.append("Einmaltilgung aus Kapital")
-                    _tilgungsart = st.radio(
-                        "Restschuld-Behandlung",
-                        _tilg_opts,
-                        horizontal=True,
-                        key=f"rc{_rc}_eo_hyp_tilgungsart",
-                    )
-                    if _tilgungsart == "Anschlussfinanzierung (Ratenkredit)":
-                        hc1, hc2 = st.columns(2)
-                        with hc1:
-                            _markt_zins_pct = st.number_input(
-                                "Marktaktueller Anschluss-Zinssatz (%)", 0.0, 20.0,
-                                value=round(_hyp_info["anschluss_zins_pa"] * 100, 2),
-                                step=0.05, format="%.2f",
-                                key=f"rc{_rc}_eo_hyp_markt_zins",
-                                help="Nominalzins der Anschlussfinanzierung.",
-                            )
-                            _markt_zins_pa = _markt_zins_pct / 100.0
-                        with hc2:
-                            _anschluss_lz = int(st.number_input(
-                                "Laufzeit Anschlussfinanzierung (Jahre)", 1, 30,
-                                value=_hyp_info["anschluss_laufzeit"], step=1,
-                                key=f"rc{_rc}_eo_hyp_anschl_lz",
-                            ))
-                        _anschluss_spar = st.checkbox(
-                            "💰 Kapital für Anschlussraten einsetzen",
-                            value=False,
-                            key=f"rc{_rc}_eo_hyp_anschluss_spar",
-                            help="Das Kapital deckt die Anschlussfinanzierungs-Raten "
-                                 "vorrangig aus dem Pool. Reicht der Pool nicht aus, "
-                                 "wird der Rest vom Netto abgezogen.",
-                        )
-                    else:
-                        _einmal_tilgung = True
-                        _pool_tilgung   = True
-                        st.caption(
-                            f"Restschuld **{_de_h(_rs)} €** wird im Jahr **{_endjahr_hyp}** "
-                            f"aus Kapital getilgt (verfügbar: **{_de_h(_spkap_at_endjahr)} €**)."
-                        )
+                        _markt_zins_pa = _markt_zins_pct / 100.0
+                    with hc2:
+                        _anschluss_lz = int(st.number_input(
+                            "Laufzeit Anschlussfinanzierung (Jahre)", 1, 30,
+                            value=_hyp_info["anschluss_laufzeit"], step=1,
+                            key=f"rc{_rc}_eo_hyp_anschl_lz",
+                        ))
 
-                _ausgaben_plan = get_ausgaben_plan_optimierung(
-                    _markt_zins_pa, _anschluss_lz, als_einmaltilgung=_einmal_tilgung
-                )
+                    # Kapitaleinsatz-Strategie
+                    if _spkap > 0:
+                        _kapital_einsatz = st.radio(
+                            "Kapital einsetzen",
+                            ["anschlussraten", "einmalzahlung"],
+                            format_func=lambda x: {
+                                "anschlussraten": "💰 Kapital für Anschlussraten (Pool deckt Raten vorrangig, Rest aus Einkommen)",
+                                "einmalzahlung":  "🏦 Kapital für Einmalzahlung; verbleibende Restschuld als Anschlusskredit aus Einkommen",
+                            }[x],
+                            key=f"rc{_rc}_eo_hyp_kapital_einsatz",
+                        )
+                    else:
+                        _kapital_einsatz = "kein_kapital"
+
+                    if _kapital_einsatz == "anschlussraten":
+                        _anschluss_spar = True
+                        _ausgaben_plan = get_ausgaben_plan_optimierung(_markt_zins_pa, _anschluss_lz)
+                        _ak_zeitleiste_rs        = _rs
+                        _ak_zeitleiste_startjahr = _endjahr_hyp
+
+                    elif _kapital_einsatz == "einmalzahlung":
+                        _pool_tilgung = True
+                        hc3, hc4 = st.columns(2)
+                        with hc3:
+                            _einmal_zahlung_jahr = int(st.number_input(
+                                "Jahr der Einmalzahlung",
+                                min_value=AKTUELLES_JAHR, max_value=AKTUELLES_JAHR + 50,
+                                value=_endjahr_hyp, step=1,
+                                key=f"rc{_rc}_eo_hyp_einmal_jahr",
+                            ))
+                        _spkap_at_einmal = kapitalwachstum(
+                            _spkap_orig, _spkap_sparrate, _spkap_rendite,
+                            max(0, _einmal_zahlung_jahr - AKTUELLES_JAHR)
+                        )
+                        with hc4:
+                            _einmal_betrag_raw = float(st.number_input(
+                                "Betrag der Einmalzahlung (€)",
+                                min_value=0.0,
+                                max_value=float(max(_rs, _spkap_at_einmal)),
+                                value=float(min(_spkap_at_einmal, _rs)),
+                                step=1_000.0,
+                                key=f"rc{_rc}_eo_hyp_einmal_betrag",
+                            ))
+                        _ak_principal = max(0.0, _rs - _einmal_betrag_raw)
+                        # Ausgaben-Plan manuell
+                        _ausgaben_plan = {}
+                        for _hr in get_hyp_schedule():
+                            _ausgaben_plan[_hr["Jahr"]] = _ausgaben_plan.get(_hr["Jahr"], 0.0) + _hr["Jahresausgabe"]
+                        _ausgaben_plan[_einmal_zahlung_jahr] = (
+                            _ausgaben_plan.get(_einmal_zahlung_jahr, 0.0) + _einmal_betrag_raw
+                        )
+                        if _ak_principal > 0 and _anschluss_lz > 0:
+                            _ak_r_ez = (
+                                _ak_principal * _markt_zins_pa
+                                * (1 + _markt_zins_pa) ** _anschluss_lz
+                                / ((1 + _markt_zins_pa) ** _anschluss_lz - 1)
+                                if _markt_zins_pa > 0
+                                else _ak_principal / _anschluss_lz
+                            )
+                            for _i in range(_anschluss_lz):
+                                _yr = _einmal_zahlung_jahr + 1 + _i
+                                _ausgaben_plan[_yr] = _ausgaben_plan.get(_yr, 0.0) + _ak_r_ez
+                        # Pool startet im Zahlungsjahr (nicht Renteneintritt)
+                        _spkap_pool_startjahr = _einmal_zahlung_jahr
+                        _spkap_pool_wert      = _spkap_at_einmal
+                        if _ak_principal > 0:
+                            st.caption(
+                                f"Einmalzahlung **{_de_h(_einmal_betrag_raw)} €** in {_einmal_zahlung_jahr} · "
+                                f"Anschlusskredit auf Restschuld **{_de_h(_ak_principal)} €** "
+                                f"ab {_einmal_zahlung_jahr + 1} aus Einkommen."
+                            )
+                            _ak_zeitleiste_rs        = _ak_principal
+                            _ak_zeitleiste_startjahr = _einmal_zahlung_jahr + 1
+                        else:
+                            st.caption(
+                                f"Einmalzahlung **{_de_h(_einmal_betrag_raw)} €** in {_einmal_zahlung_jahr} "
+                                f"deckt Restschuld vollständig."
+                            )
+
+                    else:  # kein_kapital
+                        _ausgaben_plan = get_ausgaben_plan_optimierung(_markt_zins_pa, _anschluss_lz)
+                        _ak_zeitleiste_rs        = _rs
+                        _ak_zeitleiste_startjahr = _endjahr_hyp
+                else:
+                    # Keine Restschuld – nur laufende Raten
+                    _ausgaben_plan = get_ausgaben_plan_optimierung(_markt_zins_pa, _anschluss_lz)
 
         # ── Optimierung ausführen ─────────────────────────────────────────────
         st.subheader("🔍 Optimale Auszahlungsstrategie")
@@ -627,8 +678,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         if _use_spar_pool:
             _spar_prod = VorsorgeProdukt(
                 id="__sparkapital__", typ="ETF", name="Sparkapital", person="Person 1",
-                max_einmalzahlung=_spkap, max_monatsrente=0.0, laufzeit_jahre=0,
-                fruehestes_startjahr=_spkap_eintritt_j, spaetestes_startjahr=_spkap_eintritt_j,
+                max_einmalzahlung=_spkap_pool_wert, max_monatsrente=0.0, laufzeit_jahre=0,
+                fruehestes_startjahr=_spkap_pool_startjahr,
+                spaetestes_startjahr=_spkap_pool_startjahr,
                 aufschub_rendite=0.0, einzahlungen_gesamt=_spkap_orig,
                 als_kapitalanlage=True, kap_rendite_pa=_spkap_rendite,
                 erzwungener_anteil=1.0,
@@ -1109,89 +1161,43 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
             _p1_post_series_gesamt: pd.Series | None = None
             _p2_post_series_gesamt: pd.Series | None = None
+            _hat_partner_kap = _spkap2_orig > 0 or bool(_p2_pool_pids)
 
-            # ── P1 Kapital (Anspar + kombinierter Post-Rentenwert) ──────────
+            # ── P1 Kapital (ab Renteneintritt, verzinst ohne Entnahme-Abzug) ──
             if _spkap_orig > 0 or _p1_pool_pids:
-                # Pre-retirement: Anspar-Linie (Sparkapital)
-                if _spkap_orig > 0 and not _profil_eo.bereits_rentner:
-                    _pre_yrs  = list(range(AKTUELLES_JAHR, _spkap_eintritt_j + 1))
-                    _pre_vals = [kapitalwachstum(_spkap_orig, _spkap_sparrate,
-                                                 _spkap_rendite, j - AKTUELLES_JAHR)
-                                 for j in _pre_yrs]
-                    _p1_label_pre = "P1 Kapital (Anspar)" if _spkap2_orig > 0 else "Kapital (Anspar)"
-                    fig_spar.add_trace(go.Scatter(
-                        name=_p1_label_pre, x=_pre_yrs, y=_pre_vals,
-                        mode="lines", line=dict(color="#43A047", width=2, dash="dot"),
-                        hovertemplate="%{x}: %{y:,.0f} €<extra>" + _p1_label_pre + "</extra>",
-                    ))
-                # Post-retirement: kombiniert Sparkapital + P1-Vorsorge-Pools
                 _post_yrs_p1 = list(range(_spkap_eintritt_j, _x_chart_end + 1))
-                _p1_label_post = "P1 Kapital" if _spkap2_orig > 0 else "Kapital"
-                if _hat_spar_post or _p1_pool_pids:
-                    # Build combined series from df_jd
-                    _p1_post_cols = []
-                    if _hat_spar_post and _spar_col in df_jd.columns:
-                        _p1_post_cols.append(_spar_col)
-                    for _pid in _p1_pool_pids:
-                        _c = f"Kap_Pool_{_pid}"
-                        if _c in df_jd.columns:
-                            _p1_post_cols.append(_c)
-                    if _p1_post_cols:
-                        _df_p1_post = df_jd[df_jd.index >= _spkap_eintritt_j][_p1_post_cols].sum(axis=1)
-                        # Add projected Sparkapital if not in pool
-                        if not _hat_spar_post and _spkap_orig > 0:
-                            _proj_spar = pd.Series(
-                                [kapitalwachstum(_spkap, 0.0, _spkap_rendite, j - _spkap_eintritt_j)
-                                 for j in _df_p1_post.index],
-                                index=_df_p1_post.index,
-                            )
-                            _df_p1_post = _df_p1_post + _proj_spar
-                    else:
-                        _df_p1_post = pd.Series(
-                            [kapitalwachstum(_spkap, 0.0, _spkap_rendite, j - _spkap_eintritt_j)
-                             for j in _post_yrs_p1],
-                            index=_post_yrs_p1,
-                        )
-                    _p1_post_series_gesamt = _df_p1_post
-                    fig_spar.add_trace(go.Scatter(
-                        name=_p1_label_post, x=_df_p1_post.index, y=_df_p1_post.values,
-                        mode="lines+markers", line=dict(color="#2E7D32", width=2.5),
-                        hovertemplate="%{x}: %{y:,.0f} €<extra>" + _p1_label_post + "</extra>",
-                    ))
-                elif _spkap_orig > 0:
-                    _post_vals = [kapitalwachstum(_spkap, 0.0, _spkap_rendite,
-                                                  j - _spkap_eintritt_j)
-                                  for j in _post_yrs_p1]
-                    _p1_post_series_gesamt = pd.Series(_post_vals, index=_post_yrs_p1)
-                    fig_spar.add_trace(go.Scatter(
-                        name=_p1_label_post, x=_post_yrs_p1, y=_post_vals,
-                        mode="lines+markers", line=dict(color="#2E7D32", width=2),
-                        hovertemplate="%{x}: %{y:,.0f} € (proj.)<extra>" + _p1_label_post + "</extra>",
-                    ))
+                _p1_label_post = "P1 Kapital" if _hat_partner_kap else "Kapital"
+                _df_p1_post = pd.Series(
+                    [kapitalwachstum(_spkap, 0.0, _spkap_rendite, j - _spkap_eintritt_j)
+                     for j in _post_yrs_p1],
+                    index=_post_yrs_p1,
+                )
+                for _pid in _p1_pool_pids:
+                    _c = f"Kap_Pool_{_pid}"
+                    if _c in df_jd.columns:
+                        _pool_s = df_jd[_c].reindex(_post_yrs_p1, fill_value=0)
+                        _df_p1_post = _df_p1_post + _pool_s
+                _p1_post_series_gesamt = _df_p1_post
+                fig_spar.add_trace(go.Scatter(
+                    name=_p1_label_post, x=_df_p1_post.index, y=_df_p1_post.values,
+                    mode="lines+markers", line=dict(color="#2E7D32", width=2.5),
+                    hovertemplate="%{x}: %{y:,.0f} €<extra>" + _p1_label_post + "</extra>",
+                ))
 
-            # ── P2 Kapital ──────────────────────────────────────────────────
-            if _spkap2_orig > 0 or _p2_pool_pids:
-                if _spkap2_orig > 0 and _profil2_eo is not None and not _profil2_eo.bereits_rentner:
-                    _pre_yrs2  = list(range(AKTUELLES_JAHR, _spkap2_eintritt_j + 1))
-                    _pre_vals2 = [kapitalwachstum(_spkap2_orig, _spkap2_sparrate,
-                                                  _spkap2_rendite, j - AKTUELLES_JAHR)
-                                  for j in _pre_yrs2]
-                    fig_spar.add_trace(go.Scatter(
-                        name="P2 Kapital (Anspar)", x=_pre_yrs2, y=_pre_vals2,
-                        mode="lines", line=dict(color="#E91E63", width=2, dash="dot"),
-                        hovertemplate="%{x}: %{y:,.0f} €<extra>P2 Kapital (Anspar)</extra>",
-                    ))
-                _post_yrs2  = list(range(_spkap2_eintritt_j, _x_chart_end + 1))
-                # P2 combined: projected Sparkapital + P2 product pools
-                _p2_post_vals = [kapitalwachstum(_spkap2, 0.0, _spkap2_rendite,
-                                                  j - _spkap2_eintritt_j)
-                                  for j in _post_yrs2] if _spkap2_orig > 0 else [0.0] * len(_post_yrs2)
-                _p2_post_series = pd.Series(_p2_post_vals, index=_post_yrs2)
+            # ── P2 Kapital (ab P2-Renteneintritt, verzinst ohne Entnahme-Abzug) ──
+            if _hat_partner_kap:
+                _post_yrs2 = list(range(_spkap2_eintritt_j, _x_chart_end + 1))
+                _p2_post_series = pd.Series(
+                    [kapitalwachstum(_spkap2, 0.0, _spkap2_rendite, j - _spkap2_eintritt_j)
+                     for j in _post_yrs2]
+                    if _spkap2_orig > 0 else [0.0] * len(_post_yrs2),
+                    index=_post_yrs2,
+                )
                 for _pid in _p2_pool_pids:
                     _c = f"Kap_Pool_{_pid}"
                     if _c in df_jd.columns:
-                        _pool_s = df_jd.reindex(_post_yrs2)[_c].fillna(0)
-                        _p2_post_series = _p2_post_series + _pool_s.values
+                        _pool_s = df_jd[_c].reindex(_post_yrs2, fill_value=0)
+                        _p2_post_series = _p2_post_series + _pool_s  # index-basiert
                 _p2_post_series_gesamt = _p2_post_series
                 fig_spar.add_trace(go.Scatter(
                     name="P2 Kapital", x=_p2_post_series.index, y=_p2_post_series.values,
@@ -1233,9 +1239,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     ))
 
             # ── Anschlusskredit-Restschuld ───────────────────────────────────
-            if _rs > 0 and not _einmal_tilgung and _hyp_info and _anschluss_lz > 0:
-                _ak_start = _hyp_info["endjahr"]
-                _ak_bal = _rs
+            if _ak_zeitleiste_rs > 0 and _hyp_info and _anschluss_lz > 0:
+                _ak_start = _ak_zeitleiste_startjahr
+                _ak_bal = _ak_zeitleiste_rs
                 if _markt_zins_pa > 0:
                     _ak_rate = (_ak_bal * _markt_zins_pa
                                 * (1 + _markt_zins_pa) ** _anschluss_lz
@@ -1262,7 +1268,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     ))
 
             # ── Referenzlinien ──────────────────────────────────────────────
-            if _hyp_info and not _einmal_tilgung and _rs > 0:
+            if _hyp_info and _rs > 0:
                 fig_spar.add_vline(
                     x=_hyp_info['endjahr'], line_width=1.5, line_dash="dot",
                     line_color="#D32F2F",
