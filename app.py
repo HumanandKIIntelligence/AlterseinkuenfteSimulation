@@ -37,6 +37,8 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
     ist_pensionaer   = bool(_get(pfx, "pensionaer", False))
     geburtsjahr      = int(_get(pfx, "geb", geb_default))
 
+    # Kapital ist ein geteiltes Haushaltsvermögen – nur für P1 erfasst; P2 bekommt 0
+    _hat_kapital = (pfx == "p1")
     if bereits_rentner:
         rentenbeginn_jahr    = int(_get(pfx, "rbj", AKTUELLES_JAHR - 3))
         aktuelles_brutto     = float(_get(pfx, "akt_brutto", 2_000.0))
@@ -44,15 +46,15 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         aktuelle_punkte      = 0.0
         punkte_pro_jahr      = 0.0
         rentenanpassung      = 0.02
-        sparrate             = float(_get(pfx, "sprate", 0.0))
-        sparkapital          = float(_get(pfx, "spkap", 50_000.0))
+        sparrate             = float(_get(pfx, "sprate", 0.0)) if _hat_kapital else 0.0
+        sparkapital          = float(_get(pfx, "spkap", 50_000.0)) if _hat_kapital else 0.0
         rendite              = float(_get(pfx, "rendite", 3.0)) / 100
     else:
         rentenbeginn_jahr    = AKTUELLES_JAHR
         aktuelles_brutto     = float(_get(pfx, "akt_brutto", 3_000.0)) if ist_pensionaer else float(_get(pfx, "gehalt", 0.0))
         renteneintritt_alter = int(_get(pfx, "re_alter", 67))
-        sparkapital          = float(_get(pfx, "spkap", 50_000.0))
-        sparrate             = float(_get(pfx, "sprate", 500.0))
+        sparkapital          = float(_get(pfx, "spkap", 50_000.0)) if _hat_kapital else 0.0
+        sparrate             = float(_get(pfx, "sprate", 500.0)) if _hat_kapital else 0.0
         rendite              = float(_get(pfx, "rendite", 5.0)) / 100
         if ist_pensionaer:
             aktuelle_punkte  = 0.0
@@ -169,7 +171,8 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
 
 # ── Profil-Widgets rendern (im Profil-Tab) ────────────────────────────────────
 
-def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
+def _render_profil_inputs(label: str, pfx: str, geb_default: int,
+                          show_kapital: bool = True) -> None:
     """Rendert Eingabe-Widgets für eine Person in den aktuellen Container."""
     st.subheader(label)
 
@@ -287,27 +290,28 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                  "0 = Simulation startet erst ab Renteneintritt (kein Arbeitsphasen-Verlauf).",
         )
 
-    st.markdown("**Kapital**")
-    st.caption("💡 Zusatzrenten (bAV, Riester, Rürup …) bitte im Tab **Vorsorge-Bausteine** erfassen.")
-    _kap_ca, _kap_cb, _kap_cc = st.columns(3)
-    with _kap_ca:
-        st.number_input(
-            "Kapital heute (€)", 0.0, 5_000_000.0,
-            value=float(_get(pfx, "spkap", 50_000.0)),
-            step=1_000.0, key=f"rc{_RC}_{pfx}_spkap",
-        )
-    with _kap_cb:
-        st.number_input(
-            "Monatliche Sparrate (€)", 0.0, 10_000.0,
-            value=float(_get(pfx, "sprate", 0.0 if bereits_rentner else 500.0)),
-            step=50.0, key=f"rc{_RC}_{pfx}_sprate",
-        )
-    with _kap_cc:
-        st.slider(
-            "Rendite p.a. (%)", 0.0, 12.0,
-            value=float(_get(pfx, "rendite", 3.0 if bereits_rentner else 5.0)),
-            step=0.5, key=f"rc{_RC}_{pfx}_rendite",
-        )
+    if show_kapital:
+        st.markdown("**Kapital**")
+        st.caption("💡 Zusatzrenten (bAV, Riester, Rürup …) bitte im Tab **Vorsorge-Bausteine** erfassen.")
+        _kap_ca, _kap_cb, _kap_cc = st.columns(3)
+        with _kap_ca:
+            st.number_input(
+                "Kapital heute (€)", 0.0, 5_000_000.0,
+                value=float(_get(pfx, "spkap", 50_000.0)),
+                step=1_000.0, key=f"rc{_RC}_{pfx}_spkap",
+            )
+        with _kap_cb:
+            st.number_input(
+                "Monatliche Sparrate (€)", 0.0, 10_000.0,
+                value=float(_get(pfx, "sprate", 0.0 if bereits_rentner else 500.0)),
+                step=50.0, key=f"rc{_RC}_{pfx}_sprate",
+            )
+        with _kap_cc:
+            st.slider(
+                "Rendite p.a. (%)", 0.0, 12.0,
+                value=float(_get(pfx, "rendite", 3.0 if bereits_rentner else 5.0)),
+                step=0.5, key=f"rc{_RC}_{pfx}_rendite",
+            )
 
     st.markdown("**Krankenversicherung**")
     if ist_pensionaer:
@@ -542,7 +546,7 @@ def render_profil_tab(T: dict) -> None:
             with col1:
                 _render_profil_inputs("👤 Person 1", "p1", 1970)
             with col2:
-                _render_profil_inputs("👤 Person 2", "p2", 1972)
+                _render_profil_inputs("👤 Person 2", "p2", 1972, show_kapital=False)
         else:
             _render_profil_inputs("👤 Person 1", "p1", 1970)
 

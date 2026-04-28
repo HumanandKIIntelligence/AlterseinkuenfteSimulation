@@ -166,6 +166,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                             horizontal=True, key=f"rc{_rc}_dash_person")
 
         zusammen_modus = wahl == "Zusammen"
+        # P1-Ergebnis vor dem Swap aufbewahren (Kapital ist Haushaltsvermögen unter P1)
+        _ergebnis_p1_kapital = ergebnis
 
         if wahl == "Person 2":
             profil, ergebnis = profil2, ergebnis2
@@ -268,10 +270,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Netto Haushalt {_sel_j_dash}", f"{_de(_hh_netto)} €/Mon.",
                 help="Nach Einkommensteuer und KV/PV beider Personen.",
             )
-            kapital_gesamt = ergebnis.kapital_bei_renteneintritt + ergebnis2.kapital_bei_renteneintritt
+            kapital_gesamt = ergebnis.kapital_bei_renteneintritt  # P1 = geteiltes Haushaltsvermögen
             c3.metric(
                 "Kapital gesamt (Eintritt)", f"{_de(kapital_gesamt)} €",
-                help="Summe des angewachsenen Spar- und Depotkapitals beider Personen.",
+                help="Angewachsenes gemeinsames Spar- und Depotkapital zum früheren Renteneintritt.",
             )
             if hh["steuerersparnis_splitting"] > 0:
                 c4.metric(
@@ -553,9 +555,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             f"Nettorente {_sel_j_dash}", f"{_de(_d_netto)} €/Mon.",
             help="Nach Einkommensteuer und Kranken-/Pflegeversicherungsbeitrag.",
         )
+        _kapital_einzel = (_ergebnis_p1_kapital.kapital_bei_renteneintritt / 2
+                          if hat_partner
+                          else ergebnis.kapital_bei_renteneintritt)
+        _kap_label = "Kapital (½ Haushalt, Eintritt)" if hat_partner else "Kapital bei Renteneintritt"
         c3.metric(
-            "Kapital bei Renteneintritt", f"{_de(ergebnis.kapital_bei_renteneintritt)} €",
-            help="Angewachsenes Spar- und Depotkapital zum Renteneintritt.",
+            _kap_label,
+            f"{_de(_kapital_einzel)} €",
+            help=("Anteil am gemeinsamen Haushaltsvermögen zum Renteneintritt (50/50)."
+                  if hat_partner else
+                  "Angewachsenes Spar- und Depotkapital zum Renteneintritt."),
         )
         c4.metric(
             "Rentenpunkte gesamt", f"{ergebnis.gesamtpunkte:.1f}".replace(".", ","),
