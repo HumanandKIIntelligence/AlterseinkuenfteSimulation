@@ -205,26 +205,6 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                 value=float(_get(pfx, "akt_brutto", 2_000.0)),
                 step=50.0, key=f"rc{_RC}_{pfx}_akt_brutto",
             )
-        st.markdown("**Sparkapital**")
-        ca2, cb2, cc2 = st.columns(3)
-        with ca2:
-            st.number_input(
-                "Sparkapital / Vermögen (€)", 0.0, 5_000_000.0,
-                value=float(_get(pfx, "spkap", 50_000.0)),
-                step=1_000.0, key=f"rc{_RC}_{pfx}_spkap",
-            )
-        with cb2:
-            st.number_input(
-                "Monatliche Sparrate (€)", 0.0, 10_000.0,
-                value=float(_get(pfx, "sprate", 0.0)),
-                step=50.0, key=f"rc{_RC}_{pfx}_sprate",
-            )
-        with cc2:
-            st.slider(
-                "Rendite p.a. (%)", 0.0, 12.0,
-                value=float(_get(pfx, "rendite", 3.0)),
-                step=0.5, key=f"rc{_RC}_{pfx}_rendite",
-            )
     else:
         _re_alter_val = int(_get(pfx, "re_alter", 67))
         st.slider(
@@ -288,29 +268,6 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                 step=0.1, key=f"rc{_RC}_{pfx}_ren_anp",
             )
 
-        st.markdown("**Sparkapital**")
-        ca, cb, cc = st.columns(3)
-        with ca:
-            st.number_input(
-                "Sparkapital heute (€)", 0.0, 5_000_000.0,
-                value=float(_get(pfx, "spkap", 50_000.0)),
-                step=1_000.0, key=f"rc{_RC}_{pfx}_spkap",
-            )
-        with cb:
-            st.number_input(
-                "Monatliche Sparrate (€)", 0.0, 10_000.0,
-                value=float(_get(pfx, "sprate", 500.0)),
-                step=50.0, key=f"rc{_RC}_{pfx}_sprate",
-            )
-        with cc:
-            st.slider(
-                "Rendite p.a. (%)", 0.0, 12.0,
-                value=float(_get(pfx, "rendite", 5.0)),
-                step=0.5, key=f"rc{_RC}_{pfx}_rendite",
-            )
-        # O2: Kein Zusatzrente-Feld mehr – bitte Verträge im Tab Vorsorge-Bausteine erfassen
-        st.caption("💡 Zusatzrenten (bAV, Riester, Rürup …) bitte im Tab **Vorsorge-Bausteine** erfassen.")
-
         st.markdown("**Aktuelles Bruttogehalt**")
         st.number_input(
             "Bruttogehalt heute (€/Mon.)", 0.0, 30_000.0,
@@ -318,6 +275,28 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
             step=100.0, key=f"rc{_RC}_{pfx}_gehalt",
             help="Aktuelles Bruttogehalt für die Steuer- und KV-Simulation in den Arbeitsjahren. "
                  "0 = Simulation startet erst ab Renteneintritt (kein Arbeitsphasen-Verlauf).",
+        )
+
+    st.markdown("**Kapital**")
+    st.caption("💡 Zusatzrenten (bAV, Riester, Rürup …) bitte im Tab **Vorsorge-Bausteine** erfassen.")
+    _kap_ca, _kap_cb, _kap_cc = st.columns(3)
+    with _kap_ca:
+        st.number_input(
+            "Kapital heute (€)", 0.0, 5_000_000.0,
+            value=float(_get(pfx, "spkap", 50_000.0)),
+            step=1_000.0, key=f"rc{_RC}_{pfx}_spkap",
+        )
+    with _kap_cb:
+        st.number_input(
+            "Monatliche Sparrate (€)", 0.0, 10_000.0,
+            value=float(_get(pfx, "sprate", 0.0 if bereits_rentner else 500.0)),
+            step=50.0, key=f"rc{_RC}_{pfx}_sprate",
+        )
+    with _kap_cc:
+        st.slider(
+            "Rendite p.a. (%)", 0.0, 12.0,
+            value=float(_get(pfx, "rendite", 3.0 if bereits_rentner else 5.0)),
+            step=0.5, key=f"rc{_RC}_{pfx}_rendite",
         )
 
     st.markdown("**Krankenversicherung**")
