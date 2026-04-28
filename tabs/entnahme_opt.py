@@ -7,6 +7,7 @@ Einkommensteuer, Abgeltungsteuer und KVdR-Beiträgen.
 
 from __future__ import annotations
 
+import math
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -860,8 +861,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 hovertemplate="%{x}: %{y:,.0f} € Jahresbeitrag<extra>Vorsorge-Beiträge</extra>",
             ))
 
-        # Geplante Entnahmen als sichtbarer Abzugsbalken (negativ)
-        if _entnahmen_dict:
+        # Geplante Entnahmen: nur als y1-Balken wenn kein Pool aktiv (sonst in Src_Kapitalverzehr enthalten)
+        _has_pool_data = (
+            ("Kap_Injektion" in df_jd.columns and df_jd["Kap_Injektion"].sum() > 0)
+            or ("Src_Kapitalverzehr" in df_jd.columns and df_jd["Src_Kapitalverzehr"].sum() > 0)
+        )
+        if _entnahmen_dict and not _has_pool_data:
             _en_yrs_src = [j for j in _entnahmen_dict if j in df_jd.index]
             if _en_yrs_src:
                 fig_src.add_trace(go.Bar(
@@ -873,50 +878,56 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     hovertemplate="%{x}: %{y:,.0f} € Entnahme<extra>Entnahmen (geplant)</extra>",
                 ))
 
-        # Pool-Flows auf sekundärer Y-Achse (nach unten, eigene Skala)
-        # Kapitalverzehr (Auszahlung aus Pool) → ↑ Pfeil (Geld fließt heraus zum Einkommen)
+        # ── Ein kombinierter Pool-Flow-Balken pro Jahr auf sekundärer Y-Achse ──
+        # Einzahlung in Pool (Kap_Injektion) und Entnahme aus Pool (Src_Kapitalverzehr)
+        # werden pro Jahr saldiert → ein Balken geht von Nulllinie nach unten.
+        # Pfeil ↓ wenn Einzahlung > Entnahme, ↑ wenn Entnahme > Einzahlung.
         _hat_pool_y2 = False
-        if "Src_Kapitalverzehr" in df_jd.columns and df_jd["Src_Kapitalverzehr"].sum() > 0:
+        if _has_pool_data:
             _hat_pool_y2 = True
-            _kv_mask = df_jd["Src_Kapitalverzehr"] > 0
-            _kv_yrs  = list(df_jd[_kv_mask].index)
-            _kv_vals = [df_jd.loc[j, "Src_Kapitalverzehr"] for j in _kv_yrs]
-            fig_src.add_trace(go.Bar(
-                name="Kapitalverzehr (Pool)",
-                x=_kv_yrs,
-                y=[-v for v in _kv_vals],
-                customdata=_kv_vals,
-                text=["↑"] * len(_kv_yrs),
-                textposition="inside",
-                textfont=dict(size=14, color="white"),
-                marker_color="#9E9D24",
-                opacity=0.85,
-                yaxis="y2",
-                hovertemplate="%{x}: %{customdata:,.0f} €<extra>Kapitalverzehr (Pool)</extra>",
+            _pf_inj_col = "Kap_Injektion"
+            _pf_vzr_col = "Src_Kapitalverzehr"
+            _pf_all_yrs = sorted(set(
+                (list(df_jd[df_jd[_pf_inj_col] > 0].index)
+                 if _pf_inj_col in df_jd.columns else [])
+                + (list(df_jd[df_jd[_pf_vzr_col] > 0].index)
+                   if _pf_vzr_col in df_jd.columns else [])
             ))
-        # Kapital-Einzahlung (Injektion in Pool) → ↓ Pfeil (Geld fließt in den Pool)
-        if "Kap_Injektion" in df_jd.columns and df_jd["Kap_Injektion"].sum() > 0:
-            _hat_pool_y2 = True
-            _ki_mask = df_jd["Kap_Injektion"] > 0
-            _ki_yrs  = list(df_jd[_ki_mask].index)
-            _ki_vals = [df_jd.loc[j, "Kap_Injektion"] for j in _ki_yrs]
-            _ki_cd_2d = [
-                [_ki_vals[i],
-                 "<br>".join(_einmal_info_kapital.get(_ki_yrs[i], [])) or f"{_de(_ki_vals[i])} € → Pool"]
-                for i in range(len(_ki_yrs))
-            ]
+            def _pf_val(col, j):
+                return float(df_jd.loc[j, col]) if col in df_jd.columns and j in df_jd.index else 0.0
+            _pf_inj  = {j: _pf_val(_pf_inj_col, j) for j in _pf_all_yrs}
+            _pf_vzr  = {j: _pf_val(_pf_vzr_col, j) for j in _pf_all_yrs}
+            _pf_net  = {j: _pf_inj[j] - _pf_vzr[j] for j in _pf_all_yrs}  # + = mehr eingebracht
+
+            def _pf_hover_text(j):
+                parts = []
+                if _pf_inj[j] > 0:
+                    ki_det = "<br>".join(_einmal_info_kapital.get(j, []))
+                    parts.append(f"Einzahlung: {_de(_pf_inj[j])} €")
+                    if ki_det:
+                        parts.append(f"<i>{ki_det}</i>")
+                if _pf_vzr[j] > 0:
+                    parts.append(f"Entnahme: {_de(_pf_vzr[j])} €")
+                net = _pf_net[j]
+                parts.append(f"Netto: {'−' if net < 0 else '+'}{_de(abs(net))} €")
+                return "<br>".join(parts)
+
+            _pf_cd    = [_pf_hover_text(j) for j in _pf_all_yrs]
+            _pf_abs   = {j: abs(_pf_net[j]) for j in _pf_all_yrs}
+            _pf_arrow = {j: ("↓" if _pf_net[j] >= 0 else "↑") for j in _pf_all_yrs}
+
             fig_src.add_trace(go.Bar(
-                name="Kapital-Einzahlung (Pool)",
-                x=_ki_yrs,
-                y=[-v for v in _ki_vals],
-                text=["↓"] * len(_ki_yrs),
+                name="Pool-Kapitalbewegung",
+                x=_pf_all_yrs,
+                y=[-_pf_abs[j] for j in _pf_all_yrs],  # immer nach unten
+                text=[_pf_arrow[j] for j in _pf_all_yrs],
                 textposition="inside",
                 textfont=dict(size=14, color="white"),
-                marker_color="#00BCD4",
-                opacity=0.85,
+                marker_color="#00838F",
+                opacity=0.87,
                 yaxis="y2",
-                customdata=_ki_cd_2d,
-                hovertemplate="%{x}: %{customdata[0]:,.0f} € → Pool<br><i>%{customdata[1]}</i><extra>Kapital-Einzahlung (Pool)</extra>",
+                customdata=_pf_cd,
+                hovertemplate="%{x}:<br>%{customdata}<extra>Pool-Kapitalbewegung</extra>",
             ))
 
         fig_src.add_trace(go.Scatter(
@@ -992,37 +1003,41 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     font=dict(color="#D32F2F", size=11),
                     ax=0, ay=_ay_val,
                 )
-        # ── Y-Achsen-Bereiche berechnen (explizit, für Null-Ausrichtung) ─────────
-        # y1: maximale gestapelte Balkenhöhe
+        # ── Y-Achsen-Bereiche (explizit für Null-Ausrichtung) ────────────────────
+        # Ziel: Nulllinie bei genau 1/3 der Chart-Höhe von unten.
+        # Formel: |lo| = hi/2  →  f = |lo|/(|lo|+hi) = (hi/2)/(hi/2+hi) = 1/3 ✓
         _y1_pos_cols = ["Src_Gehalt", "Src_Zusatzentgelt", "Src_GesRente", "Src_P2_Rente",
                         "Src_Versorgung", "Src_Einmal", "Src_Miete"]
         _y1_pos_sum = sum(
             df_jd[c].clip(lower=0) for c in _y1_pos_cols if c in df_jd.columns
         )
         _y1_hi_data = float(_y1_pos_sum.max()) if hasattr(_y1_pos_sum, "max") else 0.0
-        # Minimum auf y1: negative Balken (Vorsorge-Beiträge, Entnahmen)
         _y1_lo_data = 0.0
         if "Vorsorge_Beitraege" in df_jd.columns:
             _y1_lo_data = min(_y1_lo_data, -float(df_jd["Vorsorge_Beitraege"].max()))
-        if _entnahmen_dict:
-            _y1_lo_data = min(_y1_lo_data, -max(_entnahmen_dict.values(), default=0.0))
         _y1_hi = _y1_hi_data * 1.08 or 1.0
-        # Mindestens 5 % des positiven Bereichs als negative Puffer-Reserve
-        _y1_lo = min(_y1_lo_data * 1.08, -_y1_hi * 0.05)
 
         if _hat_pool_y2:
-            # Pool-Flows: maximaler Absolutwert über beide Typen
-            _pool_max = 0.0
-            if "Src_Kapitalverzehr" in df_jd.columns:
-                _pool_max = max(_pool_max, float(df_jd["Src_Kapitalverzehr"].max()))
-            if "Kap_Injektion" in df_jd.columns:
-                _pool_max = max(_pool_max, float(df_jd["Kap_Injektion"].max()))
-            _pool_max *= 1.10  # 10 % Puffer
-            # Null-Ausrichtung: Nulllinie y2 = Nulllinie y1
-            # Herleitung: f = |y1_lo| / (y1_hi - y1_lo) → y2_hi = pool_max × y1_hi / |y1_lo|
-            _abs_y1_lo = abs(_y1_lo)
-            _y2_lo  = -_pool_max
-            _y2_hi  = _pool_max * _y1_hi / _abs_y1_lo if _abs_y1_lo > 0 else _pool_max
+            # Maximaler Saldo-Absolutwert der Pool-Flows bestimmt y2-Skala
+            _pool_range = max(_pf_abs.values()) * 1.15 if _pf_abs else 1.0
+            # y1: Nulllinie bei 1/3 → |lo| = hi/2
+            _y1_lo = min(_y1_lo_data * 1.08, -_y1_hi / 2)
+            # y2: Nulllinie bei 1/3 → y2_lo=-pool_range, y2_hi=2*pool_range
+            # Probe: pool_range/(pool_range+2*pool_range) = 1/3 ✓
+            _y2_lo = -_pool_range
+            _y2_hi = 2.0 * _pool_range
+            # Ticks auf y2 nur von 0 nach unten (als positive Labels)
+            _tick_exp = math.floor(math.log10(_pool_range)) if _pool_range >= 1 else 0
+            _tick_step = 10 ** _tick_exp * round(_pool_range / 10 ** _tick_exp / 4)
+            _tick_step = max(_tick_step, 1)
+            _y2_tick_neg = [0]
+            _t = _tick_step
+            while _t <= _pool_range * 1.01:
+                _y2_tick_neg.append(-_t)
+                _t += _tick_step
+            _y2_tick_lbl = [f"{int(abs(v)):,}".replace(",", ".") for v in _y2_tick_neg]
+        else:
+            _y1_lo = min(_y1_lo_data * 1.08, -_y1_hi * 0.05)
 
         _has_einmal_annotations = any(_einmal_info.get(j) for j in _jahre)
         _src_layout: dict = dict(
@@ -1037,11 +1052,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         if _hat_pool_y2:
             _src_layout["yaxis2"] = dict(
                 title="Pool-Flows (€/Jahr)",
-                tickformat=",.0f",
                 overlaying="y",
                 side="right",
                 showgrid=False,
                 range=[_y2_lo, _y2_hi],
+                tickvals=_y2_tick_neg,
+                ticktext=_y2_tick_lbl,
             )
         fig_src.update_layout(**_src_layout)
         st.plotly_chart(fig_src, use_container_width=True)
