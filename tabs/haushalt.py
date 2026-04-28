@@ -26,16 +26,23 @@ def _de(v: float, dec: int = 0) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def _vorsorge_non_bav_monatlich(produkte: list[dict], jahr: int) -> float:
+def _vorsorge_non_bav_monatlich(produkte: list[dict], jahr: int,
+                                person: str | None = None) -> float:
     """Monatliche Vorsorge-Beiträge (ohne bAV) für das gegebene Jahr."""
-    return sum(b for _, b in _vorsorge_non_bav_einzeln(produkte, jahr))
+    return sum(b for _, b in _vorsorge_non_bav_einzeln(produkte, jahr, person=person))
 
 
-def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int) -> list[tuple[str, float]]:
-    """Liste von (Name, €/Mon.) für aktive nicht-bAV Vorsorge-Beiträge im Jahr."""
+def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
+                               person: str | None = None) -> list[tuple[str, float]]:
+    """Liste von (Name, €/Mon.) für aktive nicht-bAV Vorsorge-Beiträge im Jahr.
+
+    person: wenn gesetzt, nur Produkte dieser Person (None = alle Personen).
+    """
     result: list[tuple[str, float]] = []
     for vp in produkte:
         if vp.get("typ") == "bAV":
+            continue
+        if person is not None and vp.get("person", "Person 1") != person:
             continue
         je = float(vp.get("jaehrl_einzahlung", 0.0))
         if je <= 0.0:
@@ -148,9 +155,12 @@ def render(
             profil2=p2, ergebnis2=e2, veranlagung="Getrennt",
         )
         _jd_hh = _jd_zus if veranlagung == "Zusammen" else _jd_get
-        _, _jd_p1 = _netto_ueber_horizont(p1, e1, _entsch_p1, _horizont_p1, 0.0, 0.0,
+        _miete_je = mieteinnahmen / 2  # 50/50 je Person bei Paar
+        _, _jd_p1 = _netto_ueber_horizont(p1, e1, _entsch_p1, _horizont_p1,
+                                           _miete_je, mietsteigerung,
                                            gehalt_monatlich=_gehalt_p1)
-        _, _jd_p2 = _netto_ueber_horizont(p2, e2, _entsch_p2, _horizont_p2, 0.0, 0.0,
+        _, _jd_p2 = _netto_ueber_horizont(p2, e2, _entsch_p2, _horizont_p2,
+                                           _miete_je, mietsteigerung,
                                            gehalt_monatlich=_gehalt_p2)
 
         def _row_for_year(jd: list[dict], jahr: int) -> dict | None:
@@ -458,8 +468,13 @@ def render(
                                 st.rerun()
 
         # ── Brutto → Netto / Verfügbar Wasserfall ────────────────────────────
+        _ansicht_person = ("Person 1" if ansicht == "Person 1"
+                           else "Person 2" if ansicht == "Person 2"
+                           else None)
         if not _no_data:
-            _vorsorge_nbav_einzeln = _vorsorge_non_bav_einzeln(_vp_produkte, betrachtungsjahr)
+            _vorsorge_nbav_einzeln = _vorsorge_non_bav_einzeln(
+                _vp_produkte, betrachtungsjahr, person=_ansicht_person
+            )
             _vorsorge_nbav_m = sum(b for _, b in _vorsorge_nbav_einzeln)
             _aktive_fix = [
                 fa for fa in _fixausgaben
@@ -611,7 +626,9 @@ def render(
 
             # ── Jahresverlauf mit Abzügen (non-bAV Vorsorge + Fixausgaben) ────
             _alle_jahre = list(_df.index)
-            _vbnbav_py = {j: _vorsorge_non_bav_monatlich(_vp_produkte, j) for j in _alle_jahre}
+            _vbnbav_py = {j: _vorsorge_non_bav_monatlich(_vp_produkte, j,
+                                                           person=_ansicht_person)
+                         for j in _alle_jahre}
             _fix_py    = {
                 j: sum(fa["betrag_monatlich"] for fa in _fixausgaben
                        if fa["startjahr"] <= j <= fa["endjahr"])
@@ -689,6 +706,8 @@ def render(
 
         # Vorsorgebeiträge: Produkte mit laufenden Beiträgen die noch nicht ausgezahlt werden
         for _vp in _vp_produkte:
+            if _ansicht_person is not None and _vp.get("person", "Person 1") != _ansicht_person:
+                continue
             _je = float(_vp.get("jaehrl_einzahlung", 0.0))
             if _je <= 0.0:
                 continue
@@ -868,8 +887,8 @@ def render(
                 _p1_n, _e1_n, [], _horizont_hh, mieteinnahmen, mietsteigerung,
                 profil2=_p2_n, ergebnis2=_e2_n, veranlagung=veranlagung,
             )
-            _, _jd_p1 = _netto_ueber_horizont(_p1_n, _e1_n, [], _horizont_p1, 0.0, 0.0)
-            _, _jd_p2 = _netto_ueber_horizont(_p2_n, _e2_n, [], _horizont_p2, 0.0, 0.0)
+            _, _jd_p1 = _netto_ueber_horizont(_p1_n, _e1_n, [], _horizont_p1, _miete_je, mietsteigerung)
+            _, _jd_p2 = _netto_ueber_horizont(_p2_n, _e2_n, [], _horizont_p2, _miete_je, mietsteigerung)
             _hh_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_hh}
             _p1_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_p1}
             _p2_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_p2}

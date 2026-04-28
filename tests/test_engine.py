@@ -3045,3 +3045,148 @@ class TestVorsorgeBeitraege:
         _, jd = _netto_ueber_horizont(p, e, [(prod, sj, 1.0)], 5)
         for i in range(3):  # Beitragsphase
             assert jd[i]["Vorsorge_Beitraege"] == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Src_bAV_P1/P2 und Src_Riester_P1/P2 – Jahresverlauf-Felder
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSrcBavRiesterFelder:
+    """Korrekte Befüllung der Src_bAV_P1/P2 und Src_Riester_P1/P2 Felder."""
+
+    def _p(self, **kwargs) -> Profil:
+        # eintritt_jahr = AKTUELLES_JAHR (kein Vorlauf, Simulation startet sofort)
+        return _profil(geburtsjahr=AKTUELLES_JAHR - 67, **kwargs)
+
+    def _bav_entsch(self, person: str = "Person 1", mono: float = 300.0) -> tuple:
+        sj = AKTUELLES_JAHR
+        prod = VorsorgeProdukt(
+            id=f"bav-{person.replace(' ', '')}",
+            typ="bAV", name=f"bAV {person}", person=person,
+            max_einmalzahlung=0.0, max_monatsrente=mono,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        return (prod, sj, 0.0)
+
+    def _riester_entsch(self, person: str = "Person 1", mono: float = 200.0) -> tuple:
+        sj = AKTUELLES_JAHR
+        prod = VorsorgeProdukt(
+            id=f"riester-{person.replace(' ', '')}",
+            typ="Riester", name=f"Riester {person}", person=person,
+            max_einmalzahlung=0.0, max_monatsrente=mono,
+            laufzeit_jahre=0, fruehestes_startjahr=sj, spaetestes_startjahr=sj,
+            aufschub_rendite=0.0,
+        )
+        return (prod, sj, 0.0)
+
+    def test_kein_produkt_alle_felder_null(self):
+        """Ohne Produkte sind alle vier Src-Felder = 0."""
+        p = self._p()
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 5)
+        r = jd[0]
+        assert r["Src_bAV_P1"] == 0
+        assert r["Src_Riester_P1"] == 0
+        assert r["Src_bAV_P2"] == 0
+        assert r["Src_Riester_P2"] == 0
+
+    def test_bav_produkt_setzt_src_bav_p1(self):
+        """bAV-Produkt (P1) → Src_bAV_P1 = max_monatsrente × 12, andere Felder = 0."""
+        p = self._p()
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [self._bav_entsch(mono=300.0)], 5)
+        r = jd[0]
+        assert r["Src_bAV_P1"] == 300 * 12
+        assert r["Src_Riester_P1"] == 0
+        assert r["Src_bAV_P2"] == 0
+        assert r["Src_Riester_P2"] == 0
+
+    def test_riester_produkt_setzt_src_riester_p1(self):
+        """Riester-Produkt (P1) → Src_Riester_P1 = max_monatsrente × 12, andere = 0."""
+        p = self._p()
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [self._riester_entsch(mono=200.0)], 5)
+        r = jd[0]
+        assert r["Src_Riester_P1"] == 200 * 12
+        assert r["Src_bAV_P1"] == 0
+        assert r["Src_bAV_P2"] == 0
+        assert r["Src_Riester_P2"] == 0
+
+    def test_sidebar_bav_in_src_bav_p1(self):
+        """Sidebar-bAV (zusatz_monatlich + zusatz_typ='bAV') → Src_bAV_P1 = betrag × 12."""
+        p = self._p(zusatz_monatlich=400.0, zusatz_typ="bAV")
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 5)
+        r = jd[0]
+        assert r["Src_bAV_P1"] == 400 * 12
+        assert r["Src_Riester_P1"] == 0
+
+    def test_sidebar_riester_in_src_riester_p1(self):
+        """Sidebar-Riester (zusatz_typ='Riester') → Src_Riester_P1 = betrag × 12."""
+        p = self._p(zusatz_monatlich=300.0, zusatz_typ="Riester")
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 5)
+        r = jd[0]
+        assert r["Src_Riester_P1"] == 300 * 12
+        assert r["Src_bAV_P1"] == 0
+
+    def test_p2_bav_in_zusammen_modus(self):
+        """P2-bAV-Produkt bei hat_partner=True → Src_bAV_P2, nicht Src_bAV_P1."""
+        p1 = self._p()
+        p2 = self._p()
+        e1 = berechne_rente(p1)
+        e2 = berechne_rente(p2)
+        entsch = [self._bav_entsch(person="Person 2", mono=250.0)]
+        _, jd = _netto_ueber_horizont(p1, e1, entsch, 5, profil2=p2, ergebnis2=e2)
+        r = jd[0]
+        assert r["Src_bAV_P2"] == 250 * 12
+        assert r["Src_bAV_P1"] == 0
+        assert r["Src_Riester_P1"] == 0
+        assert r["Src_Riester_P2"] == 0
+
+    def test_p2_riester_in_zusammen_modus(self):
+        """P2-Riester-Produkt bei hat_partner=True → Src_Riester_P2, nicht Src_Riester_P1."""
+        p1 = self._p()
+        p2 = self._p()
+        e1 = berechne_rente(p1)
+        e2 = berechne_rente(p2)
+        entsch = [self._riester_entsch(person="Person 2", mono=150.0)]
+        _, jd = _netto_ueber_horizont(p1, e1, entsch, 5, profil2=p2, ergebnis2=e2)
+        r = jd[0]
+        assert r["Src_Riester_P2"] == 150 * 12
+        assert r["Src_Riester_P1"] == 0
+        assert r["Src_bAV_P1"] == 0
+        assert r["Src_bAV_P2"] == 0
+
+    def test_bav_und_riester_gleichzeitig(self):
+        """bAV + Riester gleichzeitig → beide Felder korrekt, keine Kreuzung."""
+        p = self._p()
+        e = berechne_rente(p)
+        entsch = [self._bav_entsch(mono=300.0), self._riester_entsch(mono=200.0)]
+        _, jd = _netto_ueber_horizont(p, e, entsch, 5)
+        r = jd[0]
+        assert r["Src_bAV_P1"] == 300 * 12
+        assert r["Src_Riester_P1"] == 200 * 12
+        assert r["Src_bAV_P2"] == 0
+        assert r["Src_Riester_P2"] == 0
+
+    def test_sidebar_plus_produkt_akkumulieren(self):
+        """Sidebar-bAV + bAV-Produkt addieren sich in Src_bAV_P1."""
+        p = self._p(zusatz_monatlich=100.0, zusatz_typ="bAV")
+        e = berechne_rente(p)
+        entsch = [self._bav_entsch(mono=200.0)]
+        _, jd = _netto_ueber_horizont(p, e, entsch, 5)
+        r = jd[0]
+        # Sidebar: 100 × 12 = 1200; Produkt: 200 × 12 = 2400 → gesamt 3600
+        assert r["Src_bAV_P1"] == (100 + 200) * 12
+
+    def test_brutto_enthaelt_bav_und_riester(self):
+        """Brutto muss bAV- und Riester-Jahresbeträge enthalten (keine andere Einkunft)."""
+        p = self._p(aktuelle_punkte=0.0, punkte_pro_jahr=0.0)
+        e = berechne_rente(p)
+        entsch = [self._bav_entsch(mono=300.0), self._riester_entsch(mono=200.0)]
+        _, jd = _netto_ueber_horizont(p, e, entsch, 5)
+        r = jd[0]
+        expected_brutto = r["Src_bAV_P1"] + r["Src_Riester_P1"]
+        assert r["Brutto"] == pytest.approx(expected_brutto, abs=1)

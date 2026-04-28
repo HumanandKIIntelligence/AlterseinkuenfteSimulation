@@ -12,7 +12,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import session_io
 from session_io import save_session, load_session, list_saves, _load_profil, _PROFIL_LADE_DEFAULTS
 from engine import Profil, AKTUELLES_JAHR
-from tabs.entnahme_opt import _kv_label_und_wert, _steuer_steckbrief, _de, _analyse_schenkungspotenzial
+from tabs.entnahme_opt import (
+    _kv_label_und_wert, _steuer_steckbrief, _de, _analyse_schenkungspotenzial,
+    _einmalzahlungen_ausgaben_plan,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -317,6 +320,104 @@ class TestSchenkungsanalyse:
         assert result["verbleibender_freibetrag_bav_mono"] == pytest.approx(
             BAV_FREIBETRAG_MONATLICH - 100.0
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _einmalzahlungen_ausgaben_plan – Ausgaben-Plan mit Einmalzahlungen
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEinmalzahlungenAusgabenPlan:
+    def _sched(self, start_yr: int, n: int, rate: float = 10_000.0) -> list[dict]:
+        return [{"Jahr": start_yr + i, "Jahresausgabe": rate} for i in range(n)]
+
+    def test_leere_liste_keine_restschuld(self):
+        """Keine EZ, keine Restschuld → nur Primärplan-Jahre, kein Anschluss."""
+        sched = self._sched(2026, 3, 10_000.0)
+        plan = _einmalzahlungen_ausgaben_plan([], sched, 0.0, 2028, 0.04, 5)
+        assert set(plan.keys()) == {2026, 2027, 2028}
+        assert all(v == pytest.approx(10_000.0) for v in plan.values())
+
+    def test_anschluss_ohne_ez_zinslos(self):
+        """Anschlusskredit ohne EZ, Zins=0 → lineare Annuität."""
+        plan = _einmalzahlungen_ausgaben_plan([], [], 60_000.0, 2030, 0.0, 3)
+        for yr in [2031, 2032, 2033]:
+            assert plan.get(yr, 0.0) == pytest.approx(20_000.0, rel=1e-6)
+
+    def test_anschluss_ohne_ez_mit_zins(self):
+        """Anschlusskredit ohne EZ, Zins=5 % → korrekte Annuität."""
+        z, n, k = 0.05, 5, 100_000.0
+        expected = k * z * (1 + z) ** n / ((1 + z) ** n - 1)
+        plan = _einmalzahlungen_ausgaben_plan([], [], k, 2030, z, n)
+        for yr in range(2031, 2036):
+            assert plan.get(yr, 0.0) == pytest.approx(expected, rel=1e-6)
+
+    def test_ez_am_endjahr_reduziert_anschluss(self):
+        """EZ am Primär-Endjahr reduziert ak_bal korrekt."""
+        plan = _einmalzahlungen_ausgaben_plan(
+            [{"jahr": 2030, "betrag": 20_000.0}], [], 60_000.0, 2030, 0.0, 4
+        )
+        assert plan.get(2030, 0.0) == pytest.approx(20_000.0)
+        # ak_bal = 60000 - 20000 = 40000; 40000/4 = 10000/yr
+        for yr in range(2031, 2035):
+            assert plan.get(yr, 0.0) == pytest.approx(10_000.0, rel=1e-6)
+
+    def test_ez_vor_endjahr_im_plan(self):
+        """EZ vor endjahr erscheint im Plan und reduziert ak_bal."""
+        plan = _einmalzahlungen_ausgaben_plan(
+            [{"jahr": 2028, "betrag": 5_000.0}], [], 50_000.0, 2030, 0.0, 2
+        )
+        assert plan.get(2028, 0.0) == pytest.approx(5_000.0)
+        # ak_bal = 50000 - 5000 = 45000; 45000/2 = 22500/yr
+        for yr in [2031, 2032]:
+            assert plan.get(yr, 0.0) == pytest.approx(22_500.0, rel=1e-6)
+
+    def test_volle_abdeckung_kein_anschluss(self):
+        """EZ deckt Restschuld vollständig → kein Anschlusskredit."""
+        plan = _einmalzahlungen_ausgaben_plan(
+            [{"jahr": 2030, "betrag": 50_000.0}], [], 50_000.0, 2030, 0.04, 5
+        )
+        assert set(plan.keys()) == {2030}
+        assert plan[2030] == pytest.approx(50_000.0)
+
+    def test_mehrere_ez_selbes_jahr_summiert(self):
+        """Mehrere EZ im gleichen Jahr werden summiert."""
+        plan = _einmalzahlungen_ausgaben_plan(
+            [{"jahr": 2030, "betrag": 10_000.0}, {"jahr": 2030, "betrag": 5_000.0}],
+            [], 40_000.0, 2030, 0.0, 2,
+        )
+        assert plan.get(2030, 0.0) == pytest.approx(15_000.0)
+
+    def test_ez_im_anschluss_zeitraum_neue_annuitaet(self):
+        """EZ nach endjahr reduziert Anschlusskredit-Restschuld und passt Annuität an.
+
+        Setup: ak_bal=100k, lz=4, zins=0 → rate=25k/yr
+        yr 2031: rate 25k, ak_bal→75k
+        yr 2032: rate 25k, ak_bal→50k
+        yr 2033: rate 25k + ez 20k in plan; ak_bal 50k-25k=25k then -20k→5k
+        yr 2034: lz_rem=1, rate=5k/1=5k
+        """
+        plan = _einmalzahlungen_ausgaben_plan(
+            [{"jahr": 2033, "betrag": 20_000.0}], [], 100_000.0, 2030, 0.0, 4
+        )
+        assert plan.get(2031, 0.0) == pytest.approx(25_000.0, rel=1e-6)
+        assert plan.get(2032, 0.0) == pytest.approx(25_000.0, rel=1e-6)
+        assert plan.get(2033, 0.0) == pytest.approx(45_000.0, rel=1e-6)  # 25k rate + 20k ez
+        assert plan.get(2034, 0.0) == pytest.approx(5_000.0, rel=1e-6)
+
+    def test_primaerplan_und_anschluss_kombiniert(self):
+        """Primärplan + Anschluss korrekt kombiniert."""
+        sched = [{"Jahr": 2028, "Jahresausgabe": 8_000.0},
+                 {"Jahr": 2029, "Jahresausgabe": 8_000.0}]
+        plan = _einmalzahlungen_ausgaben_plan([], sched, 20_000.0, 2029, 0.0, 2)
+        assert plan.get(2028) == pytest.approx(8_000.0)
+        assert plan.get(2029) == pytest.approx(8_000.0)
+        assert plan.get(2030) == pytest.approx(10_000.0, rel=1e-6)
+        assert plan.get(2031) == pytest.approx(10_000.0, rel=1e-6)
+
+    def test_anschluss_lz_null_kein_anschluss(self):
+        """anschluss_lz=0 → kein Anschlusskredit."""
+        plan = _einmalzahlungen_ausgaben_plan([], [], 50_000.0, 2030, 0.04, 0)
+        assert plan == {}
 
 
 class TestDeFormatierung:
