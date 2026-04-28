@@ -496,33 +496,95 @@ def render(
                 _bav_m_wf = _riester_m_wf = 0.0
             _b_basis = _b - _bav_m_wf - _riester_m_wf
 
+            # Hover-Kontext je nach Ansicht
+            if ansicht == "Person 1":
+                _erg_wf   = e1
+                _prof_wf  = p1
+                _kv_txt   = f"PKV {_de(p1.pkv_beitrag, 0)} €/Mon. (Fixbetrag)" if p1.krankenversicherung == "PKV" else "GKV-Beitrag (AN-Anteil)"
+                _ba_pct   = f"{e1.besteuerungsanteil:.0%}".replace(".", ",")
+                _eff_pct  = f"{e1.effektiver_steuersatz:.1%}".replace(".", ",")
+                _ver_txt  = ""
+            elif ansicht == "Person 2":
+                _erg_wf   = e2
+                _prof_wf  = p2
+                _kv_txt   = f"PKV {_de(p2.pkv_beitrag, 0)} €/Mon. (Fixbetrag)" if p2.krankenversicherung == "PKV" else "GKV-Beitrag (AN-Anteil)"
+                _ba_pct   = f"{e2.besteuerungsanteil:.0%}".replace(".", ",")
+                _eff_pct  = f"{e2.effektiver_steuersatz:.1%}".replace(".", ",")
+                _ver_txt  = ""
+            else:  # Haushalt gesamt
+                _erg_wf   = e1
+                _prof_wf  = p1
+                _kv_txt   = "GKV/PKV je Person"
+                _ba_pct   = (f"P1: {e1.besteuerungsanteil:.0%} / "
+                             f"P2: {e2.besteuerungsanteil:.0%}".replace(".", ","))
+                _eff_pct  = f"{e1.effektiver_steuersatz:.1%}".replace(".", ",")
+                _ver_txt  = f"<br>{veranlagung_label}"
+
             _wf_x    = ["Rente/Pension", "− Einkommensteuer", "− KV / PV"]
             _wf_meas = ["absolute", "relative", "relative"]
             _wf_y    = [_b_basis, -_s, -_k]
             _wf_t    = [f"{_de(_b_basis)} €", f"−{_de(_s)} €", f"−{_de(_k)} €"]
+            _wf_h    = [
+                f"<b>Rente/Pension (brutto)</b><br>"
+                f"{_de(_b_basis)} €/Mon.<br>"
+                f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
+                f"Besteuerungsanteil: {_ba_pct} (§ 22 EStG)",
+                f"<b>Einkommensteuer + Solidaritätszuschlag</b><br>"
+                f"−{_de(_s)} €/Mon.<br>"
+                f"§ 32a EStG Grundtarif; eff. Steuersatz {_eff_pct}.{_ver_txt}<br>"
+                f"Soli: 5,5 % ab 17.543 € ESt (§ 51a EStG).",
+                f"<b>Kranken- + Pflegeversicherung</b><br>"
+                f"−{_de(_k)} €/Mon.<br>"
+                f"{_kv_txt}.<br>"
+                f"PV-Kinderstaffelung: § 55 Abs. 3a SGB XI. BBG: 5.175 €/Mon.",
+            ]
             # bAV / Riester als separate Schritte (vor Steuer, grün eingefärbt via increasing)
             if _bav_m_wf > 0:
                 _wf_x.insert(1, "+ bAV")
                 _wf_meas.insert(1, "relative")
                 _wf_y.insert(1, _bav_m_wf)
                 _wf_t.insert(1, f"+{_de(_bav_m_wf)} €")
+                _wf_h.insert(1,
+                    f"<b>Betriebliche Altersversorgung (bAV)</b><br>"
+                    f"+{_de(_bav_m_wf)} €/Mon.<br>"
+                    f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
+                    f"KV: abzgl. Freibetrag 187,25 €/Mon. (§ 226 Abs. 2 SGB V)."
+                )
             if _riester_m_wf > 0:
                 _ins = 2 if _bav_m_wf > 0 else 1
                 _wf_x.insert(_ins, "+ Riester")
                 _wf_meas.insert(_ins, "relative")
                 _wf_y.insert(_ins, _riester_m_wf)
                 _wf_t.insert(_ins, f"+{_de(_riester_m_wf)} €")
+                _wf_h.insert(_ins,
+                    f"<b>Riester-Rente</b><br>"
+                    f"+{_de(_riester_m_wf)} €/Mon.<br>"
+                    f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
+                    f"Nicht KVdR-pflichtig (private Rentenleistung)."
+                )
             if _vorsorge_nbav_m > 0:
+                _vb_detail = "; ".join(f"{n}: {_de(v)} €" for n, v in _vorsorge_nbav_einzeln)
                 _wf_x.append("− Vorsorge\n(ohne bAV)")
                 _wf_meas.append("relative")
                 _wf_y.append(-_vorsorge_nbav_m)
                 _wf_t.append(f"−{_de(_vorsorge_nbav_m)} €")
+                _wf_h.append(
+                    f"<b>Vorsorge-Beiträge (ohne bAV)</b><br>"
+                    f"−{_de(_vorsorge_nbav_m)} €/Mon.<br>"
+                    f"Laufende Beiträge: {_vb_detail}.<br>"
+                    f"Reduzieren das verfügbare Netto während der Beitragsphase."
+                )
             for _fa in _aktive_fix:
                 _short = _fa["name"] if len(_fa["name"]) <= 16 else _fa["name"][:14] + "…"
                 _wf_x.append(f"− {_short}")
                 _wf_meas.append("relative")
                 _wf_y.append(-_fa["betrag_monatlich"])
                 _wf_t.append(f"−{_de(_fa['betrag_monatlich'])} €")
+                _wf_h.append(
+                    f"<b>{_fa['name']}</b><br>"
+                    f"−{_de(_fa['betrag_monatlich'])} €/Mon.<br>"
+                    f"Fixausgabe {_fa['startjahr']}–{_fa['endjahr']}."
+                )
             _hyp_schedule_wf = get_hyp_schedule()
             _hyp_row_wf = next((r for r in _hyp_schedule_wf if r["Jahr"] == betrachtungsjahr), None)
             _hyp_m_wf = _hyp_row_wf["Jahresausgabe"] / 12 if _hyp_row_wf else 0.0
@@ -531,6 +593,12 @@ def render(
                 _wf_meas.append("relative")
                 _wf_y.append(-_hyp_m_wf)
                 _wf_t.append(f"−{_de(_hyp_m_wf)} €")
+                _wf_h.append(
+                    f"<b>Hypothek-Jahresrate</b><br>"
+                    f"−{_de(_hyp_m_wf)} €/Mon.<br>"
+                    f"Annuität {betrachtungsjahr} (Zins + Tilgung).<br>"
+                    f"Konfiguration im Tab Hypothek-Verwaltung."
+                )
             _ak_schedule_wf = get_anschluss_schedule()
             _ak_row_wf = next((r for r in _ak_schedule_wf if r["Jahr"] == betrachtungsjahr), None)
             _ak_m_wf = _ak_row_wf["Jahresausgabe"] / 12 if _ak_row_wf else 0.0
@@ -539,15 +607,27 @@ def render(
                 _wf_meas.append("relative")
                 _wf_y.append(-_ak_m_wf)
                 _wf_t.append(f"−{_de(_ak_m_wf)} €")
+                _wf_h.append(
+                    f"<b>Anschlussfinanzierung</b><br>"
+                    f"−{_de(_ak_m_wf)} €/Mon.<br>"
+                    f"Annuität auf Restschuld nach Hypothek-Endjahr."
+                )
             _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf - _hyp_m_wf - _ak_m_wf
             _wf_x.append("Verfügbar")
             _wf_meas.append("total")
             _wf_y.append(_verfuegbar_m)
             _wf_t.append(f"{_de(_verfuegbar_m)} €")
+            _wf_h.append(
+                f"<b>Verfügbares Einkommen</b><br>"
+                f"{_de(_verfuegbar_m)} €/Mon.<br>"
+                f"Nach Steuer, KV/PV, Vorsorge-Beiträgen und Fixausgaben."
+            )
             st.subheader(f"Brutto → Verfügbar {betrachtungsjahr} ({_label})")
             fig_wf_hh = go.Figure(go.Waterfall(
                 orientation="v", measure=_wf_meas, x=_wf_x, y=_wf_y, text=_wf_t,
                 textposition="outside",
+                customdata=_wf_h,
+                hovertemplate="%{customdata}<extra></extra>",
                 connector=dict(line=dict(color="#888")),
                 increasing=dict(marker=dict(color="#4CAF50")),
                 decreasing=dict(marker=dict(color="#F44336")),
