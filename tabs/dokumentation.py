@@ -28,16 +28,20 @@ def render(T: dict) -> None:
         Die **Alterseinkünfte-Simulation** berechnet das voraussichtliche Renteneinkommen
         einer oder zweier Personen unter Berücksichtigung von:
 
-        - Gesetzlicher Rente (DRV) auf Basis von Rentenpunkten
-        - Beamtenpension mit Versorgungsfreibetrag (§ 19 Abs. 2 EStG)
-        - Vorsorgeprodukte: bAV, Riester, Rürup, Lebensversicherung, ETF-Depot, private RV
-        - Sparkapital und monatlicher Sparrate bis zum Renteneintritt
-        - Einkommensteuer nach § 32a EStG (Grundtarif 2024) inkl. Solidaritätszuschlag, Kirchensteuer und Progressionszone-Ampel
+        - Gesetzliche Rente (DRV) nach Rentenpunkten; Regelaltersgrenze § 235 Abs. 2 SGB VI; Abschlag § 77 SGB VI
+        - Beamtenpension mit Versorgungsfreibetrag (§ 19 Abs. 2 EStG); Beihilfe + PKV
+        - Vorsorgeprodukte: bAV (§ 19/§ 22 Nr. 5 EStG), Riester (§§ 83–85 EStG), Rürup (§ 10 Abs. 1 Nr. 2b EStG), Lebensversicherung (§ 20 Abs. 1 Nr. 6 EStG), ETF (§ 20 InvStG), private RV (§ 22 Nr. 1 S. 3a bb EStG)
+        - Kapital und monatliche Sparrate bis zum Renteneintritt
+        - Einkommensteuer § 32a EStG (Grundtarif 2024) inkl. Solidaritätszuschlag + Kirchensteuer (§ 51a EStG)
         - Altersentlastungsbetrag (§ 24a EStG) für Personen ab 65 Jahren
-        - Kranken- und Pflegeversicherung in der Rente (GKV/PKV/Beihilfe) mit PV-Kinderstaffelung (§ 55 Abs. 3a SGB XI)
-        - Dienstunfähigkeitsversicherung (DUV) und Berufsunfähigkeitsversicherung (BUV)
+        - Besteuerungsanteil gesetzliche Rente (§ 22 EStG / JStG 2022)
+        - Kranken- und Pflegeversicherung: KVdR (§ 5 Abs. 1 Nr. 11 SGB V), freiwillig (§ 240 SGB V), PKV; PV-Kinderstaffelung (§ 55 Abs. 3a SGB XI)
+        - bAV-Freibetrag KVdR (§ 226 Abs. 2 SGB V); Einmalauszahlung 10-Jahres-Verteilung (§ 229 Abs. 1 S. 3 SGB V)
+        - Dienstunfähigkeitsversicherung (DUV) und Berufsunfähigkeitsversicherung (BUV) – Ertragsanteil § 22 Nr. 1 S. 3a bb EStG
         - Mieteinnahmen als Haushaltseinkommen (§ 21 EStG)
-        - Ehegatten-Splitting bei Zusammenveranlagung (§ 32a Abs. 5 EStG)
+        - Ehegatten-Splitting (§ 32a Abs. 5 EStG) und Getrenntveranlagung (§ 25 EStG)
+        - Witwen-/Witwerrente (§ 46 Abs. 2 SGB VI) mit Einkommensanrechnung (§ 97 SGB VI)
+        - Grundsicherungshinweis (§ 41 SGB XII) bei Nettorente unter 1.100 €/Mon.
         """)
 
         st.subheader("App-Aufbau (6 Tabs)")
@@ -65,11 +69,38 @@ def render(T: dict) -> None:
             | **Gesamtpunkte** | Aktuelle Rentenpunkte + (Punkte/Jahr × Restjahre bis Rente) |
             | **Rentenwert** | {RENTENWERT_2024:.2f} € / Punkt (West, Stand 01.07.2024) |
             | **Rentenanpassung** | Eingabe in % p.a.; wird über Restjahre aufgezinst |
+            | **Durchschnittsentgelt (§ 18 Abs. 1 SGB IV)** | 43.142 €/Jahr (2024); Basis für EP = Brutto / Durchschnittsentgelt |
 
-            **Rentenabschlag (§ 77 SGB VI):** 0,3 % pro Monat Frühverrentung vor dem 67. Lebensjahr.
+            ---
 
-            **Hinweis:** Feste Regelaltersgrenze 67 für alle Jahrgänge. Die Übergangsregelung
-            für Jahrgänge 1947–1963 ist nicht implementiert.
+            **Regelaltersgrenze – § 235 Abs. 2 SGB VI:**
+
+            | Geburtsjahrgang | Regelaltersgrenze |
+            |---|---|
+            | ≤ 1946 | 65 Jahre |
+            | 1947 | 65 Jahre + 1 Monat |
+            | 1948–1958 | schrittweise bis 66 Jahre |
+            | 1959 | 66 Jahre + 2 Monate |
+            | 1960 | 66 Jahre + 4 Monate |
+            | 1961 | 66 Jahre + 6 Monate |
+            | 1962 | 66 Jahre + 8 Monate |
+            | 1963 | 66 Jahre + 10 Monate |
+            | ≥ 1964 | 67 Jahre |
+
+            Die Übergangstabelle ist vollständig in `regelaltersgrenze(geburtsjahr)` implementiert.
+
+            ---
+
+            **Rentenabschlag – § 77 SGB VI:** 0,3 % pro Monat Frühverrentung vor der
+            individuellen Regelaltersgrenze; entspricht max. −10,8 % bei 3 Jahren Frühverrentung.
+
+            **Wartezeit – § 36 SGB VI:** 35 Beitragsjahre ermöglichen Frühverrentung ab 63
+            (mit Abschlag). Die App zeigt bei Renteneintrittsalter < 63 eine Warnung
+            (§ 236b SGB VI: 45-Jährige-Regelung ist nicht implementiert).
+
+            **Grundsicherungshinweis (§ 41 SGB XII):** Wenn die projizierte Nettorente
+            unter 1.100 €/Mon. liegt, erscheint im Dashboard ein Hinweis auf einen
+            möglichen Grundsicherungsanspruch (indikativ – kein Rechtsanspruch).
             """)
 
         # ── Beamtenpension ─────────────────────────────────────────────────────
@@ -234,19 +265,40 @@ def render(T: dict) -> None:
             """)
 
         # ── Ehegatten-Splitting ────────────────────────────────────────────────
-        with st.expander("👥 Ehegatten-Splitting – § 32a Abs. 5 EStG"):
+        with st.expander("👥 Ehegatten-Splitting – § 32a Abs. 5 EStG / Getrenntveranlagung – § 25 EStG"):
             st.markdown("""
-            Beim Splittingtarif wird das **gemeinsame zvE halbiert**, die Steuer nach
-            Grundtarif berechnet und **verdoppelt**:
+            **Zusammenveranlagung – Splittingtarif (§ 32a Abs. 5 EStG):**
+            Das gemeinsame zvE wird halbiert, die Steuer nach Grundtarif berechnet und verdoppelt:
 
             > Splitting-Steuer = 2 × ESt(zvE_gesamt / 2)
 
-            **Vorteil:** Entsteht bei ungleichen Einkommen beider Partner, da die progressive
-            Steuerkurve abgeflacht wird. Bei zwei gleich hohen Einkommen ist kein Vorteil vorhanden.
+            **Vorteil:** Entsteht bei ungleichen Einkommen, da die progressive Steuerkurve
+            abgeflacht wird. Bei gleich hohen Einkommen kein Vorteil.
 
             **Mieteinnahmen im Splitting:**
-            - Zusammenveranlagung: Mieteinnahmen werden zum gemeinsamen zvE addiert, dann gesplittet.
-            - Getrennte Veranlagung: Mieteinnahmen werden 50/50 auf beide Partner aufgeteilt.
+            - Zusammenveranlagung: Mieteinnahmen fließen vollständig ins gemeinsame zvE → werden mitgesplittet.
+            - Getrennte Veranlagung: Mieteinnahmen werden 50/50 aufgeteilt.
+
+            ---
+
+            **Getrennte Veranlagung (§ 25 EStG):**
+            Jeder Partner wird einzeln veranlagt:
+            > Steuer_gesamt = ESt(zvE_P1) + ESt(zvE_P2)
+
+            Solidaritätszuschlag und Kirchensteuer ebenfalls getrennt je Person berechnet.
+            Im Haushalt-Tab wird der Splitting-Vorteil (Zusammen minus Getrennt) ausgewiesen.
+
+            **Witwen-/Witwerrente – § 46 Abs. 2 SGB VI / § 97 SGB VI:**
+
+            Beim Tod eines Partners erhalten Hinterbliebene das **große Witwengeld**:
+            > Witwenrente = 55 % der gesetzl. Bruttorente des Verstorbenen
+
+            Eigenes Einkommen wird nach § 97 SGB VI angerechnet:
+            - Freibetrag: 26.400 €/Jahr (ca. 2.200 €/Mon.)
+            - Übersteigendes Einkommen: 40 % werden auf die Witwenrente angerechnet
+
+            **Vereinfachungen:** Kein kleines Witwengeld (2 Jahre nach Heirat), kein
+            Bestandsschutz, keine Kinderzuschläge (§ 48 SGB VI). Sichtbar im Haushalt-Tab.
             """)
 
         # ── GKV/PKV ────────────────────────────────────────────────────────────
@@ -369,6 +421,47 @@ def render(T: dict) -> None:
             mit dem persönlichen Einkommensteuersatz besteuert (§ 22 Nr. 5 EStG) –
             unabhängig von Laufzeit oder Auszahlungsalter.
             *Altvertrag:* Vertragsabschluss vor 2005 → Einmalauszahlung steuerfrei.
+
+            ---
+
+            **ETF-Depot – § 20 InvStG (Investmentsteuergesetz):**
+
+            | Eigenschaft | Wert |
+            |---|---|
+            | Teilfreistellung thesaurierend | 30 % der Gewinne steuerfrei |
+            | Steuerlast auf Gewinn | 25 % Abgeltungsteuer × 70 % (effektiv 17,5 %) |
+            | ETF ausschüttend (`etf_ausschuettend=True`) | Keine Teilfreistellung; volle 25 % auf Gewinne |
+            | Sparerpauschbetrag (§ 20 Abs. 9 EStG) | 1.000 €/Person/Jahr; mindert Abgeltungsteuer-Basis |
+
+            ---
+
+            **Riester-Förderung – §§ 83–85 EStG:**
+
+            | Zulage | Betrag | Rechtsgrundlage |
+            |---|---|---|
+            | Grundzulage | 175 €/Jahr | § 84 EStG |
+            | Kinderzulage (Kind ab 01.01.2008) | 300 €/Kind/Jahr | § 85 Abs. 1 S. 2 EStG |
+            | Kinderzulage (Kind vor 01.01.2008) | 185 €/Kind/Jahr | § 85 Abs. 1 S. 1 EStG |
+
+            Zulagen zählen zur **Kostenbasis** für die Ertragsermittlung (nur in Beitragsjahren,
+            also vor Renteneintritt). Mindestbeitrag (§ 83 EStG): 4 % des Vorjahresbruttos
+            abzgl. Zulagen; mindestens 60 €/Jahr.
+
+            ---
+
+            **bAV – Arbeitgeber-Pflichtzuschuss – § 1a Abs. 1a BetrAVG:**
+            Seit 01.01.2022 muss der Arbeitgeber bei Entgeltumwandlung **15 %** des
+            umgewandelten Betrags als Pflichtanteil zuschießen (Weitergabe der
+            ersparten Sozialversicherungsbeiträge). Checkbox „AG-Pflichtzuschuss 15 %"
+            im Vertragsdialog → effektive Einzahlung = Beitrag × 1,15.
+
+            ---
+
+            **Rürup-Rente – § 10 Abs. 1 Nr. 2b EStG:**
+            Rürup-Verträge haben **kein Kapitalwahlrecht** (keine Einmalauszahlung möglich).
+            Leistungen dürfen frühestens ab dem 62. Lebensjahr als monatliche Rente
+            ausgezahlt werden. Übertragung und Beleihung sind ausgeschlossen (§ 10 Abs. 1
+            Nr. 2b Satz 2 i.V.m. § 97 EStG). In der App daher nur „Monatliche Rente" wählbar.
 
             **Aufschubverzinsung:**
             Wird der Vertrag nicht zum frühestmöglichen Zeitpunkt abgerufen, wächst der
@@ -516,6 +609,50 @@ def render(T: dict) -> None:
             **Rentenanpassung im Jahresverlauf:** In der Entnahme-Optimierung wird die
             gesetzliche Rente im Simulationshorizont jährlich um `rentenanpassung_pa` erhöht.
             Für Pensionäre gilt 0 % (keine DRV-Rentenanpassung).
+            """)
+
+        # ── Gesetzesreferenz ───────────────────────────────────────────────────
+        st.divider()
+        with st.expander("⚖️ Alle berücksichtigten Gesetze – Kurzreferenz"):
+            st.markdown("""
+            | Paragraph | Gesetz | Wirkung in der App |
+            |---|---|---|
+            | § 9a | EStG | Werbungskosten-Pauschbetrag 102 €/Jahr (Rentner) |
+            | § 10 Abs. 1 Nr. 2b | EStG | Rürup: kein Kapitalwahlrecht, nur Monatsrente ab 62 |
+            | § 10c | EStG | Sonderausgaben-Pauschbetrag 36 €/Jahr |
+            | § 19 | EStG | Arbeitslohn (Gehalt in Berufsjahren, Beamtenpension): 100 % progressiv |
+            | § 19 Abs. 2 | EStG | Versorgungsfreibetrag für Beamtenpensionen; sinkt auf 0 % bis 2040 |
+            | § 20 Abs. 1 Nr. 6 | EStG | LV / Private RV Einmal: Halbeinkünfte bei ≥ 12 J. + Alter ≥ 62; sonst Abgeltungsteuer |
+            | § 20 Abs. 9 | EStG | Sparerpauschbetrag 1.000 €/Person/Jahr auf Abgeltungsteuer-Basis |
+            | § 21 | EStG | Mieteinnahmen: voll progressiv steuerpflichtig, keine KV-Pflicht |
+            | § 22 Nr. 1 S. 3a aa | EStG | Besteuerungsanteil gesetzliche / Rürup-Rente; steigt bis 2058 auf 100 % |
+            | § 22 Nr. 1 S. 3a bb | EStG | Ertragsanteil private RV-Rente, DUV, BUV (altersabhängig, z. B. 22 % mit 60) |
+            | § 22 Nr. 5 | EStG | bAV und Riester: volle nachgelagerte Besteuerung; keine 12-Jahres-Regel |
+            | § 24a | EStG | Altersentlastungsbetrag ab 65: Prozentsatz sinkt jährlich bis 2040 auf 0 |
+            | § 25 | EStG | Getrenntveranlagung: P1 und P2 werden einzeln veranlagt |
+            | § 32a | EStG | Grundtarif 2024: 5 Zonen, 14–45 %; bildet Basis aller ESt-Berechnungen |
+            | § 32a Abs. 5 | EStG | Splitting: 2 × ESt(zvE/2); vorteilhaft bei ungleichen Einkommen |
+            | § 51a | EStG | Solidaritätszuschlag 5,5 % (Freigrenze 17.543 €) + Kirchensteuer 8/9 % |
+            | § 83 | EStG | Riester-Mindestbeitrag: 4 % Vorjahresbrutto − Zulagen; mind. 60 €/Jahr |
+            | § 84 | EStG | Riester-Grundzulage 175 €/Jahr |
+            | § 85 Abs. 1 S. 1 | EStG | Riester-Kinderzulage 185 €/Kind/Jahr (Kinder vor 2008) |
+            | § 85 Abs. 1 S. 2 | EStG | Riester-Kinderzulage 300 €/Kind/Jahr (Kinder ab 2008) |
+            | § 20 | InvStG | ETF-Teilfreistellung 30 % (thesaurierend); 0 % bei ausschüttenden ETFs |
+            | § 1a Abs. 1a | BetrAVG | Arbeitgeber-Pflichtzuschuss 15 % bei bAV-Entgeltumwandlung ab 2022 |
+            | § 18 Abs. 1 | SGB IV | Durchschnittsentgelt 43.142 €/Jahr (2024); Basis für Rentenpunkte |
+            | § 5 Abs. 1 Nr. 11 | SGB V | KVdR-Pflichtmitgliedschaft: nur § 229-Einkünfte beitragspflichtig |
+            | § 226 Abs. 2 | SGB V | bAV-Freibetrag 187,25 €/Mon. (nur für KVdR-Mitglieder) |
+            | § 229 Abs. 1 Nr. 1 | SGB V | Beamtenpension: voller Betrag als KV-Basis, kein Freibetrag |
+            | § 229 Abs. 1 S. 3 | SGB V | bAV-Einmalauszahlung: KV-Basis auf 120 Monate verteilt |
+            | § 240 | SGB V | Freiwillig GKV: alle Einnahmen beitragspflichtig (ohne bAV-Freibetrag) |
+            | § 240 Abs. 4 | SGB V | Mindest-BMG freiwillig: 1.096,67 €/Mon. (auch bei niedrigerem Einkommen) |
+            | § 36 | SGB VI | Wartezeit 35 Jahre → Frühverrentung ab 63 möglich (mit Abschlag) |
+            | § 46 Abs. 2 | SGB VI | Großes Witwengeld: 55 % der gesetzl. Bruttorente des Verstorbenen |
+            | § 77 | SGB VI | Rentenabschlag 0,3 %/Monat vor individueller Regelaltersgrenze |
+            | § 97 | SGB VI | Einkommensanrechnung Witwenrente: Freibetrag 26.400 €/Jahr; 40 % Abzug |
+            | § 235 Abs. 2 | SGB VI | Regelaltersgrenze: 65 (≤ 1946) bis 67 (≥ 1964); Übergangstabelle für 1947–1963 |
+            | § 41 | SGB XII | Grundsicherung im Alter: Hinweis bei proj. Nettorente < 1.100 €/Mon. |
+            | § 55 Abs. 3a | SGB XI | PV-Kinderstaffelung: 1 Kind 3,4 %; je weiteres Kind −0,25 % (max. −1,0 %) |
             """)
 
         # ── Vereinfachungen ────────────────────────────────────────────────────
