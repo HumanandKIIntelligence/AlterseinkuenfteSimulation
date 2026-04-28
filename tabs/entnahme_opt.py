@@ -22,7 +22,7 @@ from tabs.vorsorge import _run_optimierung
 try:
     from tabs.hypothek import (
         get_ausgaben_plan, get_restschuld_end,
-        get_hyp_info, get_ausgaben_plan_optimierung,
+        get_hyp_info, get_ausgaben_plan_optimierung, get_hyp_schedule,
     )
 except ImportError:
     def get_ausgaben_plan() -> dict:
@@ -34,6 +34,8 @@ except ImportError:
     def get_ausgaben_plan_optimierung(markt_zins_pa: float, anschluss_laufzeit: int,
                                       als_einmaltilgung: bool = False) -> dict:
         return {}
+    def get_hyp_schedule() -> list:
+        return []
 
 
 def _aus_dict(d: dict) -> VorsorgeProdukt:
@@ -752,6 +754,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             ) if _real_toggle else 2.0
         df_jd = pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
 
+        # Geplante Entnahmen (session_state – wird im Expander unten befüllt)
+        _eo_entnahmen_early: list[dict] = list(st.session_state.get("eo_entnahmen", []))
+        _entnahmen_dict: dict[int, float] = {e["jahr"]: e["betrag"] for e in _eo_entnahmen_early}
+
         # Reale Werte: alle numerischen Spalten mit Inflationsdeflaktor skalieren
         _start_j = int(df_jd.index[0]) if len(df_jd) > 0 else 0
         if _real_toggle and _real_inf > 0:
@@ -841,6 +847,19 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 hovertemplate="%{x}: %{y:,.0f} € Jahresbeitrag<extra>Vorsorge-Beiträge</extra>",
             ))
 
+        # Geplante Entnahmen als sichtbarer Abzugsbalken (negativ)
+        if _entnahmen_dict:
+            _en_yrs_src = [j for j in _entnahmen_dict if j in df_jd.index]
+            if _en_yrs_src:
+                fig_src.add_trace(go.Bar(
+                    name="Entnahmen (geplant)",
+                    x=_en_yrs_src,
+                    y=[-_entnahmen_dict[j] for j in _en_yrs_src],
+                    marker_color="#E65100",
+                    opacity=0.85,
+                    hovertemplate="%{x}: %{y:,.0f} € Entnahme<extra>Entnahmen (geplant)</extra>",
+                ))
+
         fig_src.add_trace(go.Scatter(
             name="Netto", x=df_jd.index, y=df_jd["Netto"],
             mode="lines+markers",
@@ -856,19 +875,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         if _profil2_eo and not _profil2_eo.bereits_rentner:
             fig_src.add_vline(
                 x=_profil2_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#E91E63",
-                annotation_text="P2 Renteneintritt", annotation_position="top left",
+                annotation_text="P2 Renteneintritt", annotation_position="bottom left",
             )
         # Sonderausgaben (Hypothek-Raten / Einmaltilgung) als Annotationen unterhalb der Balken
         _hat_sonder = "Sonderausgabe" in df_jd.columns and df_jd["Sonderausgabe"].sum() > 0
         if _hat_sonder:
-            for _sj in df_jd[df_jd["Sonderausgabe"] > 0].index:
+            for _si, _sj in enumerate(df_jd[df_jd["Sonderausgabe"] > 0].index):
                 _sa = df_jd.loc[_sj, "Sonderausgabe"]
+                _ay_val = 35 if _si % 2 == 0 else 65
                 fig_src.add_annotation(
                     x=_sj, y=0,
                     text=f"Hyp. {_de(_sa / 1000, 0)}k€",
                     showarrow=True, arrowhead=2, arrowcolor="#D32F2F",
                     font=dict(color="#D32F2F", size=11),
-                    ax=0, ay=35,
+                    ax=0, ay=_ay_val,
                 )
         # Pool-Injektion-Annotationen
         if "Kap_Injektion" in df_jd.columns:
@@ -987,89 +1007,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 + (" (inflationsbereinigt)" if _real_toggle else "") + "."
             )
 
-        # ── Kapitalanlage-Pool Verlauf ─────────────────────────────────────────
-        if "Kap_Pool" in df_jd.columns and df_jd["Kap_Pool"].sum() > 0:
-            st.subheader("Kapitalanlage-Pool Verlauf")
-            # Auf Planungshorizont (ab Renteneintritt) beschränken
-            _ej_pool = (_profil_eo.rentenbeginn_jahr if _profil_eo.bereits_rentner
-                        else _profil_eo.eintritt_jahr)
-            _df_pool = df_jd[df_jd.index >= _ej_pool]
-            _pool_pids_chart = [c[len("Kap_Pool_"):] for c in df_jd.columns
-                                if c.startswith("Kap_Pool_")]
-            _prod_names_pool = {p.id: p.name for p in _produkte_obj_run}
-            fig_pool = go.Figure()
-            # Per-Produkt-Linien wenn Kapitalpool-Tilgung aktiv und mehrere Pools
-            if _pool_tilgung and len(_pool_pids_chart) > 1:
-                _pool_colors_c = ["#1976D2", "#388E3C", "#E64A19", "#7B1FA2", "#00838F"]
-                for _i, _pid in enumerate(_pool_pids_chart):
-                    _col = f"Kap_Pool_{_pid}"
-                    if _col in _df_pool.columns and _df_pool[_col].sum() > 0:
-                        _lbl = _prod_names_pool.get(_pid, _pid)
-                        fig_pool.add_trace(go.Scatter(
-                            name=_lbl, x=_df_pool.index, y=_df_pool[_col],
-                            mode="lines",
-                            line=dict(color=_pool_colors_c[_i % len(_pool_colors_c)],
-                                      width=1.5, dash="dot"),
-                            hovertemplate=f"%{{x}}: %{{y:,.0f}} €<extra>{_lbl}</extra>",
-                        ))
-            # Gesamtpool-Linie
-            fig_pool.add_trace(go.Scatter(
-                name="Pool gesamt", x=_df_pool.index, y=_df_pool["Kap_Pool"],
-                mode="lines+markers", line=dict(color="#1565C0", width=2.5),
-                hovertemplate="%{x}: %{y:,.0f} € Poolwert<extra></extra>",
-            ))
-            # Restschuld-Referenzlinie
-            if _einmal_tilgung and _rs > 0:
-                fig_pool.add_hline(
-                    y=_rs, line_dash="dash", line_color="#D32F2F", line_width=1.5,
-                    annotation_text=f"Restschuld {_de(_rs)} €",
-                    annotation_position="top right",
-                    annotation_font_color="#D32F2F",
-                )
-            if "Src_Kapitalverzehr" in _df_pool.columns and _df_pool["Src_Kapitalverzehr"].sum() > 0:
-                fig_pool.add_trace(go.Bar(
-                    name="Entnahme", x=_df_pool.index, y=_df_pool["Src_Kapitalverzehr"],
-                    marker_color="#42A5F5", opacity=0.7,
-                    yaxis="y2",
-                    hovertemplate="%{x}: %{y:,.0f} € Entnahme<extra></extra>",
-                ))
-            fig_pool.update_layout(
-                barmode="stack", template="plotly_white", height=380,
-                xaxis=dict(title="Jahr", dtick=2,
-                           range=[_ej_pool - 0.5, _ej_pool + horizon + 0.5]),
-                yaxis=dict(title="Poolwert (€)", tickformat=",.0f"),
-                yaxis2=dict(title="Entnahme (€/Jahr)", overlaying="y", side="right",
-                            tickformat=",.0f", showgrid=False),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                margin=dict(l=10, r=10, t=50, b=10),
-                separators=",.",
-            )
-            st.plotly_chart(fig_pool, use_container_width=True)
-            # Pool-Verfügbarkeit: Tabelle je Produkt
-            if _pool_pids_chart:
-                _pool_rows = []
-                for _pid in _pool_pids_chart:
-                    _col = f"Kap_Pool_{_pid}"
-                    if _col not in _df_pool.columns:
-                        continue
-                    _pool_max = _df_pool[_col].max()
-                    _pool_end = _df_pool[_col].iloc[-1]
-                    _pool_rows.append({
-                        "Produkt": _prod_names_pool.get(_pid, _pid),
-                        "Max. Poolwert (€)": round(_pool_max),
-                        "Poolwert am Ende (€)": round(_pool_end),
-                        "Restschuld deckbar": (
-                            "✅ Ja" if _pool_max >= _rs > 0
-                            else ("–" if _rs == 0 else "⚠️ Teilweise" if _pool_max > 0 else "❌ Nein")
-                        ),
-                    })
-                if _pool_rows:
-                    import pandas as _pd_pool
-                    st.dataframe(
-                        _pd_pool.DataFrame(_pool_rows).set_index("Produkt"),
-                        use_container_width=True,
-                    )
-
         # ── Kapital-Zeitleiste ─────────────────────────────────────────────────
         # P2 Kapital-Werte
         _spkap2_orig     = 0.0
@@ -1104,12 +1041,52 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                          if any(p.id == pid and getattr(p, "person", "Person 1") == "Person 2"
                                 for p in _produkte_obj_run)]
 
+        # ── Geplante Kapital-Entnahmen ─────────────────────────────────────────
+        _eo_entnahmen = _eo_entnahmen_early  # bereits aus session_state geladen
+        with st.expander("💸 Geplante Kapital-Entnahmen", expanded=bool(_eo_entnahmen)):
+            st.caption(
+                "Einmalige Entnahmen aus dem Kapital (z.B. für Renovierung, Reise, Schenkung). "
+                "Werden in der Kapital-Zeitleiste und im Jahresverlauf separat ausgewiesen."
+            )
+            _en_cols = st.columns([2, 2, 1])
+            with _en_cols[0]:
+                _en_jahr = st.number_input(
+                    "Jahr", min_value=AKTUELLES_JAHR, max_value=AKTUELLES_JAHR + 60,
+                    value=_spkap_eintritt_j, step=1, key=f"rc{_rc}_en_jahr",
+                )
+            with _en_cols[1]:
+                _en_betrag = st.number_input(
+                    "Betrag (€)", min_value=0.0, max_value=5_000_000.0,
+                    value=10_000.0, step=1_000.0, key=f"rc{_rc}_en_betrag",
+                )
+            with _en_cols[2]:
+                st.write("")
+                st.write("")
+                if st.button("Hinzufügen", key=f"rc{_rc}_en_add"):
+                    _eo_entnahmen.append({"jahr": int(_en_jahr), "betrag": float(_en_betrag)})
+                    _eo_entnahmen.sort(key=lambda e: e["jahr"])
+                    st.session_state["eo_entnahmen"] = _eo_entnahmen
+                    st.rerun()
+            if _eo_entnahmen:
+                for _ei, _ee in enumerate(_eo_entnahmen):
+                    _ec1, _ec2 = st.columns([5, 1])
+                    with _ec1:
+                        st.write(f"**{_ee['jahr']}**: {_de(_ee['betrag'])} €")
+                    with _ec2:
+                        if st.button("✕", key=f"rc{_rc}_en_del_{_ei}"):
+                            _eo_entnahmen.pop(_ei)
+                            st.session_state["eo_entnahmen"] = _eo_entnahmen
+                            st.rerun()
+
         _show_kap_chart = _spkap_orig > 0 or _spkap2_orig > 0 or len(_real_pool_pids) > 0
         if _show_kap_chart:
             st.subheader("💰 Kapital-Zeitleiste")
             fig_spar = go.Figure()
             _x_chart_start = AKTUELLES_JAHR
             _x_chart_end   = _spkap_eintritt_j + horizon
+
+            _p1_post_series_gesamt: pd.Series | None = None
+            _p2_post_series_gesamt: pd.Series | None = None
 
             # ── P1 Kapital (Anspar + kombinierter Post-Rentenwert) ──────────
             if _spkap_orig > 0 or _p1_pool_pids:
@@ -1153,6 +1130,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                              for j in _post_yrs_p1],
                             index=_post_yrs_p1,
                         )
+                    _p1_post_series_gesamt = _df_p1_post
                     fig_spar.add_trace(go.Scatter(
                         name=_p1_label_post, x=_df_p1_post.index, y=_df_p1_post.values,
                         mode="lines+markers", line=dict(color="#2E7D32", width=2.5),
@@ -1162,6 +1140,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _post_vals = [kapitalwachstum(_spkap, 0.0, _spkap_rendite,
                                                   j - _spkap_eintritt_j)
                                   for j in _post_yrs_p1]
+                    _p1_post_series_gesamt = pd.Series(_post_vals, index=_post_yrs_p1)
                     fig_spar.add_trace(go.Scatter(
                         name=_p1_label_post, x=_post_yrs_p1, y=_post_vals,
                         mode="lines+markers", line=dict(color="#2E7D32", width=2),
@@ -1191,25 +1170,53 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     if _c in df_jd.columns:
                         _pool_s = df_jd.reindex(_post_yrs2)[_c].fillna(0)
                         _p2_post_series = _p2_post_series + _pool_s.values
+                _p2_post_series_gesamt = _p2_post_series
                 fig_spar.add_trace(go.Scatter(
                     name="P2 Kapital", x=_p2_post_series.index, y=_p2_post_series.values,
                     mode="lines+markers", line=dict(color="#C2185B", width=2),
                     hovertemplate="%{x}: %{y:,.0f} €<extra>P2 Kapital</extra>",
                 ))
 
+            # ── Kapital gesamt (P1 + P2) ─────────────────────────────────────
+            if _p1_post_series_gesamt is not None and _p2_post_series_gesamt is not None:
+                _all_ges_yrs = sorted(set(_p1_post_series_gesamt.index) | set(_p2_post_series_gesamt.index))
+                _p1_aligned = _p1_post_series_gesamt.reindex(_all_ges_yrs, fill_value=0)
+                _p2_aligned = _p2_post_series_gesamt.reindex(_all_ges_yrs, fill_value=0)
+                _gesamt_series = _p1_aligned + _p2_aligned
+                fig_spar.add_trace(go.Scatter(
+                    name="Kapital gesamt", x=_gesamt_series.index, y=_gesamt_series.values,
+                    mode="lines", line=dict(color="#37474F", width=2.5, dash="longdash"),
+                    hovertemplate="%{x}: %{y:,.0f} €<extra>Kapital gesamt</extra>",
+                ))
+
+            # ── Restschuld (Jahresverlauf) ───────────────────────────────────
+            _sched_spar = get_hyp_schedule()
+            if _sched_spar:
+                _rs_x: list[int] = []
+                _rs_y: list[float] = []
+                for _s in _sched_spar:
+                    if _s["Restschuld_Anfang"] > 0:
+                        _rs_x.append(_s["Jahr"])
+                        _rs_y.append(_s["Restschuld_Anfang"])
+                    if _s["Restschuld_Ende"] <= 0:
+                        break
+                if _rs_x:
+                    fig_spar.add_trace(go.Scatter(
+                        name="Restschuld",
+                        x=_rs_x, y=_rs_y,
+                        mode="lines+markers",
+                        line=dict(color="#D32F2F", width=2, dash="dash"),
+                        marker=dict(size=5, symbol="diamond"),
+                        hovertemplate="%{x}: %{y:,.0f} € Restschuld<extra>Restschuld</extra>",
+                    ))
+
             # ── Referenzlinien ──────────────────────────────────────────────
-            if _rs > 0:
-                fig_spar.add_hline(
-                    y=_rs, line_dash="dash", line_color="#D32F2F", line_width=1.5,
-                    annotation_text=f"Restschuld {_de(_rs)} €",
-                    annotation_position="top right", annotation_font_color="#D32F2F",
-                )
             if _hyp_info and not _einmal_tilgung and _rs > 0:
                 fig_spar.add_vline(
                     x=_hyp_info['endjahr'], line_width=1.5, line_dash="dot",
                     line_color="#D32F2F",
                     annotation_text=f"Hyp.-Ende {_hyp_info['endjahr']}",
-                    annotation_position="top left", annotation_font_color="#D32F2F",
+                    annotation_position="bottom left", annotation_font_color="#D32F2F",
                 )
             if not _profil_eo.bereits_rentner:
                 _vl_label = "P1 Renteneintritt" if _spkap2_orig > 0 else "Renteneintritt"
@@ -1221,8 +1228,24 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     and _spkap2_eintritt_j != _spkap_eintritt_j):
                 fig_spar.add_vline(
                     x=_spkap2_eintritt_j, line_width=2, line_dash="dash", line_color="#E91E63",
-                    annotation_text="P2 Renteneintritt", annotation_position="top left",
+                    annotation_text="P2 Renteneintritt", annotation_position="bottom left",
                 )
+
+            # ── Geplante Entnahmen ──────────────────────────────────────────
+            if _entnahmen_dict:
+                _en_xs = list(_entnahmen_dict.keys())
+                _en_ys = [_entnahmen_dict[j] for j in _en_xs]
+                fig_spar.add_trace(go.Scatter(
+                    name="Entnahmen (geplant)",
+                    x=_en_xs, y=_en_ys,
+                    mode="markers+text",
+                    marker=dict(color="#E65100", size=14, symbol="arrow-bar-down",
+                                line=dict(color="#BF360C", width=1)),
+                    text=[f"−{_de(b/1000, 0)}k€" for b in _en_ys],
+                    textposition="top center",
+                    textfont=dict(color="#E65100", size=10),
+                    hovertemplate="%{x}: −%{y:,.0f} € Entnahme<extra>Entnahmen (geplant)</extra>",
+                ))
 
             fig_spar.update_layout(
                 template="plotly_white", height=400,
