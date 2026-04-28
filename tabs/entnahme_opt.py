@@ -992,11 +992,44 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     font=dict(color="#D32F2F", size=11),
                     ax=0, ay=_ay_val,
                 )
+        # ── Y-Achsen-Bereiche berechnen (explizit, für Null-Ausrichtung) ─────────
+        # y1: maximale gestapelte Balkenhöhe
+        _y1_pos_cols = ["Src_Gehalt", "Src_Zusatzentgelt", "Src_GesRente", "Src_P2_Rente",
+                        "Src_Versorgung", "Src_Einmal", "Src_Miete"]
+        _y1_pos_sum = sum(
+            df_jd[c].clip(lower=0) for c in _y1_pos_cols if c in df_jd.columns
+        )
+        _y1_hi_data = float(_y1_pos_sum.max()) if hasattr(_y1_pos_sum, "max") else 0.0
+        # Minimum auf y1: negative Balken (Vorsorge-Beiträge, Entnahmen)
+        _y1_lo_data = 0.0
+        if "Vorsorge_Beitraege" in df_jd.columns:
+            _y1_lo_data = min(_y1_lo_data, -float(df_jd["Vorsorge_Beitraege"].max()))
+        if _entnahmen_dict:
+            _y1_lo_data = min(_y1_lo_data, -max(_entnahmen_dict.values(), default=0.0))
+        _y1_hi = _y1_hi_data * 1.08 or 1.0
+        # Mindestens 5 % des positiven Bereichs als negative Puffer-Reserve
+        _y1_lo = min(_y1_lo_data * 1.08, -_y1_hi * 0.05)
+
+        if _hat_pool_y2:
+            # Pool-Flows: maximaler Absolutwert über beide Typen
+            _pool_max = 0.0
+            if "Src_Kapitalverzehr" in df_jd.columns:
+                _pool_max = max(_pool_max, float(df_jd["Src_Kapitalverzehr"].max()))
+            if "Kap_Injektion" in df_jd.columns:
+                _pool_max = max(_pool_max, float(df_jd["Kap_Injektion"].max()))
+            _pool_max *= 1.10  # 10 % Puffer
+            # Null-Ausrichtung: Nulllinie y2 = Nulllinie y1
+            # Herleitung: f = |y1_lo| / (y1_hi - y1_lo) → y2_hi = pool_max × y1_hi / |y1_lo|
+            _abs_y1_lo = abs(_y1_lo)
+            _y2_lo  = -_pool_max
+            _y2_hi  = _pool_max * _y1_hi / _abs_y1_lo if _abs_y1_lo > 0 else _pool_max
+
         _has_einmal_annotations = any(_einmal_info.get(j) for j in _jahre)
         _src_layout: dict = dict(
             barmode="stack", template="plotly_white", height=400,
             xaxis=dict(title="Jahr", dtick=2),
-            yaxis=dict(title="€ / Jahr (brutto)", tickformat=",.0f"),
+            yaxis=dict(title="€ / Jahr (brutto)", tickformat=",.0f",
+                       range=[_y1_lo, _y1_hi]),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=10, r=10, t=90 if _has_einmal_annotations else 50, b=10),
             separators=",.",
@@ -1008,7 +1041,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 overlaying="y",
                 side="right",
                 showgrid=False,
-                rangemode="tozero",
+                range=[_y2_lo, _y2_hi],
             )
         fig_src.update_layout(**_src_layout)
         st.plotly_chart(fig_src, use_container_width=True)
