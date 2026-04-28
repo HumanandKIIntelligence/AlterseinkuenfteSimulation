@@ -302,6 +302,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
             # ── Wasserfall Haushalt Brutto → Netto ───────────────────────────
             st.subheader(f"Haushalt Brutto → Netto {_sel_j_dash} (monatlich)")
+            _ba1_pct = f"{ergebnis.besteuerungsanteil:.0%}".replace(".", ",")
+            _ba2_pct = f"{ergebnis2.besteuerungsanteil:.0%}".replace(".", ",")
+            _ver_label = "Zusammenveranlagung (Splitting)" if veranlagung == "Zusammen" else "Getrenntveranlagung"
             _wf_x = ["P1 Rente/Pension", "P2 Rente/Pension"]
             _wf_m = ["absolute", "relative"]
             _wf_y = [_p1_b_y, _p2_b_y]
@@ -309,21 +312,49 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"{_de(_p1_b_y)} €",
                 f"+{_de(_p2_b_y)} €",
             ]
+            _wf_h = [
+                f"<b>P1 Rente/Pension (brutto)</b><br>"
+                f"{_de(_p1_b_y)} €/Mon.<br>"
+                f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
+                f"Besteuerungsanteil: {_ba1_pct} (Renteneintritt {profil.eintritt_jahr})",
+                f"<b>P2 Rente/Pension (brutto)</b><br>"
+                f"+{_de(_p2_b_y)} €/Mon.<br>"
+                f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
+                f"Besteuerungsanteil: {_ba2_pct} (Renteneintritt {profil2.eintritt_jahr})",
+            ]
             if _zus_bav > 0:
                 _wf_x.append("+ bAV")
                 _wf_m.append("relative")
                 _wf_y.append(_zus_bav)
                 _wf_t.append(f"+{_de(_zus_bav)} €")
+                _wf_h.append(
+                    f"<b>Betriebliche Altersversorgung (P1+P2)</b><br>"
+                    f"+{_de(_zus_bav)} €/Mon.<br>"
+                    f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
+                    f"KV: abzgl. Freibetrag 187,25 €/Mon. (§ 226 Abs. 2 SGB V)."
+                )
             if _zus_riester > 0:
                 _wf_x.append("+ Riester")
                 _wf_m.append("relative")
                 _wf_y.append(_zus_riester)
                 _wf_t.append(f"+{_de(_zus_riester)} €")
+                _wf_h.append(
+                    f"<b>Riester-Rente (P1+P2)</b><br>"
+                    f"+{_de(_zus_riester)} €/Mon.<br>"
+                    f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
+                    f"Nicht KV-pflichtig (private Rentenleistung)."
+                )
             if _miete_y > 0:
                 _wf_x.append("Mieteinnahmen")
                 _wf_m.append("relative")
                 _wf_y.append(_miete_y)
                 _wf_t.append(f"+{_de(_miete_y)} €")
+                _wf_h.append(
+                    f"<b>Mieteinnahmen (gesamt)</b><br>"
+                    f"+{_de(_miete_y)} €/Mon.<br>"
+                    f"Netto nach abzugsfähigen Werbungskosten (§ 21 EStG).<br>"
+                    f"Voll steuerpflichtig, keine KV-Pflicht. Steuerlich 50/50 aufgeteilt."
+                )
             # Sonstige Einnahmen (Rürup, PrivRV, Kapitalverzehr etc.)
             _sonst_zus = _hh_brutto - _p1_b_y - _p2_b_y - _zus_bav - _zus_riester - _miete_y
             if _sonst_zus > 0.5:
@@ -331,6 +362,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 _wf_m.append("relative")
                 _wf_y.append(_sonst_zus)
                 _wf_t.append(f"+{_de(_sonst_zus)} €")
+                _wf_h.append(
+                    f"<b>Sonstige Einnahmen</b><br>"
+                    f"+{_de(_sonst_zus)} €/Mon.<br>"
+                    f"Rürup, Private RV, Kapitalverzehr u.a.<br>"
+                    f"Steuerlich nach jeweiliger Regelung."
+                )
             _wf_x += ["− Einkommensteuer", "− KV/PV", "Netto Haushalt"]
             _wf_m += ["relative", "relative", "total"]
             _wf_y += [-_hh_steuer, -_hh_kv, _hh_netto]
@@ -339,6 +376,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"−{_de(_hh_kv)} €",
                 f"{_de(_hh_netto)} €",
             ]
+            _wf_h += [
+                f"<b>Einkommensteuer + Solidaritätszuschlag</b><br>"
+                f"−{_de(_hh_steuer)} €/Mon.<br>"
+                f"{_ver_label} (§ 32a EStG).<br>"
+                f"Soli: 5,5 % ab 17.543 € ESt (§ 51a EStG).",
+                f"<b>Kranken- + Pflegeversicherung (Haushalt)</b><br>"
+                f"−{_de(_hh_kv)} €/Mon."
+                + (f"<br>P1: {_de(_hh_kv_p1)} €, P2: {_de(_hh_kv_p2)} €" if _hh_kv_p1 is not None else "")
+                + "<br>GKV/PKV je nach Versicherungsstatus.<br>"
+                "BBG: 5.175 €/Mon.",
+                f"<b>Netto Haushalt (verfügbar)</b><br>"
+                f"{_de(_hh_netto)} €/Mon.<br>"
+                f"Nach Steuer und KV/PV-Abzügen.",
+            ]
             fig_wf = go.Figure(go.Waterfall(
                 orientation="v",
                 measure=_wf_m,
@@ -346,6 +397,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 y=_wf_y,
                 text=_wf_t,
                 textposition="outside",
+                customdata=_wf_h,
+                hovertemplate="%{customdata}<extra></extra>",
                 connector=dict(line=dict(color="#888")),
                 increasing=dict(marker=dict(color="#4CAF50")),
                 decreasing=dict(marker=dict(color="#F44336")),
@@ -456,7 +509,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         _end_einzel = _start_einzel + 30
         _person_label_einzel = "Person 2" if wahl == "Person 2" else "Person 1"
         _entsch_einzel = _load_laufende_entsch(_person_label_einzel)
-        _, _jd_dash = _netto_ueber_horizont(profil, ergebnis, _entsch_einzel, 31, mieteinnahmen, mietsteigerung, gehalt_monatlich=_g_einzel)
+        # Beim Paar: Mieteinnahmen 50/50 für Einzelperson-Sicht
+        _miete_einzel = mieteinnahmen / 2 if hat_partner else mieteinnahmen
+        _, _jd_dash = _netto_ueber_horizont(profil, ergebnis, _entsch_einzel, 31, _miete_einzel, mietsteigerung, gehalt_monatlich=_g_einzel)
         _sel_j_dash = st.slider(
             "Betrachtungsjahr", _start_slider_einzel, _end_einzel,
             min(_end_einzel, max(_start_slider_einzel, _start_einzel)), key=f"rc{_rc}_dash_jahr",
@@ -538,10 +593,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             c8.metric("PV / Monat", f"{_de(pv_mono)} €", help=_pv_info)
         else:
             c8.metric("PV / Monat", "–")
-        if mieteinnahmen > 0:
+        if _miete_einzel > 0:
+            _miete_label = "Mieteinnahmen (je 50 %)" if hat_partner else "Mieteinnahmen"
             c9.metric(
-                "Mieteinnahmen (Haushalt)", f"{_de(mieteinnahmen)} €/Mon.",
-                help="Gemeinsame Nettomieteinnahmen (§ 21 EStG). Steuerlich wirksam, keine KV-Pflicht."
+                _miete_label, f"{_de(_miete_einzel)} €/Mon.",
+                help="Nettomieteinnahmen (§ 21 EStG). Steuerlich wirksam, keine KV-Pflicht."
+                     + (" Gesamt 50/50 aufgeteilt." if hat_partner else ""),
             )
         else:
             c9.metric(
@@ -565,30 +622,75 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         # ── Wasserfall Brutto → Netto ─────────────────────────────────────────
         st.subheader(f"Brutto → Netto {_sel_j_dash} (monatlich)")
+        _ba_pct = f"{ergebnis.besteuerungsanteil:.0%}".replace(".", ",")
+        _eff_pct = f"{ergebnis.effektiver_steuersatz:.1%}".replace(".", ",")
+        _kv_satz = f"{profil.pkv_beitrag:.0f} € (Fixbetrag PKV)" if profil.krankenversicherung == "PKV" else "GKV-Beitrag (AN-Anteil)"
         _wf_x_e = ["Rente/Pension"]
         _wf_m_e = ["absolute"]
         _wf_y_e = [_d_basis]
         _wf_t_e = [f"{_de(_d_basis)} €"]
+        _wf_h_e = [
+            f"<b>Gesetzliche Rente / Pension</b><br>"
+            f"{_de(_d_basis)} €/Mon.<br>"
+            f"Bruttorente inkl. Zusatzrente vor Steuer und KV.<br>"
+            f"Besteuerungsanteil: {_ba_pct} (§ 22 EStG, Renteneintritt {profil.eintritt_jahr})"
+        ]
         if _d_bav > 0:
             _wf_x_e.append("+ bAV")
             _wf_m_e.append("relative")
             _wf_y_e.append(_d_bav)
             _wf_t_e.append(f"+{_de(_d_bav)} €")
+            _wf_h_e.append(
+                f"<b>Betriebliche Altersversorgung (bAV)</b><br>"
+                f"+{_de(_d_bav)} €/Mon.<br>"
+                f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
+                f"KV: abzgl. Freibetrag 187,25 €/Mon. (§ 226 Abs. 2 SGB V)."
+            )
         if _d_riester > 0:
             _wf_x_e.append("+ Riester")
             _wf_m_e.append("relative")
             _wf_y_e.append(_d_riester)
             _wf_t_e.append(f"+{_de(_d_riester)} €")
+            _wf_h_e.append(
+                f"<b>Riester-Rente</b><br>"
+                f"+{_de(_d_riester)} €/Mon.<br>"
+                f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
+                f"Nicht KV-pflichtig (private Rentenleistung)."
+            )
         if _d_miete > 0:
             _wf_x_e.append("+ Mieteinnahmen")
             _wf_m_e.append("relative")
             _wf_y_e.append(_d_miete)
             _wf_t_e.append(f"+{_de(_d_miete)} €")
+            _wf_h_e.append(
+                f"<b>Mieteinnahmen</b><br>"
+                f"+{_de(_d_miete)} €/Mon.<br>"
+                f"Netto nach abzugsfähigen Werbungskosten (§ 21 EStG).<br>"
+                f"Voll steuerpflichtig, keine KV-Pflicht."
+                + (" (50 % Anteil bei Paar)" if hat_partner else "")
+            )
         _wf_x_e += ["− Einkommensteuer", "− KV", "− PV", "Nettorente"]
         _wf_m_e += ["relative", "relative", "relative", "total"]
         _wf_y_e += [-_d_steuer, -gkv_mono, -pv_mono, _d_netto]
         _wf_t_e += [f"−{_de(_d_steuer)} €", f"−{_de(gkv_mono)} €",
                     f"−{_de(pv_mono)} €", f"{_de(_d_netto)} €"]
+        _wf_h_e += [
+            f"<b>Einkommensteuer + Solidaritätszuschlag</b><br>"
+            f"−{_de(_d_steuer)} €/Mon.<br>"
+            f"§ 32a EStG Grundtarif; eff. Steuersatz {_eff_pct}.<br>"
+            f"Soli: 5,5 % ab 17.543 € ESt (§ 51a EStG).",
+            f"<b>Krankenversicherung</b><br>"
+            f"−{_de(gkv_mono)} €/Mon.<br>"
+            f"{_kv_satz}.<br>"
+            f"Beitragsbemessungsgrenze: 5.175 €/Mon.",
+            f"<b>Pflegeversicherung</b><br>"
+            f"−{_de(pv_mono)} €/Mon.<br>"
+            f"§ 55 SGB XI; Kinderstaffelung § 55 Abs. 3a SGB XI.<br>"
+            f"Kinderlosenzuschlag: +0,6 % (trägt Versicherter allein).",
+            f"<b>Nettorente (verfügbar)</b><br>"
+            f"{_de(_d_netto)} €/Mon.<br>"
+            f"Nach Steuer und KV/PV-Abzügen.",
+        ]
         fig_wf = go.Figure(go.Waterfall(
             orientation="v",
             measure=_wf_m_e,
@@ -596,6 +698,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             y=_wf_y_e,
             text=_wf_t_e,
             textposition="outside",
+            customdata=_wf_h_e,
+            hovertemplate="%{customdata}<extra></extra>",
             connector=dict(line=dict(color="#888")),
             increasing=dict(marker=dict(color="#4CAF50")),
             decreasing=dict(marker=dict(color="#F44336")),
@@ -683,7 +787,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         st.divider()
 
-        _zvE_ampel = _d_zvE + mieteinnahmen * 12
+        # Simulation enthält Miete bereits im zvE; Fallback addiert sie manuell
+        _zvE_ampel = _d_zvE if _row_dash else _d_zvE + _miete_einzel * 12
         _steuerampel(_zvE_ampel)
 
         st.divider()
@@ -719,7 +824,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         st.divider()
 
         with st.expander("🧾 Steuer- & KV-Details", expanded=False):
-            steuern.render_section(profil, ergebnis, mieteinnahmen)
+            steuern.render_section(profil, ergebnis, _miete_einzel)
 
         # ── HTML-Export ───────────────────────────────────────────────────────
         with st.expander("📄 Zusammenfassung exportieren", expanded=False):
