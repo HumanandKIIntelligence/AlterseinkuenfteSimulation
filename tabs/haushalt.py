@@ -446,7 +446,15 @@ def render(
                 _wf_meas.append("relative")
                 _wf_y.append(-_fa["betrag_monatlich"])
                 _wf_t.append(f"−{_de(_fa['betrag_monatlich'])} €")
-            _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf
+            _hyp_schedule_wf = get_hyp_schedule()
+            _hyp_row_wf = next((r for r in _hyp_schedule_wf if r["Jahr"] == betrachtungsjahr), None)
+            _hyp_m_wf = _hyp_row_wf["Jahresausgabe"] / 12 if _hyp_row_wf else 0.0
+            if _hyp_m_wf > 0:
+                _wf_x.append("− Hypothek")
+                _wf_meas.append("relative")
+                _wf_y.append(-_hyp_m_wf)
+                _wf_t.append(f"−{_de(_hyp_m_wf)} €")
+            _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf - _hyp_m_wf
             _wf_x.append("Verfügbar")
             _wf_meas.append("total")
             _wf_y.append(_verfuegbar_m)
