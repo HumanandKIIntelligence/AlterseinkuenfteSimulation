@@ -822,7 +822,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             ("Src_Versorgung",   "Betriebliche Versorgung", "#2196F3", _cd_versorg),
             ("Src_Einmal",       "Einmalauszahlungen",      "#FF9800", _cd_einmal),
             ("Src_Miete",        "Mieteinnahmen",           "#9C27B0", None),
-            ("Src_Kapitalverzehr", "Kapitalverzehr (Pool)", "#9E9D24", None),
+            # Src_Kapitalverzehr wird auf y2 (sekundäre Achse) dargestellt
         ]
         for col, label, color, customdata in src_cols:
             if col in df_jd.columns and df_jd[col].sum() > 0:
@@ -873,22 +873,50 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     hovertemplate="%{x}: %{y:,.0f} € Entnahme<extra>Entnahmen (geplant)</extra>",
                 ))
 
-        # Kapital-Pool-Injektion als sichtbarer Abzugsbalken (negativ) – Pool-Einzahlungen aus Verträgen
+        # Pool-Flows auf sekundärer Y-Achse (nach unten, eigene Skala)
+        # Kapitalverzehr (Auszahlung aus Pool) → ↑ Pfeil (Geld fließt heraus zum Einkommen)
+        _hat_pool_y2 = False
+        if "Src_Kapitalverzehr" in df_jd.columns and df_jd["Src_Kapitalverzehr"].sum() > 0:
+            _hat_pool_y2 = True
+            _kv_mask = df_jd["Src_Kapitalverzehr"] > 0
+            _kv_yrs  = list(df_jd[_kv_mask].index)
+            _kv_vals = [df_jd.loc[j, "Src_Kapitalverzehr"] for j in _kv_yrs]
+            fig_src.add_trace(go.Bar(
+                name="Kapitalverzehr (Pool)",
+                x=_kv_yrs,
+                y=[-v for v in _kv_vals],
+                customdata=_kv_vals,
+                text=["↑"] * len(_kv_yrs),
+                textposition="inside",
+                textfont=dict(size=14, color="white"),
+                marker_color="#9E9D24",
+                opacity=0.85,
+                yaxis="y2",
+                hovertemplate="%{x}: %{customdata:,.0f} €<extra>Kapitalverzehr (Pool)</extra>",
+            ))
+        # Kapital-Einzahlung (Injektion in Pool) → ↓ Pfeil (Geld fließt in den Pool)
         if "Kap_Injektion" in df_jd.columns and df_jd["Kap_Injektion"].sum() > 0:
+            _hat_pool_y2 = True
             _ki_mask = df_jd["Kap_Injektion"] > 0
             _ki_yrs  = list(df_jd[_ki_mask].index)
-            _ki_cd   = [
-                "<br>".join(_einmal_info_kapital.get(j, [])) or f"{_de(df_jd.loc[j, 'Kap_Injektion'])} € → Pool"
-                for j in _ki_yrs
+            _ki_vals = [df_jd.loc[j, "Kap_Injektion"] for j in _ki_yrs]
+            _ki_cd_2d = [
+                [_ki_vals[i],
+                 "<br>".join(_einmal_info_kapital.get(_ki_yrs[i], [])) or f"{_de(_ki_vals[i])} € → Pool"]
+                for i in range(len(_ki_yrs))
             ]
             fig_src.add_trace(go.Bar(
                 name="Kapital-Einzahlung (Pool)",
                 x=_ki_yrs,
-                y=[-df_jd.loc[j, "Kap_Injektion"] for j in _ki_yrs],
+                y=[-v for v in _ki_vals],
+                text=["↓"] * len(_ki_yrs),
+                textposition="inside",
+                textfont=dict(size=14, color="white"),
                 marker_color="#00BCD4",
                 opacity=0.85,
-                customdata=_ki_cd,
-                hovertemplate="%{x}: %{y:,.0f} € → Pool<br><i>%{customdata}</i><extra>Kapital-Einzahlung (Pool)</extra>",
+                yaxis="y2",
+                customdata=_ki_cd_2d,
+                hovertemplate="%{x}: %{customdata[0]:,.0f} € → Pool<br><i>%{customdata[1]}</i><extra>Kapital-Einzahlung (Pool)</extra>",
             ))
 
         fig_src.add_trace(go.Scatter(
@@ -965,7 +993,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     ax=0, ay=_ay_val,
                 )
         _has_einmal_annotations = any(_einmal_info.get(j) for j in _jahre)
-        fig_src.update_layout(
+        _src_layout: dict = dict(
             barmode="stack", template="plotly_white", height=400,
             xaxis=dict(title="Jahr", dtick=2),
             yaxis=dict(title="€ / Jahr (brutto)", tickformat=",.0f"),
@@ -973,6 +1001,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             margin=dict(l=10, r=10, t=90 if _has_einmal_annotations else 50, b=10),
             separators=",.",
         )
+        if _hat_pool_y2:
+            _src_layout["yaxis2"] = dict(
+                title="Pool-Flows (€/Jahr)",
+                tickformat=",.0f",
+                overlaying="y",
+                side="right",
+                showgrid=False,
+                rangemode="tozero",
+            )
+        fig_src.update_layout(**_src_layout)
         st.plotly_chart(fig_src, use_container_width=True)
 
         # ── Hypothek-Tilgung: Status-Meldungen ───────────────────────────────
