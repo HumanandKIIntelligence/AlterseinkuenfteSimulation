@@ -775,6 +775,16 @@ def _netto_ueber_horizont(
     p2_gesetzl_mono0 = ergebnis2.brutto_gesetzlich if hat_partner else 0.0
     p2_anp           = profil2.rentenanpassung_pa  if hat_partner else 0.0
 
+    # P2 DUV/BUV: Ertragsanteile vorab berechnen, zvE_0 um deren Komponenten bereinigen
+    # (werden separat im Loop mit Ablaufprüfung addiert → kein Doppelzählen)
+    _p2_duv_ea_base = (ertragsanteil(AKTUELLES_JAHR - profil2.geburtsjahr)
+                       if hat_partner and profil2.ist_pensionaer and profil2.duv_monatlich > 0 else 0.0)
+    _p2_buv_ea_base = (ertragsanteil(AKTUELLES_JAHR - profil2.geburtsjahr)
+                       if hat_partner and not profil2.ist_pensionaer and profil2.buv_monatlich > 0 else 0.0)
+    _p2_duv_zvE_0   = (profil2.duv_monatlich * 12 * _p2_duv_ea_base) if hat_partner else 0.0
+    _p2_buv_zvE_0   = (profil2.buv_monatlich * 12 * _p2_buv_ea_base) if hat_partner else 0.0
+    p2_zvE_0        = max(0.0, p2_zvE_0 - _p2_duv_zvE_0 - _p2_buv_zvE_0)
+
     # P2 KV-Status für dynamische Berechnung je Jahr
     _p2_ist_pkv        = profil2.krankenversicherung == "PKV" if hat_partner else True
     _p2_ist_freiwillig = (profil2.krankenversicherung == "GKV" and not profil2.kvdr_pflicht) if hat_partner else False
@@ -860,7 +870,8 @@ def _netto_ueber_horizont(
             p2_fak           = 0.0
         p2_zvE_j            = p2_zvE_0        * p2_fak
         p2_gesetzl_mono_fak = p2_gesetzl_mono0 * p2_fak
-        p2_brutto_j         = p2_brutto_mo0   * 12 * p2_fak
+        # Nur Basispension (brutto_gesetzlich) skalieren; DUV/BUV werden separat im Loop gehandhabt
+        p2_brutto_j         = p2_gesetzl_mono0 * 12 * p2_fak
         p2_kv_j             = 0.0   # dynamisch nach Produkt-Loop berechnet
 
         # Mieteinnahmen-Anteil für P1-Steuer:
@@ -1049,6 +1060,17 @@ def _netto_ueber_horizont(
         # DUV und BUV gehen in privaten Renten-Tracker (nicht KVdR)
         priv_brutto_j += duv_j + buv_j
         priv_zvE_j    += duv_zvE_j + buv_zvE_j
+
+        # P2 DUV/BUV: separat gehandhabt damit Ablauf korrekt berücksichtigt wird
+        if hat_partner and _p2_in_rente:
+            if profil2.ist_pensionaer and profil2.duv_monatlich > 0 and jahr <= profil2.duv_endjahr:
+                _p2_duv_j = profil2.duv_monatlich * 12
+                p2_priv_brutto_j += _p2_duv_j
+                p2_priv_zvE_j    += _p2_duv_j * _p2_duv_ea_base
+            elif not profil2.ist_pensionaer and profil2.buv_monatlich > 0 and jahr <= profil2.buv_endjahr:
+                _p2_buv_j = profil2.buv_monatlich * 12
+                p2_priv_brutto_j += _p2_buv_j
+                p2_priv_zvE_j    += _p2_buv_j * _p2_buv_ea_base
 
         # P2 Produkteinkommen zum P2-zvE addieren (für Splitting-Steuer)
         p2_zvE_j += (
