@@ -98,6 +98,29 @@ def render(T: dict) -> None:
             (mit Abschlag). Die App zeigt bei Renteneintrittsalter < 63 eine Warnung
             (§ 236b SGB VI: 45-Jährige-Regelung ist nicht implementiert).
 
+            ---
+
+            **Rentenpunkte pro Jahr – Berechnung:**
+
+            > EP/Jahr = min(Bruttogehalt × 12 + Aufstockungsbetrag, BBG-RV) / Ø-Entgelt 2024
+
+            | Größe | Wert 2024 |
+            |---|---|
+            | Ø-Entgelt (§ 18 Abs. 1 SGB IV) | 43.142 €/Jahr |
+            | BBG-RV West | 90.600 €/Jahr (7.550 €/Mon.) |
+            | Beispiel: 4.000 €/Mon. Gehalt | 4.000 × 12 / 43.142 = **1,11 EP/Jahr** |
+            | Beispiel: + 6.000 € Aufstockung | (48.000 + 6.000) / 43.142 = **1,25 EP/Jahr** |
+
+            Der Wert wird automatisch aus dem eingegebenen Bruttogehalt und dem
+            **Aufstockungsbetrag/Zusatzentgelt** (§ 32b EStG) berechnet und nicht gespeichert.
+
+            **Aufstockungsbetrag (§ 32b EStG i.V.m. § 163 Abs. 5 / § 166 SGB VI):**
+            Bei Altersteilzeit und Transferkurzarbeit zahlt der Arbeitgeber RV-Beiträge auf
+            ein fiktives Arbeitsentgelt (mind. 80 % des bisherigen Bruttos). Der
+            Aufstockungsbetrag fließt daher in die Rentenpunkt-Berechnung ein.
+            Steuerlich: steuerfrei, aber Progressionsvorbehalt (§ 32b EStG) → erhöht
+            den Steuersatz auf das übrige Bruttoeinkommen.
+
             **Grundsicherungshinweis (§ 41 SGB XII):** Wenn die projizierte Nettorente
             unter 1.100 €/Mon. liegt, erscheint im Dashboard ein Hinweis auf einen
             möglichen Grundsicherungsanspruch (indikativ – kein Rechtsanspruch).
@@ -650,6 +673,8 @@ def render(T: dict) -> None:
             | § 46 Abs. 2 | SGB VI | Großes Witwengeld: 55 % der gesetzl. Bruttorente des Verstorbenen |
             | § 77 | SGB VI | Rentenabschlag 0,3 %/Monat vor individueller Regelaltersgrenze |
             | § 97 | SGB VI | Einkommensanrechnung Witwenrente: Freibetrag 26.400 €/Jahr; 40 % Abzug |
+            | § 163 Abs. 5 | SGB VI | Aufstockungsbetrag (z.B. Altersteilzeit) gilt als beitragspflichtiges Entgelt → erhöht Rentenpunkte |
+            | § 166 | SGB VI | Beitragspflichtige Einnahmen bei Altersteilzeit: Aufstockungsbetrag fließt in EP-Berechnung ein |
             | § 235 Abs. 2 | SGB VI | Regelaltersgrenze: 65 (≤ 1946) bis 67 (≥ 1964); Übergangstabelle für 1947–1963 |
             | § 41 | SGB XII | Grundsicherung im Alter: Hinweis bei proj. Nettorente < 1.100 €/Mon. |
             | § 55 Abs. 3a | SGB XI | PV-Kinderstaffelung: 1 Kind 3,4 %; je weiteres Kind −0,25 % (max. −1,0 %) |

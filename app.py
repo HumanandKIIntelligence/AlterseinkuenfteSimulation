@@ -61,7 +61,8 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         else:
             aktuelle_punkte  = float(_get(pfx, "punkte", 25.0 if pfx == "p1" else 15.0))
             _gehalt_j        = float(_get(pfx, "gehalt", 0.0)) * 12
-            punkte_pro_jahr  = min(_gehalt_j, BBG_RV_MONATLICH * 12) / DURCHSCHNITTSENTGELT_2024
+            _aufstock_j      = float(_get(pfx, "zusatzentgelt", 0.0))
+            punkte_pro_jahr  = min(_gehalt_j + _aufstock_j, BBG_RV_MONATLICH * 12) / DURCHSCHNITTSENTGELT_2024
             rentenanpassung  = float(_get(pfx, "ren_anp", 2.0)) / 100
 
     kv_raw      = str(_get(pfx, "kv_radio", "Gesetzlich (GKV)"))
@@ -249,19 +250,27 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                     help="Entgeltpunkte lt. letzter Renteninformation der DRV.",
                 )
             with cb:
-                _gehalt_hint = float(_get(pfx, "gehalt", 0.0))
-                _ep_auto = min(_gehalt_hint * 12, BBG_RV_MONATLICH * 12) / DURCHSCHNITTSENTGELT_2024
+                _gehalt_hint  = float(_get(pfx, "gehalt", 0.0))
+                _aufstock_hint = float(_get(pfx, "zusatzentgelt", 0.0))
+                _ep_basis     = _gehalt_hint * 12 + _aufstock_hint
+                _ep_auto      = min(_ep_basis, BBG_RV_MONATLICH * 12) / DURCHSCHNITTSENTGELT_2024
+                _ep_help_parts = []
+                if _gehalt_hint > 0:
+                    _ep_help_parts.append(f"Gehalt {_gehalt_hint:,.0f} €/Mon. × 12 = {_gehalt_hint*12:,.0f} €")
+                if _aufstock_hint > 0:
+                    _ep_help_parts.append(f"Aufstockungsbetrag {_aufstock_hint:,.0f} €/Jahr")
+                if _ep_help_parts:
+                    _ep_help = (
+                        " + ".join(_ep_help_parts)
+                        + f" → {_ep_basis:,.0f} € (Basis) / {DURCHSCHNITTSENTGELT_2024:,.0f} € (Ø-Entgelt); "
+                        f"Kappung bei BBG-RV {BBG_RV_MONATLICH * 12:,.0f} €/Jahr."
+                    )
+                else:
+                    _ep_help = "Kein Bruttogehalt angegeben → 0 EP/Jahr. Bitte Bruttogehalt unten eingeben."
                 st.metric(
                     "Rentenpunkte pro Jahr",
                     f"{_ep_auto:.2f} EP".replace(".", ","),
-                    help=(
-                        f"Automatisch aus Bruttogehalt {_gehalt_hint:,.0f} €/Mon. berechnet "
-                        f"(Gehalt × 12 / Ø-Entgelt {DURCHSCHNITTSENTGELT_2024:,.0f} €; "
-                        f"Kappung bei BBG-RV {BBG_RV_MONATLICH:,.0f} €/Mon.)."
-                        if _gehalt_hint > 0 else
-                        "Kein Bruttogehalt angegeben → 0 EP/Jahr. "
-                        "Bitte Bruttogehalt unten eingeben."
-                    ),
+                    help=_ep_help,
                 )
             st.slider(
                 "Rentenanpassung p.a. (%)", 0.0, 5.0,
@@ -448,8 +457,11 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                 help=(
                     "Steuerfreies Zusatzentgelt mit Progressionsvorbehalt (§ 32b EStG), "
                     "z.B. Altersteilzeit-Aufstockungsbetrag oder Transferkurzarbeitergeld. "
-                    "Steuerfrei und kein KV/PV, erhöht aber den Steuersatz auf das übrige "
-                    "Bruttoeinkommen. Gilt nur in der Simulation bis zum Renteneintritt."
+                    "Steuerfrei und kein KV/PV-Beitrag auf diesen Betrag, erhöht aber den "
+                    "Steuersatz auf das übrige Bruttoeinkommen. "
+                    "Fließt zusätzlich in die Rentenpunkt-Berechnung ein "
+                    "(Gehalt × 12 + Aufstockung, gedeckelt bei BBG-RV). "
+                    "Gilt nur in der Simulation bis zum Renteneintritt."
                 ),
             )
 
