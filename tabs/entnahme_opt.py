@@ -1026,10 +1026,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             # Probe: pool_range/(pool_range+2*pool_range) = 1/3 ✓
             _y2_lo = -_pool_range
             _y2_hi = 2.0 * _pool_range
-            # Ticks auf y2 nur von 0 nach unten (als positive Labels)
-            _tick_exp = math.floor(math.log10(_pool_range)) if _pool_range >= 1 else 0
-            _tick_step = 10 ** _tick_exp * round(_pool_range / 10 ** _tick_exp / 4)
-            _tick_step = max(_tick_step, 1)
+            # Ticks auf y2 nur von 0 nach unten (als positive Labels).
+            # Ziel: ~4 Ticks. Exponent auf Basis des Ideal-Schritts (pool_range/4) berechnen,
+            # damit round() nicht auf 0 abrundet wenn pool_range < 4 * 10^tick_exp.
+            if _pool_range >= 1:
+                _ideal_step = _pool_range / 4
+                _tick_exp = math.floor(math.log10(max(_ideal_step, 1)))
+                _tick_step = max(1, round(_ideal_step / 10 ** _tick_exp) * (10 ** _tick_exp))
+            else:
+                _tick_step = 1
             _y2_tick_neg = [0]
             _t = _tick_step
             while _t <= _pool_range * 1.01:
