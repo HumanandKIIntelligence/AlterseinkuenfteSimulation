@@ -37,6 +37,8 @@ GRUNDSICHERUNG_SCHWELLE = 1_100.0  # €/Mon. – indikativ, abhängig von Wohnk
 
 # Durchschnittsentgelt 2024 für EP-Schätzung (§ 18 Abs. 1 SGB IV, Anlage 1)
 DURCHSCHNITTSENTGELT_2024 = 43_142.0
+# Beitragsbemessungsgrenze RV West 2024 – EP-Kappungsgrenze (90.600 €/Jahr)
+BBG_RV_MONATLICH = 7_550.0
 
 # KV/PV-Konstanten 2024 (§ 226 Abs. 2 SGB V, § 223 Abs. 3 SGB V)
 BAV_FREIBETRAG_MONATLICH   = 187.25    # Freibetrag Versorgungsbezüge (nur KVdR-Pflichtmitglieder)

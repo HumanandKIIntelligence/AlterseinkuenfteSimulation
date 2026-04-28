@@ -9,7 +9,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR, einkommensteuer, BBG_KV_MONATLICH, _pv_satz, DURCHSCHNITTSENTGELT_2024
+from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR, einkommensteuer, BBG_KV_MONATLICH, _pv_satz, DURCHSCHNITTSENTGELT_2024, BBG_RV_MONATLICH
 from session_io import save_session, load_session, list_saves
 from tabs import dashboard, simulation, vorsorge, haushalt, dokumentation, entnahme_opt, hypothek
 
@@ -60,7 +60,8 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
             rentenanpassung  = float(_get(pfx, "ren_anp", 0.0)) / 100
         else:
             aktuelle_punkte  = float(_get(pfx, "punkte", 25.0 if pfx == "p1" else 15.0))
-            punkte_pro_jahr  = float(_get(pfx, "ppj", 1.2))
+            _gehalt_j        = float(_get(pfx, "gehalt", 0.0)) * 12
+            punkte_pro_jahr  = min(_gehalt_j, BBG_RV_MONATLICH * 12) / DURCHSCHNITTSENTGELT_2024
             rentenanpassung  = float(_get(pfx, "ren_anp", 2.0)) / 100
 
     kv_raw      = str(_get(pfx, "kv_radio", "Gesetzlich (GKV)"))
@@ -136,7 +137,6 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
         f"rc{_RC}_{pfx}_geb":        p.geburtsjahr,
         f"rc{_RC}_{pfx}_re_alter":   p.renteneintritt_alter,
         f"rc{_RC}_{pfx}_punkte":     p.aktuelle_punkte,
-        f"rc{_RC}_{pfx}_ppj":        p.punkte_pro_jahr,
         f"rc{_RC}_{pfx}_ren_anp":    p.rentenanpassung_pa * 100,
         f"rc{_RC}_{pfx}_spkap":      p.sparkapital,
         f"rc{_RC}_{pfx}_sprate":     p.sparrate,
@@ -249,18 +249,19 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int) -> None:
                     help="Entgeltpunkte lt. letzter Renteninformation der DRV.",
                 )
             with cb:
-                st.number_input(
-                    "Rentenpunkte pro Jahr (Ø)", 0.0, 3.0,
-                    value=float(_get(pfx, "ppj", 1.2)),
-                    step=0.05, key=f"rc{_RC}_{pfx}_ppj",
-                    help="1,0 = Durchschnittsverdienst (~45.358 € brutto in 2024).",
-                )
-            _gehalt_hint = float(_get(pfx, "gehalt", 0.0))
-            if _gehalt_hint > 0:
-                _ep_hint = _gehalt_hint * 12 / DURCHSCHNITTSENTGELT_2024
-                st.caption(
-                    f"Aus Gehalt {_gehalt_hint:,.0f} €/Mon. → ca. **{_ep_hint:.2f} EP/Jahr** "
-                    f"(Ø-Entgelt 2024: {DURCHSCHNITTSENTGELT_2024:,.0f} €/Jahr)"
+                _gehalt_hint = float(_get(pfx, "gehalt", 0.0))
+                _ep_auto = min(_gehalt_hint * 12, BBG_RV_MONATLICH * 12) / DURCHSCHNITTSENTGELT_2024
+                st.metric(
+                    "Rentenpunkte pro Jahr",
+                    f"{_ep_auto:.2f} EP".replace(".", ","),
+                    help=(
+                        f"Automatisch aus Bruttogehalt {_gehalt_hint:,.0f} €/Mon. berechnet "
+                        f"(Gehalt × 12 / Ø-Entgelt {DURCHSCHNITTSENTGELT_2024:,.0f} €; "
+                        f"Kappung bei BBG-RV {BBG_RV_MONATLICH:,.0f} €/Mon.)."
+                        if _gehalt_hint > 0 else
+                        "Kein Bruttogehalt angegeben → 0 EP/Jahr. "
+                        "Bitte Bruttogehalt unten eingeben."
+                    ),
                 )
             st.slider(
                 "Rentenanpassung p.a. (%)", 0.0, 5.0,
