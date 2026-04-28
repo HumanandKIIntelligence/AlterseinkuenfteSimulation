@@ -1167,7 +1167,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _hat_partner_kap = _spkap2_orig > 0 or bool(_p2_pool_pids)
 
             def _kap_hover(series: pd.Series, pool_pids: list[str],
-                           label: str, df: "pd.DataFrame") -> tuple[pd.Series, list[str]]:
+                           label: str, df: "pd.DataFrame",
+                           sparrate_p1: float = 0.0, eintritt_j_p1: int = 0,
+                           sparrate_p2: float = 0.0, eintritt_j_p2: int = 0,
+                           ) -> tuple[pd.Series, list[str]]:
                 """Baut customdata-Liste mit Jahresveränderungs-Info für eine Kapitallinie."""
                 yrs = list(series.index)
                 hover = []
@@ -1182,12 +1185,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     )
                     inj = float(df.loc[j, "Kap_Injektion"]) if ("Kap_Injektion" in df.columns and j in df.index) else 0.0
                     sonder = float(df.loc[j, "Sonderausgabe"]) if ("Sonderausgabe" in df.columns and j in df.index) else 0.0
-                    rendite = delta + entn - inj + sonder
+                    # Sparrate-Beiträge herausrechnen (kein Rendite-Anteil)
+                    sparrate_j = 0.0
+                    if eintritt_j_p1 > 0 and j < eintritt_j_p1:
+                        sparrate_j += sparrate_p1 * 12
+                    if eintritt_j_p2 > 0 and j < eintritt_j_p2:
+                        sparrate_j += sparrate_p2 * 12
+                    rendite = delta + entn - inj + sonder - sparrate_j
                     parts = []
                     if i > 0:
                         if rendite > 0.5:
                             _pct = rendite / prev * 100 if prev > 0 else 0.0
                             parts.append(f"+{_de(rendite)} € Rendite ({_pct:.1f} %)")
+                        if sparrate_j > 0.5:
+                            parts.append(f"+{_de(sparrate_j)} € Spareinlage")
                         if entn > 0.5:
                             parts.append(f"−{_de(entn)} € Entnahme")
                         if inj > 0.5:
@@ -1235,7 +1246,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 else:
                     _p1_post_series_gesamt = _df_kap
 
-                _, _kap_cd = _kap_hover(_df_kap, _p1_pool_pids + _p2_pool_pids, "Kapital", df_jd)
+                _eintritt_p1_spar = 0 if _profil_eo.bereits_rentner else _spkap_eintritt_j
+                _eintritt_p2_spar = 0 if (_profil2_eo is None or _profil2_eo.bereits_rentner) else _spkap2_eintritt_j
+                _, _kap_cd = _kap_hover(
+                    _df_kap, _p1_pool_pids + _p2_pool_pids, "Kapital", df_jd,
+                    sparrate_p1=_spkap_sparrate, eintritt_j_p1=_eintritt_p1_spar,
+                    sparrate_p2=(_spkap2_sparrate if _hat_partner_kap else 0.0),
+                    eintritt_j_p2=(_eintritt_p2_spar if _hat_partner_kap else 0),
+                )
                 fig_spar.add_trace(go.Scatter(
                     name="Kapital", x=_df_kap.index, y=_df_kap.values,
                     mode="lines+markers", line=dict(color="#2E7D32", width=2.5),
