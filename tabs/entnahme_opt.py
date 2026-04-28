@@ -1210,6 +1210,35 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         hovertemplate="%{x}: %{y:,.0f} € Restschuld<extra>Restschuld</extra>",
                     ))
 
+            # ── Anschlusskredit-Restschuld ───────────────────────────────────
+            if _rs > 0 and not _einmal_tilgung and _hyp_info and _anschluss_lz > 0:
+                _ak_start = _hyp_info["endjahr"] + 1
+                _ak_bal = _rs
+                if _markt_zins_pa > 0:
+                    _ak_rate = (_ak_bal * _markt_zins_pa
+                                * (1 + _markt_zins_pa) ** _anschluss_lz
+                                / ((1 + _markt_zins_pa) ** _anschluss_lz - 1))
+                else:
+                    _ak_rate = _ak_bal / _anschluss_lz
+                _ak_xs: list[int] = []
+                _ak_ys: list[float] = []
+                for _ak_y in range(_ak_start, _ak_start + _anschluss_lz):
+                    if _ak_bal <= 0:
+                        break
+                    _ak_xs.append(_ak_y)
+                    _ak_ys.append(_ak_bal)
+                    _ak_zinsen = _ak_bal * _markt_zins_pa
+                    _ak_bal = max(0.0, _ak_bal - (_ak_rate - _ak_zinsen))
+                if _ak_xs:
+                    fig_spar.add_trace(go.Scatter(
+                        name="Anschlusskredit",
+                        x=_ak_xs, y=_ak_ys,
+                        mode="lines+markers",
+                        line=dict(color="#FF6F00", width=2, dash="dashdot"),
+                        marker=dict(size=5, symbol="diamond-open"),
+                        hovertemplate="%{x}: %{y:,.0f} € Anschlusskredit<extra>Anschlusskredit</extra>",
+                    ))
+
             # ── Referenzlinien ──────────────────────────────────────────────
             if _hyp_info and not _einmal_tilgung and _rs > 0:
                 fig_spar.add_vline(
