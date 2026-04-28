@@ -360,7 +360,14 @@ def render(T: dict) -> None:
             | **Lebensversicherung** | – | Halbeinkünfte / Abgeltung / steuerfrei (Altvertrag) | Nein |
             | **ETF-Depot** | – | 25 % Abgeltung auf (1−TF) × Gewinn | Nein |
 
-            *Halbeinkünfte:* gilt bei Laufzeit ≥ 12 Jahre und Alter ≥ 62 beim Auszahlungsjahr.
+            *Halbeinkünfte (§ 20 Abs. 1 Nr. 6 EStG):* gilt ausschließlich für **private** LV und RV
+            (Beiträge aus versteuertem Nettoeinkommen), bei Laufzeit ≥ 12 Jahre und Alter ≥ 62
+            im Auszahlungsjahr – dann wird nur 50 % des Gewinns mit dem persönlichen Steuersatz
+            besteuert, statt 25 % Abgeltungsteuer auf den vollen Gewinn.
+            **Für bAV gilt diese Regel nicht:** Da Beiträge steuerbefreit aus dem Bruttogehalt
+            fließen, werden bei Auszahlung sowohl Beitragsanteile als auch Erträge vollständig
+            mit dem persönlichen Einkommensteuersatz besteuert (§ 22 Nr. 5 EStG) –
+            unabhängig von Laufzeit oder Auszahlungsalter.
             *Altvertrag:* Vertragsabschluss vor 2005 → Einmalauszahlung steuerfrei.
 
             **Aufschubverzinsung:**

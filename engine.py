@@ -739,6 +739,9 @@ def _netto_ueber_horizont(
     Steuer- und KV-Behandlung:
     - Gesetzliche Rente: Besteuerungsanteil § 22 Nr. 1 S. 3a aa EStG.
     - bAV (monatl./Einmal): 100 % steuerpflichtig § 19 / § 22 Nr. 5 EStG; KVdR-pflichtig.
+      Beiträge aus dem Bruttogehalt → volle Nachgelagerte Besteuerung auf Auszahlung UND Erträge.
+      Die 12-Jahres-Regel (§ 20 Abs. 1 Nr. 6 EStG) gilt hier NICHT – sie betrifft nur private
+      LV/RV, deren Beiträge aus versteuertem Nettoeinkommen stammen.
       Einmalauszahlung KV-Basis auf 10 Jahre verteilt (§ 229 Abs. 1 S. 3 SGB V).
     - Riester (monatl./Einmal): 100 % steuerpflichtig § 22 Nr. 5 EStG; NICHT KVdR.
     - Rürup (monatl.): Besteuerungsanteil § 22 Nr. 1 S. 3a aa EStG; NICHT KVdR; kein Einmal.
