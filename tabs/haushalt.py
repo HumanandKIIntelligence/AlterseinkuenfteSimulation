@@ -24,6 +24,25 @@ def _de(v: float, dec: int = 0) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _vorsorge_non_bav_monatlich(produkte: list[dict], jahr: int) -> float:
+    """Monatliche Vorsorge-Beiträge (ohne bAV) für das gegebene Jahr."""
+    total = 0.0
+    for vp in produkte:
+        if vp.get("typ") == "bAV":
+            continue
+        je = float(vp.get("jaehrl_einzahlung", 0.0))
+        if je <= 0.0:
+            continue
+        if int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR)) <= jahr:
+            continue
+        bbj = int(vp.get("beitragsbefreiung_jahr", 0))
+        if bbj > 0 and jahr >= bbj:
+            continue
+        dyn = float(vp.get("jaehrl_dynamik", 0.0))
+        total += je * (1.0 + dyn) ** max(0, jahr - AKTUELLES_JAHR) / 12.0
+    return total
+
+
 def render(
     T: dict,
     p1: Profil,
@@ -36,6 +55,8 @@ def render(
     mietsteigerung: float = 0.0,
 ) -> None:
     _rc = st.session_state.get("_rc", 0)
+    _vp_produkte = st.session_state.get("vp_produkte", [])
+    _fixausgaben: list[dict] = list(st.session_state.get("hh_fixausgaben", []))
     with T["Haushalt"]:
         st.header("👥 Haushalts-Übersicht")
 
@@ -297,6 +318,99 @@ def render(
 
         st.divider()
 
+        # ── Fixe monatliche Ausgaben erfassen ─────────────────────────────────
+        with st.expander("➕ Fixe monatliche Ausgaben erfassen"):
+            st.caption(
+                "Regelmäßige Fixausgaben mit Laufzeit (z.B. Pflegekosten, Abonnements, Mietausgaben). "
+                "Werden im Brutto→Verfügbar-Diagramm und im Jahresverlauf berücksichtigt."
+            )
+            _fa_c1, _fa_c2, _fa_c3, _fa_c4 = st.columns([3, 2, 1, 1])
+            with _fa_c1:
+                _fa_name = st.text_input("Bezeichnung", key=f"rc{_rc}_hh_fa_name",
+                                         placeholder="z.B. Pflegekosten")
+            with _fa_c2:
+                _fa_betrag = st.number_input("Betrag (€/Mon.)", 0.0, 100_000.0,
+                                              value=0.0, step=50.0,
+                                              key=f"rc{_rc}_hh_fa_betrag")
+            with _fa_c3:
+                _fa_start = st.number_input("Ab Jahr", AKTUELLES_JAHR - 10,
+                                             AKTUELLES_JAHR + 60, AKTUELLES_JAHR,
+                                             step=1, key=f"rc{_rc}_hh_fa_start")
+            with _fa_c4:
+                _fa_ende = st.number_input("Bis Jahr", AKTUELLES_JAHR,
+                                            AKTUELLES_JAHR + 70, AKTUELLES_JAHR + 20,
+                                            step=1, key=f"rc{_rc}_hh_fa_ende")
+            if st.button("Hinzufügen", key=f"rc{_rc}_hh_fa_add"):
+                if _fa_name and _fa_betrag > 0 and int(_fa_ende) >= int(_fa_start):
+                    _fixausgaben.append({
+                        "name": _fa_name,
+                        "betrag_monatlich": float(_fa_betrag),
+                        "startjahr": int(_fa_start),
+                        "endjahr": int(_fa_ende),
+                    })
+                    st.session_state["hh_fixausgaben"] = _fixausgaben
+                    st.rerun()
+            if _fixausgaben:
+                st.markdown("**Erfasste Fixausgaben:**")
+                for _i, _fa in enumerate(_fixausgaben):
+                    _fl1, _fl2 = st.columns([6, 1])
+                    with _fl1:
+                        st.markdown(
+                            f"- **{_fa['name']}**: {_de(_fa['betrag_monatlich'])} €/Mon."
+                            f" ({_fa['startjahr']}–{_fa['endjahr']})"
+                        )
+                    with _fl2:
+                        if st.button("🗑️", key=f"rc{_rc}_hh_fa_del_{_i}"):
+                            _fixausgaben.pop(_i)
+                            st.session_state["hh_fixausgaben"] = _fixausgaben
+                            st.rerun()
+
+        # ── Brutto → Netto / Verfügbar Wasserfall ────────────────────────────
+        if not _no_data:
+            _vorsorge_nbav_m = _vorsorge_non_bav_monatlich(_vp_produkte, betrachtungsjahr)
+            _fix_m_wf = sum(
+                fa["betrag_monatlich"]
+                for fa in _fixausgaben
+                if fa["startjahr"] <= betrachtungsjahr <= fa["endjahr"]
+            )
+            _wf_x    = ["Brutto", "− Einkommensteuer", "− KV / PV"]
+            _wf_meas = ["absolute", "relative", "relative"]
+            _wf_y    = [_b, -_s, -_k]
+            _wf_t    = [f"{_de(_b)} €", f"−{_de(_s)} €", f"−{_de(_k)} €"]
+            if _vorsorge_nbav_m > 0:
+                _wf_x.append("− Vorsorge\n(ohne bAV)")
+                _wf_meas.append("relative")
+                _wf_y.append(-_vorsorge_nbav_m)
+                _wf_t.append(f"−{_de(_vorsorge_nbav_m)} €")
+            if _fix_m_wf > 0:
+                _wf_x.append("− Fixausgaben")
+                _wf_meas.append("relative")
+                _wf_y.append(-_fix_m_wf)
+                _wf_t.append(f"−{_de(_fix_m_wf)} €")
+            _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf
+            _wf_x.append("Verfügbar")
+            _wf_meas.append("total")
+            _wf_y.append(_verfuegbar_m)
+            _wf_t.append(f"{_de(_verfuegbar_m)} €")
+            st.subheader(f"Brutto → Verfügbar {betrachtungsjahr} ({_label})")
+            fig_wf_hh = go.Figure(go.Waterfall(
+                orientation="v", measure=_wf_meas, x=_wf_x, y=_wf_y, text=_wf_t,
+                textposition="outside",
+                connector=dict(line=dict(color="#888")),
+                increasing=dict(marker=dict(color="#4CAF50")),
+                decreasing=dict(marker=dict(color="#F44336")),
+                totals=dict(marker=dict(color="#2196F3")),
+            ))
+            fig_wf_hh.update_layout(
+                template="plotly_white", height=380,
+                yaxis=dict(title="€ / Monat", ticksuffix=" €"),
+                margin=dict(l=10, r=10, t=10, b=10),
+                separators=",.",
+            )
+            st.plotly_chart(fig_wf_hh, use_container_width=True)
+
+        st.divider()
+
         # ── Jahresverlauf (Haushalt) ──────────────────────────────────────────
         st.subheader("Jahresverlauf")
         if ansicht == "Haushalt gesamt":
@@ -336,6 +450,77 @@ def render(
             )
             st.plotly_chart(fig_jv, use_container_width=True)
 
+            # ── Jahresverlauf mit Abzügen (non-bAV Vorsorge + Fixausgaben) ────
+            _alle_jahre = list(_df.index)
+            _vbnbav_py = {j: _vorsorge_non_bav_monatlich(_vp_produkte, j) for j in _alle_jahre}
+            _fix_py    = {
+                j: sum(fa["betrag_monatlich"] for fa in _fixausgaben
+                       if fa["startjahr"] <= j <= fa["endjahr"])
+                for j in _alle_jahre
+            }
+            _hat_abzuege = (
+                any(_vbnbav_py[j] > 0 for j in _alle_jahre)
+                or any(_fix_py[j] > 0 for j in _alle_jahre)
+            )
+            if _hat_abzuege:
+                st.caption(
+                    "Nachfolgendes Diagramm zeigt zusätzlich nicht-bAV Vorsorge-Beiträge "
+                    "und Fixausgaben als Abzüge."
+                )
+                _verfuegbar_py = {
+                    j: (_df.loc[j, "Netto"] / 12) - _vbnbav_py[j] - _fix_py[j]
+                    for j in _alle_jahre
+                }
+                fig_jv2 = go.Figure()
+                fig_jv2.add_trace(go.Bar(
+                    name="Brutto", x=_alle_jahre,
+                    y=[_df.loc[j, "Brutto"] / 12 for j in _alle_jahre],
+                    marker_color="#90CAF9",
+                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Brutto</extra>",
+                ))
+                if any(_vbnbav_py[j] > 0 for j in _alle_jahre):
+                    fig_jv2.add_trace(go.Bar(
+                        name="− Vorsorge (ohne bAV)", x=_alle_jahre,
+                        y=[-_vbnbav_py[j] for j in _alle_jahre],
+                        marker_color="#EF9A9A",
+                        hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Vorsorge-Abzug</extra>",
+                    ))
+                if any(_fix_py[j] > 0 for j in _alle_jahre):
+                    fig_jv2.add_trace(go.Bar(
+                        name="− Fixausgaben", x=_alle_jahre,
+                        y=[-_fix_py[j] for j in _alle_jahre],
+                        marker_color="#FFCC80",
+                        hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Fixausgaben</extra>",
+                    ))
+                fig_jv2.add_trace(go.Scatter(
+                    name=_label_netto, x=_alle_jahre,
+                    y=[_df.loc[j, "Netto"] / 12 for j in _alle_jahre],
+                    mode="lines+markers", line=dict(color="#4CAF50", width=2),
+                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Netto</extra>",
+                ))
+                fig_jv2.add_trace(go.Scatter(
+                    name="Verfügbar (nach Abzügen)", x=_alle_jahre,
+                    y=[_verfuegbar_py[j] for j in _alle_jahre],
+                    mode="lines+markers",
+                    line=dict(color="#FF9800", width=2, dash="dash"),
+                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Verfügbar</extra>",
+                ))
+                fig_jv2.add_vline(
+                    x=betrachtungsjahr, line_width=1, line_dash="dash",
+                    line_color="#FF9800",
+                    annotation_text=str(betrachtungsjahr),
+                    annotation_position="top right",
+                )
+                fig_jv2.update_layout(
+                    barmode="overlay", template="plotly_white", height=360,
+                    xaxis=dict(title="Jahr", dtick=2),
+                    yaxis=dict(title="€ / Monat", tickformat=",.0f"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                    margin=dict(l=10, r=10, t=40, b=10),
+                    separators=",.",
+                )
+                st.plotly_chart(fig_jv2, use_container_width=True)
+
         st.divider()
 
         # ── Ausgaben im Planungszeitraum ──────────────────────────────────────
@@ -344,7 +529,7 @@ def render(
         _ausgaben_rows = []
 
         # Vorsorgebeiträge: Produkte mit laufenden Beiträgen die noch nicht ausgezahlt werden
-        for _vp in st.session_state.get("vp_produkte", []):
+        for _vp in _vp_produkte:
             _je = float(_vp.get("jaehrl_einzahlung", 0.0))
             if _je <= 0.0:
                 continue
@@ -362,6 +547,14 @@ def render(
                 "Name / Beschreibung": f"{_name} ({_vp.get('typ', '')})",
                 "_jaehrl": _beitrag_j,
             })
+
+        # Fixe Ausgaben für Betrachtungsjahr
+        for _fa in _fixausgaben:
+            if _fa["startjahr"] <= betrachtungsjahr <= _fa["endjahr"]:
+                _ausgaben_rows.append({
+                    "Name / Beschreibung": f"{_fa['name']} (Fixausgabe)",
+                    "_jaehrl": _fa["betrag_monatlich"] * 12,
+                })
 
         # Hypothek: Jahresausgabe für Betrachtungsjahr
         _hyp_schedule = get_hyp_schedule()
