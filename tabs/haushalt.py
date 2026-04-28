@@ -352,18 +352,69 @@ def render(
                     st.rerun()
             if _fixausgaben:
                 st.markdown("**Erfasste Fixausgaben:**")
+                _fa_edit_idx = st.session_state.get("hh_fa_edit_idx", -1)
                 for _i, _fa in enumerate(_fixausgaben):
-                    _fl1, _fl2 = st.columns([6, 1])
-                    with _fl1:
-                        st.markdown(
-                            f"- **{_fa['name']}**: {_de(_fa['betrag_monatlich'])} €/Mon."
-                            f" ({_fa['startjahr']}–{_fa['endjahr']})"
-                        )
-                    with _fl2:
-                        if st.button("🗑️", key=f"rc{_rc}_hh_fa_del_{_i}"):
-                            _fixausgaben.pop(_i)
-                            st.session_state["hh_fixausgaben"] = _fixausgaben
-                            st.rerun()
+                    if _fa_edit_idx == _i:
+                        _fe1, _fe2, _fe3, _fe4 = st.columns([3, 2, 1, 1])
+                        with _fe1:
+                            _ed_name = st.text_input(
+                                "Bezeichnung", value=_fa["name"],
+                                key=f"rc{_rc}_hh_fa_ed_name_{_i}",
+                            )
+                        with _fe2:
+                            _ed_betrag = st.number_input(
+                                "€/Mon.", 0.0, 100_000.0,
+                                value=float(_fa["betrag_monatlich"]), step=50.0,
+                                key=f"rc{_rc}_hh_fa_ed_betrag_{_i}",
+                            )
+                        with _fe3:
+                            _ed_start = st.number_input(
+                                "Ab Jahr", AKTUELLES_JAHR - 10, AKTUELLES_JAHR + 60,
+                                value=int(_fa["startjahr"]), step=1,
+                                key=f"rc{_rc}_hh_fa_ed_start_{_i}",
+                            )
+                        with _fe4:
+                            _ed_ende = st.number_input(
+                                "Bis Jahr", AKTUELLES_JAHR, AKTUELLES_JAHR + 70,
+                                value=int(_fa["endjahr"]), step=1,
+                                key=f"rc{_rc}_hh_fa_ed_ende_{_i}",
+                            )
+                        _fs1, _fs2 = st.columns([1, 1])
+                        with _fs1:
+                            if st.button("✓ Speichern", key=f"rc{_rc}_hh_fa_save_{_i}"):
+                                if _ed_name and _ed_betrag > 0 and _ed_ende >= _ed_start:
+                                    _fixausgaben[_i] = {
+                                        "name": _ed_name,
+                                        "betrag_monatlich": float(_ed_betrag),
+                                        "startjahr": int(_ed_start),
+                                        "endjahr": int(_ed_ende),
+                                    }
+                                    st.session_state["hh_fixausgaben"] = _fixausgaben
+                                    st.session_state["hh_fa_edit_idx"] = -1
+                                    st.rerun()
+                        with _fs2:
+                            if st.button("✕ Abbrechen", key=f"rc{_rc}_hh_fa_cancel_{_i}"):
+                                st.session_state["hh_fa_edit_idx"] = -1
+                                st.rerun()
+                    else:
+                        _fl1, _fl2, _fl3 = st.columns([6, 1, 1])
+                        with _fl1:
+                            st.markdown(
+                                f"- **{_fa['name']}**: {_de(_fa['betrag_monatlich'])} €/Mon."
+                                f" ({_fa['startjahr']}–{_fa['endjahr']})"
+                            )
+                        with _fl2:
+                            if st.button("✏️", key=f"rc{_rc}_hh_fa_edit_{_i}",
+                                         help="Bearbeiten"):
+                                st.session_state["hh_fa_edit_idx"] = _i
+                                st.rerun()
+                        with _fl3:
+                            if st.button("🗑️", key=f"rc{_rc}_hh_fa_del_{_i}",
+                                         help="Löschen"):
+                                _fixausgaben.pop(_i)
+                                st.session_state["hh_fixausgaben"] = _fixausgaben
+                                st.session_state.pop("hh_fa_edit_idx", None)
+                                st.rerun()
 
         # ── Brutto → Netto / Verfügbar Wasserfall ────────────────────────────
         if not _no_data:
