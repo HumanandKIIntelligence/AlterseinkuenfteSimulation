@@ -780,7 +780,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # Vertragsnamen pro Jahr für Einmal- und Versorgungsbalken
         _jahre = list(df_jd.index)
         _VERSORGUNG_TYPEN = {"bAV", "Riester", "Rürup", "PrivateRente"}
-        _einmal_info  = {j: [] for j in _jahre}
+        _einmal_info         = {j: [] for j in _jahre}  # Einkommens-Einmalzahlungen (nicht aus Pool)
+        _einmal_info_kapital = {j: [] for j in _jahre}  # als_kapitalanlage → Pool-Injektion
         _versorg_info = {j: [] for j in _jahre}
         for _prod, _startjahr, _anteil in opt["beste_entscheidungen"]:
             _aufschub = max(0, _startjahr - _prod.fruehestes_startjahr)
@@ -788,7 +789,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             # Einmalauszahlung: nur im Startjahr
             if _anteil > 0 and _startjahr in _einmal_info:
                 _betrag = _prod.max_einmalzahlung * _fak * _anteil
-                _einmal_info[_startjahr].append(f"{_prod.name}: {_de(_betrag)} €")
+                if _prod.als_kapitalanlage:
+                    _einmal_info_kapital[_startjahr].append(f"{_prod.name}: {_de(_betrag)} €")
+                else:
+                    _einmal_info[_startjahr].append(f"{_prod.name}: {_de(_betrag)} €")
             # Laufende Versorgung: ab Startjahr für die Laufzeit
             if _anteil < 1.0 and _prod.typ in _VERSORGUNG_TYPEN:
                 _mono = _prod.max_monatsrente * _fak * (1 - _anteil)
@@ -869,6 +873,24 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     hovertemplate="%{x}: %{y:,.0f} € Entnahme<extra>Entnahmen (geplant)</extra>",
                 ))
 
+        # Kapital-Pool-Injektion als sichtbarer Abzugsbalken (negativ) – Pool-Einzahlungen aus Verträgen
+        if "Kap_Injektion" in df_jd.columns and df_jd["Kap_Injektion"].sum() > 0:
+            _ki_mask = df_jd["Kap_Injektion"] > 0
+            _ki_yrs  = list(df_jd[_ki_mask].index)
+            _ki_cd   = [
+                "<br>".join(_einmal_info_kapital.get(j, [])) or f"{_de(df_jd.loc[j, 'Kap_Injektion'])} € → Pool"
+                for j in _ki_yrs
+            ]
+            fig_src.add_trace(go.Bar(
+                name="Kapital-Einzahlung (Pool)",
+                x=_ki_yrs,
+                y=[-df_jd.loc[j, "Kap_Injektion"] for j in _ki_yrs],
+                marker_color="#00BCD4",
+                opacity=0.85,
+                customdata=_ki_cd,
+                hovertemplate="%{x}: %{y:,.0f} € → Pool<br><i>%{customdata}</i><extra>Kapital-Einzahlung (Pool)</extra>",
+            ))
+
         fig_src.add_trace(go.Scatter(
             name="Netto", x=df_jd.index, y=df_jd["Netto"],
             mode="lines+markers",
@@ -915,14 +937,19 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 x=_profil2_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#E91E63",
                 annotation_text="P2 Renteneintritt", annotation_position="bottom left",
             )
-        # Einmalige Auszahlungen als vertikale Markierungen oben (wie Renteneintritt)
+        # Einmalige Auszahlungen (Einkommen) als Markierungen oberhalb des Diagramms
         for _ej in _jahre:
             if _einmal_info.get(_ej):
-                fig_src.add_vline(
-                    x=_ej, line_width=1, line_dash="dot", line_color="#FF9800",
-                    annotation_text="<br>".join(_einmal_info[_ej]),
-                    annotation_position="top left",
-                    annotation_font=dict(color="#FF9800", size=9),
+                fig_src.add_vline(x=_ej, line_width=1, line_dash="dot", line_color="#FF9800")
+                fig_src.add_annotation(
+                    x=_ej, xref="x",
+                    y=1.08, yref="paper",
+                    text="<br>".join(_einmal_info[_ej]),
+                    showarrow=False,
+                    xanchor="left", yanchor="bottom",
+                    font=dict(color="#FF9800", size=9),
+                    bgcolor="rgba(255,152,0,0.08)",
+                    bordercolor="#FF9800",
                 )
         # Sonderausgaben (Hypothek-Raten / Einmaltilgung) als Annotationen unterhalb der Balken
         _hat_sonder = "Sonderausgabe" in df_jd.columns and df_jd["Sonderausgabe"].sum() > 0
@@ -937,24 +964,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     font=dict(color="#D32F2F", size=11),
                     ax=0, ay=_ay_val,
                 )
-        # Pool-Injektion-Annotationen
-        if "Kap_Injektion" in df_jd.columns:
-            for _ij in df_jd[df_jd["Kap_Injektion"] > 0].index:
-                _inj = df_jd.loc[_ij, "Kap_Injektion"]
-                fig_src.add_annotation(
-                    x=_ij, y=_inj,
-                    text=f"Pool +{_de(_inj / 1000, 0)}k€",
-                    showarrow=True, arrowhead=2, arrowcolor="#0288D1",
-                    font=dict(color="#0288D1", size=10),
-                    ax=0, ay=-30,
-                )
-
+        _has_einmal_annotations = any(_einmal_info.get(j) for j in _jahre)
         fig_src.update_layout(
             barmode="stack", template="plotly_white", height=400,
             xaxis=dict(title="Jahr", dtick=2),
             yaxis=dict(title="€ / Jahr (brutto)", tickformat=",.0f"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            margin=dict(l=10, r=10, t=50, b=10),
+            margin=dict(l=10, r=10, t=90 if _has_einmal_annotations else 50, b=10),
             separators=",.",
         )
         st.plotly_chart(fig_src, use_container_width=True)
