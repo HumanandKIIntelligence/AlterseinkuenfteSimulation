@@ -104,6 +104,27 @@ def get_restschuld_end() -> float:
     return schedule[-1]["Restschuld_Ende"]
 
 
+def get_anschluss_schedule() -> list[dict]:
+    """Anschlusskredit-Tilgungsplan als Liste von Dicts. Leer wenn nicht konfiguriert.
+
+    Startet im Endjahr der Primärhypothek (= Jahr der letzten Rate). Jedes Dict
+    enthält "Jahr" und "Jahresausgabe" (Annuität Anschlusskredit).
+    """
+    d = st.session_state.get("hyp_daten", {})
+    if not d.get("aktiv", False) or d.get("restschuld_behandlung", "keine") != "ratenkredit":
+        return []
+    restschuld = get_restschuld_end()
+    if restschuld <= 0.0:
+        return []
+    endjahr  = int(d.get("endjahr", AKTUELLES_JAHR + 20))
+    zins     = float(d.get("anschluss_zins_pa", 0.04))
+    laufzeit = int(d.get("anschluss_laufzeit", 10))
+    if laufzeit <= 0:
+        return []
+    rate = _annuitaet_rate(restschuld, zins, laufzeit)
+    return [{"Jahr": endjahr + i, "Jahresausgabe": rate} for i in range(laufzeit)]
+
+
 def get_ausgaben_plan() -> dict[int, float]:
     """
     Gibt {Jahr: Jahresausgabe} für die Simulation zurück.

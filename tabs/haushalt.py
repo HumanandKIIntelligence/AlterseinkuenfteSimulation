@@ -13,9 +13,11 @@ from engine import (
 )
 
 try:
-    from tabs.hypothek import get_hyp_schedule
+    from tabs.hypothek import get_hyp_schedule, get_anschluss_schedule
 except ImportError:
     def get_hyp_schedule():
+        return []
+    def get_anschluss_schedule():
         return []
 
 
@@ -454,7 +456,15 @@ def render(
                 _wf_meas.append("relative")
                 _wf_y.append(-_hyp_m_wf)
                 _wf_t.append(f"−{_de(_hyp_m_wf)} €")
-            _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf - _hyp_m_wf
+            _ak_schedule_wf = get_anschluss_schedule()
+            _ak_row_wf = next((r for r in _ak_schedule_wf if r["Jahr"] == betrachtungsjahr), None)
+            _ak_m_wf = _ak_row_wf["Jahresausgabe"] / 12 if _ak_row_wf else 0.0
+            if _ak_m_wf > 0:
+                _wf_x.append("− Anschlusskredit")
+                _wf_meas.append("relative")
+                _wf_y.append(-_ak_m_wf)
+                _wf_t.append(f"−{_de(_ak_m_wf)} €")
+            _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf - _hyp_m_wf - _ak_m_wf
             _wf_x.append("Verfügbar")
             _wf_meas.append("total")
             _wf_y.append(_verfuegbar_m)

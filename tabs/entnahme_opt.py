@@ -23,6 +23,7 @@ try:
     from tabs.hypothek import (
         get_ausgaben_plan, get_restschuld_end,
         get_hyp_info, get_ausgaben_plan_optimierung, get_hyp_schedule,
+        get_anschluss_schedule,
     )
 except ImportError:
     def get_ausgaben_plan() -> dict:
@@ -35,6 +36,8 @@ except ImportError:
                                       als_einmaltilgung: bool = False) -> dict:
         return {}
     def get_hyp_schedule() -> list:
+        return []
+    def get_anschluss_schedule() -> list:
         return []
 
 
@@ -866,10 +869,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             line=dict(color="black", width=2),
             hovertemplate="%{x}: %{y:,.0f} € Netto<extra></extra>",
         ))
-        # Netto nach Hypotheken-Rate – nur wenn Hypothek aktiv
+        # Netto nach Hypotheken-Rate – Primärhypothek + Anschlusskredit kombiniert
         _sched_src = get_hyp_schedule()
-        if _sched_src:
-            _hyp_rate_map_src = {s["Jahr"]: s["Jahresausgabe"] for s in _sched_src}
+        _ak_sched_src = get_anschluss_schedule()
+        _hyp_rate_map_src: dict[int, float] = {}
+        for s in _sched_src:
+            _hyp_rate_map_src[s["Jahr"]] = _hyp_rate_map_src.get(s["Jahr"], 0) + s["Jahresausgabe"]
+        for s in _ak_sched_src:
+            _hyp_rate_map_src[s["Jahr"]] = _hyp_rate_map_src.get(s["Jahr"], 0) + s["Jahresausgabe"]
+        if _hyp_rate_map_src:
             _nh_yrs = [yr for yr in df_jd.index if _hyp_rate_map_src.get(yr, 0) > 0]
             if _nh_yrs:
                 _nh_vals = [df_jd.loc[yr, "Netto"] - _hyp_rate_map_src[yr] for yr in _nh_yrs]
