@@ -1384,72 +1384,50 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     hover.append("<br>".join(parts) if parts else "")
                 return series, hover
 
-            # ── P1 Kapital (ab AKTUELLES_JAHR, verzinst ohne Sparrate) ──────
-            if _spkap_orig > 0 or _p1_pool_pids:
-                _all_yrs_p1 = list(range(AKTUELLES_JAHR, _x_chart_end + 1))
-                _p1_label_post = "P1 Kapital" if _hat_partner_kap else "Kapital"
+            # ── Kapital gesamt (P1 + P2, eine einzige Linie) ─────────────────
+            if _spkap_orig > 0 or _p1_pool_pids or _hat_partner_kap:
+                _all_yrs_kap = list(range(AKTUELLES_JAHR, _x_chart_end + 1))
+
                 def _p1_kap(j: int) -> float:
                     if j < _spkap_eintritt_j and not _profil_eo.bereits_rentner:
                         return kapitalwachstum(_spkap_orig, _spkap_sparrate, _spkap_rendite,
                                                j - AKTUELLES_JAHR)
                     return kapitalwachstum(_spkap, 0.0, _spkap_rendite, max(0, j - _spkap_eintritt_j))
-                _df_p1_post = pd.Series([_p1_kap(j) for j in _all_yrs_p1], index=_all_yrs_p1)
+
+                _df_kap = pd.Series([_p1_kap(j) for j in _all_yrs_kap], index=_all_yrs_kap)
                 for _pid in _p1_pool_pids:
                     _c = f"Kap_Pool_{_pid}"
                     if _c in df_jd.columns:
-                        _pool_s = df_jd[_c].reindex(_all_yrs_p1, fill_value=0)
-                        _df_p1_post = _df_p1_post + _pool_s
-                _p1_post_series_gesamt = _df_p1_post
-                _, _p1_cd = _kap_hover(_df_p1_post, _p1_pool_pids, _p1_label_post, df_jd)
+                        _df_kap = _df_kap + df_jd[_c].reindex(_all_yrs_kap, fill_value=0)
+
+                if _hat_partner_kap:
+                    def _p2_kap(j: int) -> float:
+                        if _spkap2_orig <= 0:
+                            return 0.0
+                        if (j < _spkap2_eintritt_j
+                                and _profil2_eo is not None
+                                and not _profil2_eo.bereits_rentner):
+                            return kapitalwachstum(_spkap2_orig, _spkap2_sparrate, _spkap2_rendite,
+                                                   j - AKTUELLES_JAHR)
+                        return kapitalwachstum(_spkap2, 0.0, _spkap2_rendite,
+                                               max(0, j - _spkap2_eintritt_j))
+                    _p2_series = pd.Series([_p2_kap(j) for j in _all_yrs_kap], index=_all_yrs_kap)
+                    for _pid in _p2_pool_pids:
+                        _c = f"Kap_Pool_{_pid}"
+                        if _c in df_jd.columns:
+                            _p2_series = _p2_series + df_jd[_c].reindex(_all_yrs_kap, fill_value=0)
+                    _df_kap = _df_kap + _p2_series
+                    _p1_post_series_gesamt = _df_kap
+                    _p2_post_series_gesamt = pd.Series(0.0, index=_all_yrs_kap)
+                else:
+                    _p1_post_series_gesamt = _df_kap
+
+                _, _kap_cd = _kap_hover(_df_kap, _p1_pool_pids + _p2_pool_pids, "Kapital", df_jd)
                 fig_spar.add_trace(go.Scatter(
-                    name=_p1_label_post, x=_df_p1_post.index, y=_df_p1_post.values,
+                    name="Kapital", x=_df_kap.index, y=_df_kap.values,
                     mode="lines+markers", line=dict(color="#2E7D32", width=2.5),
-                    customdata=_p1_cd,
-                    hovertemplate=(
-                        "%{x}: %{y:,.0f} €<br>%{customdata}"
-                        "<extra>" + _p1_label_post + "</extra>"
-                    ),
-                ))
-
-            # ── P2 Kapital (ab AKTUELLES_JAHR, verzinst ohne Sparrate) ──────
-            if _hat_partner_kap:
-                _all_yrs_p2 = list(range(AKTUELLES_JAHR, _x_chart_end + 1))
-                def _p2_kap(j: int) -> float:
-                    if _spkap2_orig <= 0:
-                        return 0.0
-                    if (j < _spkap2_eintritt_j
-                            and _profil2_eo is not None
-                            and not _profil2_eo.bereits_rentner):
-                        return kapitalwachstum(_spkap2_orig, _spkap2_sparrate, _spkap2_rendite,
-                                               j - AKTUELLES_JAHR)
-                    return kapitalwachstum(_spkap2, 0.0, _spkap2_rendite, max(0, j - _spkap2_eintritt_j))
-                _p2_post_series = pd.Series([_p2_kap(j) for j in _all_yrs_p2], index=_all_yrs_p2)
-                for _pid in _p2_pool_pids:
-                    _c = f"Kap_Pool_{_pid}"
-                    if _c in df_jd.columns:
-                        _pool_s = df_jd[_c].reindex(_all_yrs_p2, fill_value=0)
-                        _p2_post_series = _p2_post_series + _pool_s
-                _p2_post_series_gesamt = _p2_post_series
-                _, _p2_cd = _kap_hover(_p2_post_series, _p2_pool_pids, "P2 Kapital", df_jd)
-                fig_spar.add_trace(go.Scatter(
-                    name="P2 Kapital", x=_p2_post_series.index, y=_p2_post_series.values,
-                    mode="lines+markers", line=dict(color="#C2185B", width=2),
-                    customdata=_p2_cd,
-                    hovertemplate="%{x}: %{y:,.0f} €<br>%{customdata}<extra>P2 Kapital</extra>",
-                ))
-
-            # ── Kapital gesamt (P1 + P2) ─────────────────────────────────────
-            if _p1_post_series_gesamt is not None and _p2_post_series_gesamt is not None:
-                _all_ges_yrs = sorted(set(_p1_post_series_gesamt.index) | set(_p2_post_series_gesamt.index))
-                _p1_aligned = _p1_post_series_gesamt.reindex(_all_ges_yrs, fill_value=0)
-                _p2_aligned = _p2_post_series_gesamt.reindex(_all_ges_yrs, fill_value=0)
-                _gesamt_series = _p1_aligned + _p2_aligned
-                _, _ges_cd = _kap_hover(_gesamt_series, _p1_pool_pids + _p2_pool_pids, "Kapital gesamt", df_jd)
-                fig_spar.add_trace(go.Scatter(
-                    name="Kapital gesamt", x=_gesamt_series.index, y=_gesamt_series.values,
-                    mode="lines", line=dict(color="#37474F", width=2.5, dash="longdash"),
-                    customdata=_ges_cd,
-                    hovertemplate="%{x}: %{y:,.0f} €<br>%{customdata}<extra>Kapital gesamt</extra>",
+                    customdata=_kap_cd,
+                    hovertemplate="%{x}: %{y:,.0f} €<br>%{customdata}<extra>Kapital</extra>",
                 ))
 
             # ── Restschuld (Jahresverlauf) ───────────────────────────────────
