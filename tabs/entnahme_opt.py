@@ -654,22 +654,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                             max(0, _spkap_pool_startjahr - AKTUELLES_JAHR),
                         )
                 if _rs > 0:
-                    # Anschlusskredit-Parameter (immer bei offener Restschuld)
-                    hc1, hc2 = st.columns(2)
-                    with hc1:
-                        _markt_zins_pct = st.number_input(
-                            "Anschluss-Zinssatz (%)", 0.0, 20.0,
-                            value=round(_hyp_info["anschluss_zins_pa"] * 100, 2),
-                            step=0.05, format="%.2f",
-                            key=f"rc{_rc}_eo_hyp_markt_zins",
-                        )
-                        _markt_zins_pa = _markt_zins_pct / 100.0
-                    with hc2:
-                        _anschluss_lz = int(st.number_input(
-                            "Laufzeit Anschlussfinanzierung (Jahre)", 1, 30,
-                            value=_hyp_info["anschluss_laufzeit"], step=1,
-                            key=f"rc{_rc}_eo_hyp_anschl_lz",
-                        ))
+                    # Anschluss-Zinssatz und Laufzeit kommen direkt aus dem Hypothek-Tab
+                    st.caption(
+                        f"Anschlussfinanzierung: {_markt_zins_pa*100:.2f} % · "
+                        f"{_anschluss_lz} Jahre · Zinssatz/Laufzeit im Tab **🏠 Hypothek-Verwaltung** ändern."
+                    )
 
                     # Kapitaleinsatz-Strategie
                     if _spkap > 0:
