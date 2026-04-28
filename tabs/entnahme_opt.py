@@ -814,16 +814,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _cd_versorg = _hover_lines(_versorg_info, _jahre)
 
         fig_src = go.Figure()
-        # Src_Gehalt wird separat auf sekundärer Y-Achse gezeigt (eigene Skala)
-        _hat_gehalt = "Src_Gehalt" in df_jd.columns and df_jd["Src_Gehalt"].sum() > 0
-        if _hat_gehalt:
-            fig_src.add_trace(go.Bar(
-                name="Bruttogehalt (aktiv)", x=df_jd.index, y=df_jd["Src_Gehalt"],
-                marker_color="#78909C", opacity=0.6,
-                yaxis="y2",
-                hovertemplate="%{x}: %{y:,.0f} € Bruttogehalt<extra>Bruttogehalt (aktiv)</extra>",
-            ))
         src_cols = [
+            ("Src_Gehalt",       "Bruttogehalt (aktiv)",    "#78909C", None),
             ("Src_Zusatzentgelt","Zusatzentgelt (PV, stfr.)","#546E7A", None),
             ("Src_GesRente",     "Gesetzl. Rente P1",       "#4CAF50", None),
             ("Src_P2_Rente",     "Gesetzl. Rente P2",       "#81C784", None),
@@ -973,23 +965,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     ax=0, ay=_ay_val,
                 )
         _has_einmal_annotations = any(_einmal_info.get(j) for j in _jahre)
-        _layout_kwargs: dict = dict(
+        fig_src.update_layout(
             barmode="stack", template="plotly_white", height=400,
             xaxis=dict(title="Jahr", dtick=2),
-            yaxis=dict(title="€ / Jahr (brutto, Rentenphase)", tickformat=",.0f"),
+            yaxis=dict(title="€ / Jahr (brutto)", tickformat=",.0f"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=10, r=10, t=90 if _has_einmal_annotations else 50, b=10),
             separators=",.",
         )
-        if _hat_gehalt:
-            _layout_kwargs["yaxis2"] = dict(
-                title="€ / Jahr (Bruttogehalt aktiv)",
-                tickformat=",.0f",
-                overlaying="y",
-                side="right",
-                showgrid=False,
-            )
-        fig_src.update_layout(**_layout_kwargs)
         st.plotly_chart(fig_src, use_container_width=True)
 
         # ── Hypothek-Tilgung: Status-Meldungen ───────────────────────────────
