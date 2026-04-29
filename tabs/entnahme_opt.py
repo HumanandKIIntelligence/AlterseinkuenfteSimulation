@@ -718,13 +718,19 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             st.markdown(f"- **{prod.name}** ({prod.typ}): {modus} ab **{startjahr}**{note}")
 
         # ── Anschlusskredit-Kennzahlen ────────────────────────────────────────
-        if _hyp_info and _behandlung == "ratenkredit" and _rs > 0:
-            _ak_rate_j = _annuitaet_rate(_rs, _markt_zins_pa, _anschluss_lz)
+        # Effektive Restschuld: bei Sondertilgungen bereits um EZ reduziert
+        _eff_ak_rs = 0.0
+        if _hyp_info and _behandlung == "ratenkredit":
+            _eff_ak_rs = _rs
+        elif _hyp_info and _behandlung == "einmalzahlungen":
+            _eff_ak_rs = _ak_zeitleiste_rs  # nach Sondertilgungen
+        if _hyp_info and _eff_ak_rs > 0:
+            _ak_rate_j = _annuitaet_rate(_eff_ak_rs, _markt_zins_pa, _anschluss_lz)
             _ak_gesamt = _ak_rate_j * _anschluss_lz
-            _ak_zinsen = _ak_gesamt - _rs
+            _ak_zinsen = _ak_gesamt - _eff_ak_rs
             _akc1, _akc2, _akc3, _akc4 = st.columns(4)
-            _akc1.metric("Kreditsumme", f"{_de(_rs)} €",
-                         help="Verbleibende Restschuld der Primärhypothek.")
+            _akc1.metric("Kreditsumme", f"{_de(_eff_ak_rs)} €",
+                         help="Verbleibende Restschuld" + (" nach Sondertilgungen." if _behandlung == "einmalzahlungen" else " der Primärhypothek."))
             _akc2.metric("Jahresrate", f"{_de(_ak_rate_j)} €",
                          help=f"{_de(_ak_rate_j / 12, 0)} €/Mon. · Nominalzins {_markt_zins_pa * 100:.2f} %")
             _akc3.metric("Laufzeit", f"{_anschluss_lz} Jahre",
@@ -739,7 +745,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 and p.max_einmalzahlung > 0
                 and p.spaetestes_startjahr > p.fruehestes_startjahr
             ]
-            if _hvp_prods:
+            if _hvp_prods and _eff_ak_rs > 0:
                 with st.expander("🔄 Frühauszahlung vs. Anschlusskredit – Vergleich", expanded=True):
                     st.caption(
                         "Vergleich: Produkt-Nettobetrag zur Tilgung des Anschlusskredits nutzen "
@@ -747,7 +753,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         "**Positiver Netto-Vorteil** = Frühauszahlung und Tilgung lohnt sich. "
                         "Steuer vereinfacht (25 % Abgeltungsteuer auf Kursgewinne, ETF 17,5 % nach Teilfreistellung)."
                     )
-                    _ak_zinsen_gesamt = _ak_rate_j * _anschluss_lz - _rs
+                    _ak_zinsen_gesamt = _ak_rate_j * _anschluss_lz - _eff_ak_rs
 
                     _hvp_rows = []
                     for _hp in _hvp_prods:
@@ -774,8 +780,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         ) if _hp.jaehrl_einzahlung > 0 else 0.0
 
                         # Zinseinsparung durch Teilrückzahlung des Anschlusskredits
-                        _tilgung = min(_V_F_net, _rs)
-                        _neue_rs = max(0.0, _rs - _tilgung)
+                        _tilgung = min(_V_F_net, _eff_ak_rs)
+                        _neue_rs = max(0.0, _eff_ak_rs - _tilgung)
                         if _neue_rs > 0.01:
                             _ak_zinsen_mit = _annuitaet_rate(_neue_rs, _markt_zins_pa, _anschluss_lz) * _anschluss_lz - _neue_rs
                         else:
