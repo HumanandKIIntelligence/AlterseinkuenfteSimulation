@@ -566,6 +566,26 @@ def render(T: dict, _rc: int) -> None:
             st.session_state["hyp_daten"]["sondertilgungen"] = sondertilgungen
             st.rerun()
 
+        # Validierung: Jahr innerhalb Laufzeit + Betrag ≤ verfügbare Restschuld
+        _st_start = int(d.get("startjahr", AKTUELLES_JAHR))
+        _st_end   = int(d.get("endjahr",   AKTUELLES_JAHR + 20))
+        _sched_by_jahr = {r["Jahr"]: r for r in schedule}
+        for _sv in sondertilgungen:
+            _sj = int(_sv["jahr"])
+            _sb = float(_sv["betrag"])
+            if not (_st_start <= _sj <= _st_end):
+                st.warning(
+                    f"⚠️ Sondertilgung {_sj}: Jahr liegt außerhalb der Kreditlaufzeit "
+                    f"({_st_start}–{_st_end})."
+                )
+            elif _sj in _sched_by_jahr:
+                _rs_anfang = _sched_by_jahr[_sj]["Restschuld_Anfang"]
+                if _sb > _rs_anfang:
+                    st.warning(
+                        f"⚠️ Sondertilgung {_sj}: Betrag **{_de(_sb)} €** übersteigt die "
+                        f"verfügbare Restschuld von **{_de(_rs_anfang)} €**."
+                    )
+
         # Anschluss-Einmalzahlungen hier anzeigen wenn Restschuld-Strategie = einmalzahlungen
         if d.get("restschuld_behandlung") == "einmalzahlungen":
             _ezl = list(d.get("anschluss_einmalzahlungen", []))
