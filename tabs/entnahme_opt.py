@@ -1106,10 +1106,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         _has_einmal_annotations = any(_einmal_info.get(j) for j in _jahre)
         # Legende über dem Diagramm positionieren:
-        # y=1.25 + t=180 px → Legende liegt oberhalb der Jahres-Annotations (y=1.08).
-        # y=1.0  + t=100 px → ohne Annotations genug Platz für 2–3 Legendenzeilen.
-        _legend_y = 1.25 if _has_einmal_annotations else 1.0
-        _margin_t = 180 if _has_einmal_annotations else 100
+        # Vline-Annotation "P1 Renteneintritt" liegt bei paper-y≈1.0 → Legende-Untergrenze
+        # muss darüber liegen (y=1.08).  Mit Einmal-Annotations (y=1.08) noch höher (y=1.30).
+        _legend_y = 1.30 if _has_einmal_annotations else 1.08
+        _margin_t = 240 if _has_einmal_annotations else 130
         _src_layout: dict = dict(
             barmode="stack", template="plotly_white", height=520,
             xaxis=dict(title="Jahr", dtick=2),
