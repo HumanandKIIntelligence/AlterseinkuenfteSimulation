@@ -24,7 +24,7 @@ try:
     from tabs.hypothek import (
         get_ausgaben_plan, get_restschuld_end,
         get_hyp_info, get_ausgaben_plan_optimierung, get_hyp_schedule,
-        get_anschluss_schedule,
+        get_anschluss_schedule, _annuitaet_rate,
     )
 except ImportError:
     def get_ausgaben_plan() -> dict:
@@ -595,15 +595,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     "↳ Strategie und Parameter im Tab **🏠 Hypothek** konfigurieren."
                 )
 
-                _sonder_eo_endjahr = _entnahmen_dict.get(_endjahr_hyp, 0.0)
-                _ausgaben_plan = get_ausgaben_plan_optimierung(
-                    sondertilgung_endjahr=_sonder_eo_endjahr
-                )
+                _ausgaben_plan = get_ausgaben_plan_optimierung()
 
                 if _behandlung == "ratenkredit":
                     _anschluss_spar = _raten_aus_kapital
-                    # Zeitleiste zeigt reduzierte Restschuld nach geplanter Sondertilgung
-                    _ak_zeitleiste_rs = max(0.0, _rs - _sonder_eo_endjahr)
+                    _ak_zeitleiste_rs = _rs
                     _ak_zeitleiste_startjahr = _endjahr_hyp
                     if _raten_aus_kapital:
                         _spkap_pool_startjahr = _hyp_info["startjahr"]
@@ -721,6 +717,21 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             note = f" (+{aufschub} J. Aufschub)" if aufschub > 0 else ""
             st.markdown(f"- **{prod.name}** ({prod.typ}): {modus} ab **{startjahr}**{note}")
 
+        # ── Anschlusskredit-Kennzahlen ────────────────────────────────────────
+        if _hyp_info and _behandlung == "ratenkredit" and _rs > 0:
+            _ak_rate_j = _annuitaet_rate(_rs, _markt_zins_pa, _anschluss_lz)
+            _ak_gesamt = _ak_rate_j * _anschluss_lz
+            _ak_zinsen = _ak_gesamt - _rs
+            _akc1, _akc2, _akc3, _akc4 = st.columns(4)
+            _akc1.metric("Kreditsumme", f"{_de(_rs)} €",
+                         help="Verbleibende Restschuld der Primärhypothek.")
+            _akc2.metric("Jahresrate", f"{_de(_ak_rate_j)} €",
+                         help=f"{_de(_ak_rate_j / 12, 0)} €/Mon. · Nominalzins {_markt_zins_pa * 100:.2f} %")
+            _akc3.metric("Laufzeit", f"{_anschluss_lz} Jahre",
+                         help=f"Ab {_endjahr_hyp + 1} bis {_endjahr_hyp + _anschluss_lz}")
+            _akc4.metric("Gesamtzinsen", f"{_de(_ak_zinsen)} €",
+                         help=f"Gesamtbelastung {_de(_ak_gesamt)} €")
+
         st.divider()
 
         # ── Strategievergleich ────────────────────────────────────────────────
@@ -800,7 +811,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             if _anteil > 0 and _startjahr in _einmal_info:
                 _betrag = _prod.max_einmalzahlung * _fak * _anteil
                 if _prod.als_kapitalanlage:
-                    _einmal_info_kapital[_startjahr].append(f"{_prod.name}: {_de(_betrag)} €")
+                    _einmal_info_kapital[_startjahr].append(f"{_prod.name} (Brutto: {_de(_betrag)} €)")
                 else:
                     _einmal_info[_startjahr].append(f"{_prod.name}: {_de(_betrag)} €")
             # Laufende Versorgung: ab Startjahr für die Laufzeit – nach Typ aufteilen
@@ -1108,8 +1119,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # Legende über dem Diagramm positionieren:
         # Vline-Annotation "P1 Renteneintritt" liegt bei paper-y≈1.0 → Legende-Untergrenze
         # muss darüber liegen (y=1.08).  Mit Einmal-Annotations (y=1.08) noch höher (y=1.30).
-        _legend_y = 1.30 if _has_einmal_annotations else 1.08
-        _margin_t = 240 if _has_einmal_annotations else 130
+        _legend_y = 1.42 if _has_einmal_annotations else 1.20
+        _margin_t = 270 if _has_einmal_annotations else 160
         _src_layout: dict = dict(
             barmode="stack", template="plotly_white", height=520,
             xaxis=dict(title="Jahr", dtick=2),
@@ -1207,6 +1218,25 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _df_rates.style.apply(_color_rows, axis=1),
                     use_container_width=True,
                 )
+
+        # ── Tilgungsplan (aufklappbar) ────────────────────────────────────────
+        if _hyp_info:
+            with st.expander("📋 Tilgungsplan anzeigen", expanded=False):
+                _sched = get_hyp_schedule()
+                if _sched:
+                    _df_tp = pd.DataFrame(_sched)
+                    _df_tp_fmt = pd.DataFrame({
+                        "Jahr": _df_tp["Jahr"].astype(str),
+                        "Restschuld Anfang (€)": _df_tp["Restschuld_Anfang"].map(_de),
+                        "Zinsen (€)": _df_tp["Zinsen"].map(_de),
+                        "Tilgung (€)": _df_tp["Tilgung"].map(_de),
+                        "Sondertilgung (€)": _df_tp["Sondertilgung"].map(_de),
+                        "Jahresausgabe (€)": _df_tp["Jahresausgabe"].map(_de),
+                        "Restschuld Ende (€)": _df_tp["Restschuld_Ende"].map(_de),
+                    })
+                    st.dataframe(_df_tp_fmt.set_index("Jahr"), use_container_width=True)
+                else:
+                    st.caption("Keine Hypothek konfiguriert.")
 
         # ── Zwei-Strategie-Vergleich Netto-Verlauf ────────────────────────────
         with st.expander("📊 Zwei-Strategie-Vergleich", expanded=False):

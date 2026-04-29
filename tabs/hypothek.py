@@ -159,6 +159,13 @@ def get_ausgaben_plan() -> dict[int, float]:
             rate = _annuitaet_rate(restschuld, zins, laufzeit)
             for i in range(laufzeit):
                 plan[endjahr + 1 + i] = plan.get(endjahr + 1 + i, 0.0) + rate
+        elif behandlung == "einmalzahlungen":
+            zins = float(d.get("anschluss_zins_pa", 0.04))
+            laufzeit = int(d.get("anschluss_laufzeit", 10))
+            plan = _ez_ausgaben_plan(
+                list(d.get("anschluss_einmalzahlungen", [])),
+                get_hyp_schedule(), restschuld, endjahr, zins, laufzeit,
+            )
 
     return plan
 
@@ -272,7 +279,7 @@ def get_ausgaben_plan_optimierung(sondertilgung_endjahr: float = 0.0) -> dict[in
     elif behandlung == "einmalzahlungen":
         plan = _ez_ausgaben_plan(
             list(d.get("anschluss_einmalzahlungen", [])),
-            get_hyp_schedule(), eff_rs, endjahr, zins, laufzeit,
+            get_hyp_schedule(), restschuld, endjahr, zins, laufzeit,
         )
     return plan
 
@@ -348,61 +355,40 @@ def _restschuld_vergleich_ui(restschuld: float, endjahr: int, d: dict, _rc: int)
 
     elif behandlung == "einmalzahlungen":
         ezl: list[dict] = list(d.get("anschluss_einmalzahlungen", []))
-        _ez_edit_idx = st.session_state.get("hyp_ez_edit_idx")
         _ez_max_jahr = endjahr + anschluss_laufzeit
 
-        na, nb, nc = st.columns([2, 2, 1])
-        with na:
-            ez_j_new = int(st.number_input(
-                "Jahr der Einmalzahlung", AKTUELLES_JAHR, _ez_max_jahr,
-                value=min(endjahr, _ez_max_jahr), step=1,
-                key=f"rc{_rc}_hyp_ez_j_new",
-            ))
-        with nb:
-            ez_b_new = float(st.number_input(
-                "Betrag (€)", 0.0, float(max(restschuld, 1.0)),
-                value=float(min(restschuld, max(restschuld, 0.0))),
-                step=1_000.0, key=f"rc{_rc}_hyp_ez_b_new",
-            ))
-        with nc:
-            st.write(""); st.write("")
-            if st.button("＋", key=f"rc{_rc}_hyp_ez_add", help="Hinzufügen"):
-                ezl.append({"jahr": ez_j_new, "betrag": ez_b_new})
-                ezl.sort(key=lambda e: e["jahr"])
-                st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
-                st.rerun()
+        for _ei, _ee in enumerate(ezl):
+            _ec1, _ec2, _ec3, _ec4 = st.columns([2, 3, 1, 1])
+            with _ec1:
+                _new_j = _ec1.number_input(
+                    "Jahr", AKTUELLES_JAHR, _ez_max_jahr,
+                    value=int(_ee["jahr"]), step=1,
+                    key=f"rc{_rc}_hyp_ez_j_{_ei}",
+                )
+            with _ec2:
+                _new_b = _ec2.number_input(
+                    "Betrag (€)", 0.0, 10_000_000.0,
+                    value=float(_ee["betrag"]), step=1_000.0,
+                    key=f"rc{_rc}_hyp_ez_b_{_ei}",
+                )
+            with _ec3:
+                _ec3.write(""); _ec3.write("")
+                if _ec3.button("Ändern", key=f"rc{_rc}_hyp_ez_chg_{_ei}", help="Änderung speichern"):
+                    ezl[_ei] = {"jahr": int(_new_j), "betrag": float(_new_b)}
+                    ezl.sort(key=lambda e: e["jahr"])
+                    st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
+                    st.rerun()
+            with _ec4:
+                _ec4.write(""); _ec4.write("")
+                if _ec4.button("🗑", key=f"rc{_rc}_hyp_ez_del_{_ei}", help="Entfernen"):
+                    ezl.pop(_ei)
+                    st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
+                    st.rerun()
 
-        for zi, ze in enumerate(ezl):
-            if _ez_edit_idx == zi:
-                ec1, ec2, ec3 = st.columns([2, 2, 1])
-                with ec1:
-                    edit_j = int(st.number_input("Jahr", AKTUELLES_JAHR, _ez_max_jahr,
-                        value=int(ze["jahr"]), step=1, key=f"rc{_rc}_hyp_ez_ej_{zi}"))
-                with ec2:
-                    edit_b = float(st.number_input("Betrag (€)", 0.0, float(max(restschuld, 1.0)),
-                        value=float(ze["betrag"]), step=1_000.0, key=f"rc{_rc}_hyp_ez_eb_{zi}"))
-                with ec3:
-                    st.write(""); st.write("")
-                    if st.button("✓", key=f"rc{_rc}_hyp_ez_save_{zi}", help="Speichern"):
-                        ezl[zi] = {"jahr": edit_j, "betrag": edit_b}
-                        ezl.sort(key=lambda e: e["jahr"])
-                        st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
-                        st.session_state.pop("hyp_ez_edit_idx", None)
-                        st.rerun()
-            else:
-                zc1, zc2, zc3 = st.columns([5, 1, 1])
-                with zc1:
-                    st.write(f"**{ze['jahr']}**: {_de(ze['betrag'])} €")
-                with zc2:
-                    if st.button("✏", key=f"rc{_rc}_hyp_ez_edit_{zi}", help="Bearbeiten"):
-                        st.session_state["hyp_ez_edit_idx"] = zi
-                        st.rerun()
-                with zc3:
-                    if st.button("✕", key=f"rc{_rc}_hyp_ez_del_{zi}", help="Entfernen"):
-                        ezl.pop(zi)
-                        st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
-                        st.session_state.pop("hyp_ez_edit_idx", None)
-                        st.rerun()
+        if st.button("➕ Einmalzahlung hinzufügen", key=f"rc{_rc}_hyp_ez_add"):
+            ezl.append({"jahr": min(endjahr, _ez_max_jahr), "betrag": 10_000.0})
+            st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
+            st.rerun()
 
         if ezl:
             _total_ez = sum(float(e["betrag"]) for e in ezl)
@@ -419,6 +405,7 @@ def _restschuld_vergleich_ui(restschuld: float, endjahr: int, d: dict, _rc: int)
                 )
         else:
             st.caption("Noch keine Einmalzahlungen erfasst.")
+
 
 
 def render(T: dict, _rc: int) -> None:
