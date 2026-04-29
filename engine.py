@@ -1325,6 +1325,7 @@ def _netto_ueber_horizont(
             **{f"Kap_Pool_{_pid}":       round(_kap_pools.get(_pid, 0.0)) for _pid in _ka_prods},
             **{f"Src_Kap_{_pid}": round(kap_verzehr_j_per_prod.get(_pid, 0.0)) for _pid in _ka_prods},
             "Sonderausgabe":      round(sonderausgabe_j),
+            "Kap_Sonder_Tilgung": round(kap_tilgung_sonder_j),
             "Kap_Fehlbetrag":     round(fehlbetrag_j),
             "Kap_Injektion":      round(kap_net_inj_j),
             "LHK":                round(lhk_j),

@@ -885,18 +885,23 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _hat_pool_y2 = False
         if _has_pool_data:
             _hat_pool_y2 = True
-            _pf_inj_col = "Kap_Injektion"
-            _pf_vzr_col = "Src_Kapitalverzehr"
+            _pf_inj_col    = "Kap_Injektion"
+            _pf_vzr_col    = "Src_Kapitalverzehr"
+            _pf_sonder_col = "Kap_Sonder_Tilgung"
             _pf_all_yrs = sorted(set(
                 (list(df_jd[df_jd[_pf_inj_col] > 0].index)
                  if _pf_inj_col in df_jd.columns else [])
                 + (list(df_jd[df_jd[_pf_vzr_col] > 0].index)
                    if _pf_vzr_col in df_jd.columns else [])
+                + (list(df_jd[df_jd[_pf_sonder_col] > 0].index)
+                   if _pf_sonder_col in df_jd.columns else [])
             ))
             def _pf_val(col, j):
                 return float(df_jd.loc[j, col]) if col in df_jd.columns and j in df_jd.index else 0.0
             _pf_inj  = {j: _pf_val(_pf_inj_col, j) for j in _pf_all_yrs}
-            _pf_vzr  = {j: _pf_val(_pf_vzr_col, j) for j in _pf_all_yrs}
+            # Gesamtentnahme aus Pool = laufende Annuität + Sonderentnahmen (ausgaben_plan)
+            _pf_vzr  = {j: _pf_val(_pf_vzr_col, j) + _pf_val(_pf_sonder_col, j)
+                        for j in _pf_all_yrs}
             _pf_net  = {j: _pf_inj[j] - _pf_vzr[j] for j in _pf_all_yrs}  # + = mehr eingebracht
 
             def _pf_hover_text(j):
@@ -906,8 +911,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     parts.append(f"Einzahlung: {_de(_pf_inj[j])} €")
                     if ki_det:
                         parts.append(f"<i>{ki_det}</i>")
-                if _pf_vzr[j] > 0:
-                    parts.append(f"Entnahme: {_de(_pf_vzr[j])} €")
+                _vzr_lfd    = _pf_val(_pf_vzr_col, j)
+                _vzr_sonder = _pf_val(_pf_sonder_col, j)
+                if _vzr_lfd > 0 and _vzr_sonder > 0:
+                    parts.append(f"Entnahme: {_de(_vzr_lfd + _vzr_sonder)} €")
+                    parts.append(f"<i>  lfd. {_de(_vzr_lfd)} € / Sonder {_de(_vzr_sonder)} €</i>")
+                elif _vzr_lfd > 0:
+                    parts.append(f"Entnahme: {_de(_vzr_lfd)} €")
+                elif _vzr_sonder > 0:
+                    parts.append(f"Sonderentnahme: {_de(_vzr_sonder)} €")
                 net = _pf_net[j]
                 parts.append(f"Netto: {'−' if net < 0 else '+'}{_de(abs(net))} €")
                 return "<br>".join(parts)
@@ -922,6 +934,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 y=[-_pf_abs[j] for j in _pf_all_yrs],  # immer nach unten
                 text=[_pf_arrow[j] for j in _pf_all_yrs],
                 textposition="inside",
+                insidetextanchor="middle",
+                textangle=0,           # verhindert auto-Rotation in schmalen Säulen
+                constraintext="none",  # immer anzeigen, auch wenn Säule sehr klein
                 textfont=dict(size=14, color="white"),
                 marker_color="#00838F",
                 opacity=0.87,
@@ -1045,13 +1060,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _y1_lo = min(_y1_lo_data * 1.08, -_y1_hi * 0.05)
 
         _has_einmal_annotations = any(_einmal_info.get(j) for j in _jahre)
+        # Legende über dem Diagramm positionieren:
+        # y=1.25 + t=180 px → Legende liegt oberhalb der Jahres-Annotations (y=1.08).
+        # y=1.0  + t=100 px → ohne Annotations genug Platz für 2–3 Legendenzeilen.
+        _legend_y = 1.25 if _has_einmal_annotations else 1.0
+        _margin_t = 180 if _has_einmal_annotations else 100
         _src_layout: dict = dict(
-            barmode="stack", template="plotly_white", height=400,
+            barmode="stack", template="plotly_white", height=520,
             xaxis=dict(title="Jahr", dtick=2),
             yaxis=dict(title="€ / Jahr (brutto)", tickformat=",.0f",
                        range=[_y1_lo, _y1_hi]),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            margin=dict(l=10, r=10, t=90 if _has_einmal_annotations else 50, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=_legend_y, xanchor="right", x=1),
+            margin=dict(l=10, r=10, t=_margin_t, b=10),
             separators=",.",
         )
         if _hat_pool_y2:
