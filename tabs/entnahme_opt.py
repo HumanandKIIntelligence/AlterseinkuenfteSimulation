@@ -706,10 +706,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 ausgaben_plan=_ausgaben_plan if _ausgaben_plan else None,
             )
 
-        # Kennzahlen
-        _df_kc = pd.DataFrame(opt["jahresdaten"])
+        # Kennzahlen – verwende Override-Simulation wenn aktiv
+        _eff_netto   = _override_netto   if _override_netto   is not None else opt["bestes_netto"]
+        _eff_jd_raw  = _override_jd_raw  if _override_jd_raw  is not None else opt["jahresdaten"]
+        _df_kc = pd.DataFrame(_eff_jd_raw)
         _netto_arbeit = _df_kc.loc[_df_kc.get("Src_Gehalt", pd.Series(0, index=_df_kc.index)) > 0, "Netto"].sum() if "Src_Gehalt" in _df_kc.columns else 0
-        _netto_rente  = _df_kc.loc[_df_kc.get("Src_Gehalt", pd.Series(0, index=_df_kc.index)) == 0, "Netto"].sum() if "Src_Gehalt" in _df_kc.columns else opt["bestes_netto"]
+        _netto_rente  = _df_kc.loc[_df_kc.get("Src_Gehalt", pd.Series(0, index=_df_kc.index)) == 0, "Netto"].sum() if "Src_Gehalt" in _df_kc.columns else _eff_netto
 
         if _netto_arbeit > 0:
             kc1, kc2, kc3, kc4 = st.columns(4)
@@ -717,20 +719,21 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                        help="Summe Netto-Jahreseinkommen in aktiven Berufsjahren.")
             kc2.metric("Netto Rentenphase", f"{_de(_netto_rente)} €",
                        help=f"Summe Netto-Jahreseinkommen in {horizon} Rentenjahren.")
-            delta_mono = opt["bestes_netto"] - opt["netto_alle_monatlich"]
+            delta_mono = _eff_netto - opt["netto_alle_monatlich"]
             kc3.metric("Vorteil vs. alles monatlich",
                        f"{'+' if delta_mono >= 0 else ''}{_de(delta_mono)} €", delta_color="normal")
-            delta_einmal = opt["bestes_netto"] - opt["netto_alle_einmal"]
+            delta_einmal = _eff_netto - opt["netto_alle_einmal"]
             kc4.metric("Vorteil vs. alles Einmal",
                        f"{'+' if delta_einmal >= 0 else ''}{_de(delta_einmal)} €", delta_color="normal")
         else:
             kc1, kc2, kc3, kc4 = st.columns(4)
-            kc1.metric("Netto optimal (gesamt)", f"{_de(opt['bestes_netto'])} €",
+            _kc1_label = "Netto benutzerdefiniert (gesamt)" if _override_netto is not None else "Netto optimal (gesamt)"
+            kc1.metric(_kc1_label, f"{_de(_eff_netto)} €",
                        help=f"Summe aller Netto-Jahreseinkommen über {horizon} Jahre.")
-            delta_mono = opt["bestes_netto"] - opt["netto_alle_monatlich"]
+            delta_mono = _eff_netto - opt["netto_alle_monatlich"]
             kc2.metric("Vorteil vs. alles monatlich",
                        f"{'+' if delta_mono >= 0 else ''}{_de(delta_mono)} €", delta_color="normal")
-            delta_einmal = opt["bestes_netto"] - opt["netto_alle_einmal"]
+            delta_einmal = _eff_netto - opt["netto_alle_einmal"]
             kc3.metric("Vorteil vs. alles Einmal",
                        f"{'+' if delta_einmal >= 0 else ''}{_de(delta_einmal)} €", delta_color="normal")
             kc4.metric("Kombinationen geprüft", f"{opt['anzahl_kombinationen']:,}")
@@ -1545,18 +1548,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             with st.expander("ℹ️ Was bedeuten Pool-Einzahlung und Pool-Entnahme?", expanded=False):
                 st.markdown(
                     "**Pool-Einzahlung** (türkiser Balken, rechte Achse)  \n"
-                    "Ein Vorsorgevertrag (z.B. Lebensversicherung, ETF-Sparplan) wird in dem Jahr "
-                    "als Einmalbetrag ausgezahlt. Anstatt diesen Betrag sofort als Einkommen zu verbuchen "
-                    "– was eine hohe Steuerprogression auslösen würde – wird er in einen internen "
-                    "**Kapitalpool** eingezahlt und dort weiter verzinst.\n\n"
+                    "Ein Vorsorgevertrag (z.B. Lebensversicherung, ETF-Sparplan) wird als Einmalbetrag "
+                    "ausgezahlt. Die App berechnet für jedes Produkt genau die gesetzlich anfallende "
+                    "Steuer und Krankenversicherung (ETF: Abgeltungsteuer 25 %; LV/Private Rente: "
+                    "Halbeinkünfte- oder Abgeltungsverfahren; bAV/Riester: voller Einkommensteuersatz). "
+                    "Nur der **verbleibende Nettobetrag** fließt in den internen **Kapitalpool** "
+                    "und wird dort weiter verzinst.\n\n"
                     "**Pool-Entnahme** (roter Balken, rechte Achse)  \n"
                     "In den Folgejahren wird aus diesem Pool eine gleichbleibende **Jahresrate (Annuität)** "
                     "entnommen. Diese Rate erscheint als \"Kapitalverzehr (Pool)\" in den grünen Balken "
                     "auf der linken Achse und erhöht Ihr Nettoeinkommen.\n\n"
                     "**Warum macht das Sinn?**  \n"
-                    "Eine einmalige große Auszahlung würde komplett mit dem Spitzensteuersatz besteuert. "
-                    "Wird das Kapital dagegen über viele Jahre verteilt entnommen, bleibt man in "
-                    "niedrigeren Steuerzonen – das erhöht das Netto über den gesamten Zeitraum.\n\n"
+                    "Eine einmalige große Auszahlung würde mit dem Spitzensteuersatz des Auszahlungsjahres "
+                    "besteuert. Wird das Kapital dagegen über viele Jahre als Annuität entnommen, bleibt "
+                    "man in niedrigeren Steuerzonen – das erhöht das Netto über den gesamten Zeitraum.\n\n"
                     "**Tipp:** Wie hoch die jährliche Pool-Entnahme ist, hängt vom Planungshorizont "
                     "(Slider oben) und der Pool-Rendite im Tab ⚙️ Profil → Erweiterte Einstellungen ab."
                 )

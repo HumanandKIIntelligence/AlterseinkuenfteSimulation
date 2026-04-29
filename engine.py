@@ -945,7 +945,10 @@ def _netto_ueber_horizont(
             _kap_bases[_pid] = max(0.0, _kap_bases[_pid] - (_verzehr - _gains))
             kap_verzehr_j_per_prod[_pid] = _verzehr
             kap_verzehr_j += _verzehr
-        kap_injection_gross_per_prod: dict[str, float] = {}   # Injektionen dieses Jahres
+        kap_injection_gross_per_prod:  dict[str, float] = {}   # Injektionen dieses Jahres
+        kap_injection_zvE_per_prod:    dict[str, float] = {}   # P1 zvE-Beitrag je Produkt
+        kap_injection_p2zvE_per_prod:  dict[str, float] = {}   # P2 zvE-Beitrag je Produkt
+        kap_injection_abgelt_per_prod: dict[str, float] = {}   # Abgelt-Basis-Beitrag je Produkt
         kap_injection_gross_j = 0.0
 
         # ── GFB-Wachstum: wachsender Grundfreibetrag für dieses Simulationsjahr ──
@@ -996,6 +999,10 @@ def _netto_ueber_horizont(
                         else:
                             etf_brutto_j += betrag
                             etf_abgelt_j += _abgelt
+                        if prod.als_kapitalanlage:
+                            kap_injection_abgelt_per_prod[prod.id] = (
+                                kap_injection_abgelt_per_prod.get(prod.id, 0.0) + _abgelt
+                            )
                     else:
                         if _is_p2:
                             p2_einmal_brutto_j += betrag
@@ -1004,10 +1011,16 @@ def _netto_ueber_horizont(
                         if ist_bav or ist_riester:
                             if _is_p2: p2_einmal_progr_j += betrag
                             else: einmal_progr_j += betrag
+                            if prod.als_kapitalanlage:
+                                _t = kap_injection_p2zvE_per_prod if _is_p2 else kap_injection_zvE_per_prod
+                                _t[prod.id] = _t.get(prod.id, 0.0) + betrag
                         elif ist_ruerup:
                             _bp = betrag * besteuerungsanteil(startjahr)
                             if _is_p2: p2_einmal_progr_j += _bp
                             else: einmal_progr_j += _bp
+                            if prod.als_kapitalanlage:
+                                _t = kap_injection_p2zvE_per_prod if _is_p2 else kap_injection_zvE_per_prod
+                                _t[prod.id] = _t.get(prod.id, 0.0) + _bp
                         else:
                             # LV / PrivateRente: § 20 Abs. 1 Nr. 6 EStG
                             ertrag = max(0.0, betrag - _einz_eff * anteil)
@@ -1020,9 +1033,16 @@ def _netto_ueber_horizont(
                                 if laufzeit_vtr >= 12 and alter_az >= min_alter_hb:
                                     if _is_p2: p2_einmal_progr_j += ertrag * 0.5
                                     else: einmal_progr_j += ertrag * 0.5
+                                    if prod.als_kapitalanlage:
+                                        _t = kap_injection_p2zvE_per_prod if _is_p2 else kap_injection_zvE_per_prod
+                                        _t[prod.id] = _t.get(prod.id, 0.0) + ertrag * 0.5
                                 else:
                                     if _is_p2: p2_einmal_abgelt_j += ertrag
                                     else: einmal_abgelt_j += ertrag
+                                    if prod.als_kapitalanlage:
+                                        kap_injection_abgelt_per_prod[prod.id] = (
+                                            kap_injection_abgelt_per_prod.get(prod.id, 0.0) + ertrag
+                                        )
 
                 # KV-Verteilung bAV-Einmal über 10 Jahre (§ 229 Abs. 1 S. 3 SGB V)
                 if ist_bav and 0 <= jahr - startjahr < 10:
@@ -1128,6 +1148,7 @@ def _netto_ueber_horizont(
             p2_kv_j = _p2_kv_basis_mono * 12 * _p2_kv_rate_halb
 
         # ── Einkommensteuer ───────────────────────────────────────────────────
+        _gfb_p2_y = None   # P2 GFB (wird ggf. in Getrennt-Block gesetzt)
         # Progressionsvorbehalt §32b EStG (z.B. ATZ-Aufstockungsbetrag): nur Arbeitsjahre,
         # nur Nicht-Beamte; erhöht Steuersatz auf reguläres zvE, ist selbst steuerfrei.
         _pv_zusatz = (profil.zusatzentgelt_jaehrlich
@@ -1193,6 +1214,8 @@ def _netto_ueber_horizont(
         steuer = steuer_progr + _soli_j + steuer_abgelt + _kist
 
         # ── KV / PV ───────────────────────────────────────────────────────────
+        _kv_p1_grv_basis    = 0.0   # für marginale KV-Berechnung bei Pool-Injektion
+        _kv_p1_non_grv_mono = 0.0
         if ist_pkv:
             kv_p1 = profil.pkv_beitrag * 12
         elif not in_rente:
@@ -1222,6 +1245,8 @@ def _netto_ueber_horizont(
             _kv_gkv = (_grv_kv_basis * (0.073 + profil.gkv_zusatzbeitrag / 2)
                        + _non_grv_kv * (0.146 + profil.gkv_zusatzbeitrag))
             kv_p1 = (_kv_gkv + _total_kv * _pv_voll) * 12
+            _kv_p1_grv_basis    = _grv_kv_basis   # gespeichert für marginale KV
+            _kv_p1_non_grv_mono = _non_grv_mono
         else:
             # KVdR §229 SGB V: nur gesetzl. Rente + bAV (abzgl. Freibetrag); DRV zahlt halben Satz
             bav_kv_mono  = (bav_lfd_j + bav_einmal_kv_j) / 12
@@ -1242,13 +1267,67 @@ def _netto_ueber_horizont(
         )
         netto = brutto - steuer - kv
 
-        # ── Kapitalanlage-Pool-Einzahlung: Netto-Anteil pro Produkt umleiten ──
+        # ── Kapitalanlage-Pool-Einzahlung: Netto-Anteil per marginalem Steuersatz ──
+        # Für jedes Produkt wird der exakte Steuer- und KV-Anteil ermittelt,
+        # der auf die Einmalauszahlung entfällt (marginal, nicht proportional).
         kap_net_inj_j = 0.0
         kap_net_inj_per_prod: dict[str, float] = {}
-        if kap_injection_gross_j > 0 and brutto > 0:
-            _eff_net = max(0.0, netto / brutto)
+        if kap_injection_gross_j > 0:
             for _pid, _gross_inj in kap_injection_gross_per_prod.items():
-                _net_inj = _gross_inj * _eff_net
+                _zvE_c   = kap_injection_zvE_per_prod.get(_pid, 0.0)
+                _p2zvE_c = kap_injection_p2zvE_per_prod.get(_pid, 0.0)
+                _abg_c   = kap_injection_abgelt_per_prod.get(_pid, 0.0)
+
+                # Marginale progressive Steuer (ESt + Soli + KiSt) auf zvE-Beitrag
+                _marg_est = 0.0
+                _marg_soli = 0.0
+                _marg_kist = 0.0
+                if zusammen and (_zvE_c + _p2zvE_c) > 0:
+                    _joint_c = _zvE_c + _p2zvE_c
+                    _est_less = einkommensteuer_splitting(max(0.0, zvE_joint - _joint_c), _gfb_y)
+                    _marg_est  = steuer_progr - _est_less
+                    _marg_soli = _soli_j - solidaritaetszuschlag(_est_less)
+                    if profil.kirchensteuer:
+                        _marg_kist += profil.kirchensteuer_satz * _marg_est * 0.5
+                    if profil2 is not None and profil2.kirchensteuer:
+                        _marg_kist += profil2.kirchensteuer_satz * _marg_est * 0.5
+                elif _zvE_c > 0:
+                    # Solo oder Getrennt – P1-Anteil
+                    _est_p1_full = einkommensteuer(zvE_p1, _gfb_y)
+                    _est_p1_less = einkommensteuer(max(0.0, zvE_p1 - _zvE_c), _gfb_y)
+                    _marg_est  = _est_p1_full - _est_p1_less
+                    _marg_soli = solidaritaetszuschlag(_est_p1_full) - solidaritaetszuschlag(_est_p1_less)
+                    _marg_kist = profil.kirchensteuer_satz * _marg_est if profil.kirchensteuer else 0.0
+                elif _p2zvE_c > 0 and hat_partner and not zusammen:
+                    # Getrenntveranlagung – P2-Anteil
+                    _est_p2_full = einkommensteuer(max(0.0, p2_zvE_j), _gfb_p2_y)
+                    _est_p2_less = einkommensteuer(max(0.0, p2_zvE_j - _p2zvE_c), _gfb_p2_y)
+                    _marg_est  = _est_p2_full - _est_p2_less
+                    _marg_soli = solidaritaetszuschlag(_est_p2_full) - solidaritaetszuschlag(_est_p2_less)
+                    if profil2 is not None and profil2.kirchensteuer:
+                        _marg_kist = profil2.kirchensteuer_satz * _marg_est
+
+                # Marginale Abgeltungsteuer (proportional zur Abgelt-Basis)
+                _marg_abgelt = (_abg_c / abgelt_pool * steuer_abgelt
+                                if _abg_c > 0 and abgelt_pool > 0 else 0.0)
+
+                # Marginale KV (nur freiwillig GKV, P1-Produkte)
+                _marg_kv = 0.0
+                if ist_freiwillig and _p2zvE_c == 0 and kap_injection_abgelt_per_prod.get(_pid, 0.0) == _abg_c:
+                    # Schätze marginale freiwillig-KV: Injektion war in _non_grv_mono
+                    _inj_non = max(0.0, _kv_p1_non_grv_mono - _gross_inj / 12)
+                    _inj_nkv = min(_inj_non, max(0.0, BBG_KV_MONATLICH - _kv_p1_grv_basis))
+                    _inj_tot = _kv_p1_grv_basis + _inj_nkv
+                    if _inj_tot < MINDEST_BMG_FREIWILLIG_MONO:
+                        _inj_nkv += MINDEST_BMG_FREIWILLIG_MONO - _inj_tot
+                        _inj_tot  = MINDEST_BMG_FREIWILLIG_MONO
+                    _kv_gkv_less = (_kv_p1_grv_basis * (0.073 + profil.gkv_zusatzbeitrag / 2)
+                                    + _inj_nkv * (0.146 + profil.gkv_zusatzbeitrag))
+                    _kv_p1_less = (_kv_gkv_less + _inj_tot * _pv_voll) * 12
+                    _marg_kv = max(0.0, kv_p1 - _kv_p1_less)
+
+                _net_inj = max(0.0, _gross_inj - _marg_est - _marg_soli - _marg_kist
+                               - _marg_abgelt - _marg_kv)
                 kap_net_inj_per_prod[_pid] = _net_inj
                 kap_net_inj_j += _net_inj
             netto -= kap_net_inj_j
