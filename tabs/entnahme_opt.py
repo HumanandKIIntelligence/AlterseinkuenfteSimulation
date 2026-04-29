@@ -732,6 +732,108 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _akc4.metric("Gesamtzinsen", f"{_de(_ak_zinsen)} €",
                          help=f"Gesamtbelastung {_de(_ak_gesamt)} €")
 
+            # ── Marginalkostenvergleich: Früh auszahlen vs. Anschlusskredit ─────
+            _hvp_prods = [
+                p for p in _produkte_obj_run
+                if p.id != "__sparkapital__"
+                and p.max_einmalzahlung > 0
+                and p.spaetestes_startjahr > p.fruehestes_startjahr
+            ]
+            if _hvp_prods:
+                with st.expander("🔄 Frühauszahlung vs. Anschlusskredit – Vergleich", expanded=True):
+                    st.caption(
+                        "Vergleich: Produkt-Nettobetrag zur Tilgung des Anschlusskredits nutzen "
+                        "(Frühauszahlung) vs. investiert lassen bis zum spätestmöglichen Startjahr. "
+                        "**Positiver Netto-Vorteil** = Frühauszahlung und Tilgung lohnt sich. "
+                        "Steuer vereinfacht (25 % Abgeltungsteuer auf Kursgewinne, ETF 17,5 % nach Teilfreistellung)."
+                    )
+                    _ak_zinsen_gesamt = _ak_rate_j * _anschluss_lz - _rs
+
+                    _hvp_rows = []
+                    for _hp in _hvp_prods:
+                        _F = _hp.fruehestes_startjahr
+                        _S = _hp.spaetestes_startjahr
+                        _n = _S - _F
+
+                        _aufsch_r = max(0.0, _hp.aufschub_rendite)
+                        _V_F = _hp.max_einmalzahlung
+                        _V_S = _V_F * (1.0 + _aufsch_r) ** _n
+
+                        _eff_tax = 0.175 if (_hp.typ == "ETF" and not getattr(_hp, "etf_ausschuettend", False)) else 0.25
+                        _einz_F = _hp.einzahlungen_effektiv(_F)
+                        _einz_S = _hp.einzahlungen_effektiv(_S)
+                        _gewinn_F = max(0.0, _V_F - _einz_F)
+                        _gewinn_S = max(0.0, _V_S - _einz_S)
+                        _V_F_net = _V_F - _gewinn_F * _eff_tax
+                        _V_S_net = _V_S - _gewinn_S * _eff_tax
+
+                        # Beitragsersparnis: Einzahlungen von F bis S, die bei Frühauszahlung entfallen
+                        _beitr_F_S = sum(
+                            _hp.jaehrl_einzahlung * (1.0 + _hp.jaehrl_dynamik) ** max(0, j - AKTUELLES_JAHR)
+                            for j in range(_F, _S)
+                        ) if _hp.jaehrl_einzahlung > 0 else 0.0
+
+                        # Zinseinsparung durch Teilrückzahlung des Anschlusskredits
+                        _tilgung = min(_V_F_net, _rs)
+                        _neue_rs = max(0.0, _rs - _tilgung)
+                        if _neue_rs > 0.01:
+                            _ak_zinsen_mit = _annuitaet_rate(_neue_rs, _markt_zins_pa, _anschluss_lz) * _anschluss_lz - _neue_rs
+                        else:
+                            _ak_zinsen_mit = 0.0
+                        _zinseinsparung = _ak_zinsen_gesamt - _ak_zinsen_mit
+
+                        _renditeverlust = _V_S_net - _V_F_net
+                        _netto_vorteil = _zinseinsparung + _beitr_F_S - _renditeverlust
+
+                        # Break-Even Rendite p.a.: Rendite ab der Investiert-Bleiben rentabler ist
+                        if _n > 0 and _V_F > 0:
+                            _be_num = _V_F_net - _einz_S * _eff_tax + _zinseinsparung + _beitr_F_S
+                            _be_den = _V_F * (1.0 - _eff_tax)
+                            if _be_num > 0 and _be_den > 0:
+                                _be_r = (_be_num / _be_den) ** (1.0 / _n) - 1.0
+                                _be_str = f"{_be_r * 100:.2f} %"
+                            else:
+                                _be_str = "–"
+                        else:
+                            _be_str = "–"
+
+                        _hvp_rows.append({
+                            "Produkt": f"{_hp.name} ({_hp.typ})",
+                            "Früh": _F,
+                            "Spät": _S,
+                            "Netto früh (€)": _de(_V_F_net),
+                            "Netto spät (€)": _de(_V_S_net),
+                            "Zinseinsparung (€)": _de(_zinseinsparung),
+                            "Beitragsersparnis (€)": _de(_beitr_F_S),
+                            "Renditeverlust (€)": _de(_renditeverlust),
+                            "Netto-Vorteil (€)": (f"+{_de(_netto_vorteil)}" if _netto_vorteil >= 0
+                                                   else _de(_netto_vorteil)),
+                            "Break-Even p.a.": _be_str,
+                            "_vorteil_raw": _netto_vorteil,
+                        })
+
+                    if _hvp_rows:
+                        _hvp_df = (
+                            pd.DataFrame(_hvp_rows)
+                            .set_index("Produkt")
+                            .drop(columns=["_vorteil_raw"])
+                        )
+                        st.dataframe(_hvp_df, use_container_width=True)
+
+                        _best_hvp = max(_hvp_rows, key=lambda r: r["_vorteil_raw"])
+                        if _best_hvp["_vorteil_raw"] > 0:
+                            _best_name = _best_hvp["Produkt"].rsplit("(", 1)[0].strip()
+                            st.success(
+                                f"✅ **{_best_name}**: Frühauszahlung ({_best_hvp['Früh']}) "
+                                f"spart netto **{_de(_best_hvp['_vorteil_raw'])} €** "
+                                f"gegenüber Aufschub bis {_best_hvp['Spät']}."
+                            )
+                        else:
+                            st.info(
+                                "ℹ️ Bei keinem Produkt lohnt sich die Frühauszahlung zur "
+                                "Hypothekentilgung gegenüber dem Aufschub bis zum spätestmöglichen Startjahr."
+                            )
+
         st.divider()
 
         # ── Strategievergleich ────────────────────────────────────────────────
@@ -898,6 +1000,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             ("Kap_Injektion" in df_jd.columns and df_jd["Kap_Injektion"].sum() > 0)
             or ("Src_Kapitalverzehr" in df_jd.columns and df_jd["Src_Kapitalverzehr"].sum() > 0)
         )
+        _sonder_yrs_chart: dict[int, float] = {}
+        if _hyp_info and not _has_pool_data:
+            for _sc_s in get_hyp_schedule():
+                if _sc_s["Sondertilgung"] > 0 and _sc_s["Jahr"] in df_jd.index:
+                    _sonder_yrs_chart[_sc_s["Jahr"]] = _sc_s["Sondertilgung"]
+        _pf_abs: dict[int, float] = {}
+
         if _entnahmen_dict and not _has_pool_data:
             _en_yrs_src = [j for j in _entnahmen_dict if j in df_jd.index]
             if _en_yrs_src:
@@ -983,6 +1092,22 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     customdata=[_pf_vzr_hover(j) for j in _pf_vzr_yrs],
                     hovertemplate="%{x|.0f}:<br>%{customdata}<extra>Pool-Entnahme</extra>",
                 ))
+
+        if _sonder_yrs_chart and not _has_pool_data:
+            _hat_pool_y2 = True
+            for _stj, _sta in _sonder_yrs_chart.items():
+                _pf_abs[_stj] = max(_pf_abs.get(_stj, 0.0), _sta)
+            _st_chart_yrs = sorted(_sonder_yrs_chart)
+            fig_src.add_trace(go.Bar(
+                name="Sondertilgung",
+                x=_st_chart_yrs,
+                y=[-_sonder_yrs_chart[j] for j in _st_chart_yrs],
+                width=0.6,
+                marker_color="#E53935",
+                opacity=0.87,
+                yaxis="y2",
+                hovertemplate="%{x|.0f}: %{y:,.0f} € Sondertilgung<extra>Sondertilgung</extra>",
+            ))
 
         # Netto-Linie mit Hover-Details zu allen Abzügen
         _netto_hover = []
@@ -1527,10 +1652,22 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             if _sched_spar:
                 _rs_x: list[int] = []
                 _rs_y: list[float] = []
+                _rs_st_x: list[int] = []
+                _rs_st_y: list[float] = []
+                _rs_st_hover: list[str] = []
                 for _s in _sched_spar:
                     if _s["Restschuld_Anfang"] > 0:
                         _rs_x.append(_s["Jahr"])
                         _rs_y.append(_s["Restschuld_Anfang"])
+                        if _s.get("Sondertilgung", 0) > 0:
+                            _rs_x.append(_s["Jahr"])
+                            _rs_y.append(_s["Restschuld_Ende"])
+                            _rs_st_x.append(_s["Jahr"])
+                            _rs_st_y.append(_s["Restschuld_Anfang"])
+                            _rs_st_hover.append(
+                                f"{_s['Jahr']}: Sondertilgung {_de(_s['Sondertilgung'])} €"
+                                f"<br>Restschuld: {_de(_s['Restschuld_Anfang'])} → {_de(_s['Restschuld_Ende'])} €"
+                            )
                     if _s["Restschuld_Ende"] <= 0:
                         break
                 if _rs_x:
@@ -1541,6 +1678,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         line=dict(color="#D32F2F", width=2, dash="dash"),
                         marker=dict(size=5, symbol="diamond"),
                         hovertemplate="%{x}: %{y:,.0f} € Restschuld<extra>Restschuld</extra>",
+                    ))
+                if _rs_st_x:
+                    fig_spar.add_trace(go.Scatter(
+                        name="Sondertilgung",
+                        x=_rs_st_x, y=_rs_st_y,
+                        mode="markers",
+                        marker=dict(size=12, symbol="star", color="#E53935"),
+                        customdata=_rs_st_hover,
+                        hovertemplate="%{customdata}<extra>Sondertilgung</extra>",
                     ))
 
             # ── Anschlusskredit-Restschuld ───────────────────────────────────
