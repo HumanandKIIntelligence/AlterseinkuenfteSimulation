@@ -816,6 +816,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                                                    else _de(_netto_vorteil)),
                             "Break-Even p.a.": _be_str,
                             "_vorteil_raw": _netto_vorteil,
+                            "_V_F_net": _V_F_net,
+                            "_beitr_F_S": _beitr_F_S,
+                            "_renditeverlust": _renditeverlust,
                         })
 
                     if _hvp_rows:
@@ -878,6 +881,112 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                                 "ℹ️ Bei keinem Produkt lohnt sich die Frühauszahlung zur "
                                 "Hypothekentilgung gegenüber dem Aufschub bis zum spätestmöglichen Startjahr."
                             )
+
+                        # ── Kombinationsanalyse (mehrere Verträge) ────────────────
+                        if len(_hvp_rows) > 1:
+                            st.divider()
+                            st.markdown("**🔗 Kombinierte Frühauszahlung mehrerer Verträge**")
+
+                            # Optimale Teilmenge: zuerst Verträge mit positivem Vorteil,
+                            # dann nach fallend negativem Vorteil auffüllen bis RS gedeckt.
+                            _pos_rows = sorted(
+                                [r for r in _hvp_rows if r["_vorteil_raw"] > 0],
+                                key=lambda r: -r["_vorteil_raw"],
+                            )
+                            _neg_rows = sorted(
+                                [r for r in _hvp_rows if r["_vorteil_raw"] <= 0],
+                                key=lambda r: -r["_vorteil_raw"],  # least negative first
+                            )
+                            _pos_net = sum(r["_V_F_net"] for r in _pos_rows)
+
+                            if _pos_net >= _eff_ak_rs:
+                                # Nur positive Verträge reichen – prüfe welche minimal nötig
+                                _opt_subset: list[dict] = []
+                                _opt_net = 0.0
+                                for _rr in _pos_rows:
+                                    _opt_subset.append(_rr)
+                                    _opt_net += _rr["_V_F_net"]
+                                    if _opt_net >= _eff_ak_rs:
+                                        break
+                                _subset_label = "Nur rentable Verträge (positiver Netto-Vorteil)"
+                            else:
+                                # Auch weniger rentable Verträge einbeziehen
+                                _opt_subset = list(_pos_rows)
+                                _opt_net = _pos_net
+                                for _rr in _neg_rows:
+                                    if _opt_net >= _eff_ak_rs:
+                                        break
+                                    _opt_subset.append(_rr)
+                                    _opt_net += _rr["_V_F_net"]
+                                _subset_label = "Alle Verträge inkl. weniger rentabler (für maximale Deckung)"
+
+                            # Kennzahlen für optimale Teilmenge
+                            _kombi_net    = sum(r["_V_F_net"]      for r in _opt_subset)
+                            _kombi_beitr  = sum(r["_beitr_F_S"]    for r in _opt_subset)
+                            _kombi_rdvlst = sum(r["_renditeverlust"] for r in _opt_subset)
+                            _kombi_tilg   = min(_kombi_net, _eff_ak_rs)
+                            _kombi_neue_rs = max(0.0, _eff_ak_rs - _kombi_tilg)
+                            if _kombi_neue_rs > 0.01:
+                                _kombi_ak_nach = (_annuitaet_rate(_kombi_neue_rs, _markt_zins_pa, _anschluss_lz)
+                                                  * _anschluss_lz - _kombi_neue_rs)
+                            else:
+                                _kombi_ak_nach = 0.0
+                            _kombi_zinsen  = _ak_zinsen_gesamt - _kombi_ak_nach
+                            _kombi_vorteil = _kombi_zinsen + _kombi_beitr - _kombi_rdvlst
+                            _kombi_deckung = min(100.0, _kombi_net / _eff_ak_rs * 100)
+
+                            # Anzeige
+                            _kc1, _kc2, _kc3, _kc4 = st.columns(4)
+                            _kc1.metric(
+                                "Kombinierter Nettobetrag",
+                                f"{_de(_kombi_net)} €",
+                                help="Summe der Netto-Frühauszahlungen der ausgewählten Verträge.",
+                            )
+                            _kc2.metric(
+                                "Deckungsgrad",
+                                f"{_kombi_deckung:.0f} %",
+                                help=f"Anteil der Anschlusskredit-Restschuld ({_de(_eff_ak_rs)} €), "
+                                     "der durch die kombinierten Auszahlungen gedeckt wird.",
+                            )
+                            _kc3.metric(
+                                "Zinseinsparung",
+                                f"{_de(_kombi_zinsen)} €",
+                                help="Eingesparte AK-Zinsen durch kombinierte Teil- oder Volltilgung.",
+                            )
+                            _kc4.metric(
+                                "Netto-Vorteil Kombination",
+                                f"{'+' if _kombi_vorteil >= 0 else ''}{_de(_kombi_vorteil)} €",
+                                delta_color="normal",
+                                help="Zinseinsparung + Beitragsersparnis − Renditeverlust aller einbezogenen Verträge.",
+                            )
+
+                            # Einbezogene Verträge
+                            _subset_names = " · ".join(
+                                r["Produkt"].rsplit("(", 1)[0].strip() for r in _opt_subset
+                            )
+                            st.caption(f"Verträge ({len(_opt_subset)}): **{_subset_names}**  \n{_subset_label}")
+
+                            if _kombi_deckung >= 100.0 and _kombi_vorteil > 0:
+                                st.success(
+                                    f"✅ Vollständige Tilgung durch **{len(_opt_subset)} Verträge** möglich. "
+                                    f"Netto-Vorteil der Kombination: **{_de(_kombi_vorteil)} €**"
+                                )
+                            elif _kombi_deckung >= 100.0:
+                                st.warning(
+                                    f"⚠️ Vollständige Tilgung technisch möglich ({len(_opt_subset)} Verträge), "
+                                    f"aber der Renditeverlust überwiegt: Netto-Vorteil **{_de(_kombi_vorteil)} €**."
+                                )
+                            elif _kombi_vorteil > 0:
+                                st.success(
+                                    f"✅ Teilrückzahlung **{_de(_kombi_tilg)} €** ({_kombi_deckung:.0f} %) lohnt sich. "
+                                    f"Netto-Vorteil: **{_de(_kombi_vorteil)} €** · "
+                                    f"Verbleibender AK: **{_de(_kombi_neue_rs)} €**"
+                                )
+                            else:
+                                st.info(
+                                    f"ℹ️ Kombinierte Teilrückzahlung **{_de(_kombi_tilg)} €** ({_kombi_deckung:.0f} %) "
+                                    f"lohnt sich nicht: Netto-Vorteil **{_de(_kombi_vorteil)} €**."
+                                )
 
         st.divider()
 
