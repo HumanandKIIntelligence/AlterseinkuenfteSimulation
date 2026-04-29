@@ -355,57 +355,21 @@ def _restschuld_vergleich_ui(restschuld: float, endjahr: int, d: dict, _rc: int)
 
     elif behandlung == "einmalzahlungen":
         ezl: list[dict] = list(d.get("anschluss_einmalzahlungen", []))
-        _ez_max_jahr = endjahr + anschluss_laufzeit
-
-        for _ei, _ee in enumerate(ezl):
-            _ec1, _ec2, _ec3, _ec4 = st.columns([2, 3, 1, 1])
-            with _ec1:
-                _new_j = _ec1.number_input(
-                    "Jahr", AKTUELLES_JAHR, _ez_max_jahr,
-                    value=int(_ee["jahr"]), step=1,
-                    key=f"rc{_rc}_hyp_ez_j_{_ei}",
-                )
-            with _ec2:
-                _new_b = _ec2.number_input(
-                    "Betrag (€)", 0.0, 10_000_000.0,
-                    value=float(_ee["betrag"]), step=1_000.0,
-                    key=f"rc{_rc}_hyp_ez_b_{_ei}",
-                )
-            with _ec3:
-                _ec3.write(""); _ec3.write("")
-                if _ec3.button("Ändern", key=f"rc{_rc}_hyp_ez_chg_{_ei}", help="Änderung speichern"):
-                    ezl[_ei] = {"jahr": int(_new_j), "betrag": float(_new_b)}
-                    ezl.sort(key=lambda e: e["jahr"])
-                    st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
-                    st.rerun()
-            with _ec4:
-                _ec4.write(""); _ec4.write("")
-                if _ec4.button("🗑", key=f"rc{_rc}_hyp_ez_del_{_ei}", help="Entfernen"):
-                    ezl.pop(_ei)
-                    st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
-                    st.rerun()
-
-        if st.button("➕ Einmalzahlung hinzufügen", key=f"rc{_rc}_hyp_ez_add"):
-            ezl.append({"jahr": min(endjahr, _ez_max_jahr), "betrag": 10_000.0})
-            st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = ezl
-            st.rerun()
-
         if ezl:
             _total_ez = sum(float(e["betrag"]) for e in ezl)
             _ak_rs = max(0.0, restschuld - sum(
                 float(e["betrag"]) for e in ezl if int(e["jahr"]) <= endjahr
             ))
             if _ak_rs < 0.01:
-                st.caption(f"✅ Einmalzahlungen ({len(ezl)}×) decken Restschuld **{_de(restschuld)} €** vollständig.")
+                st.caption(f"✅ Sondertilgungen ({len(ezl)}×) decken Restschuld **{_de(restschuld)} €** vollständig.")
             else:
                 st.caption(
-                    f"Einmalzahlungen: **{_de(_total_ez)} €** · "
+                    f"Sondertilgungen: **{_de(_total_ez)} €** · "
                     f"Anschlusskredit auf **{_de(_ak_rs)} €** ab {endjahr + 1} "
                     f"({anschluss_zins * 100:.2f} %, {anschluss_laufzeit} J.)"
                 )
         else:
-            st.caption("Noch keine Einmalzahlungen erfasst.")
-
+            st.caption("↑ Sondertilgungen im Abschnitt **Sondertilgungen erfassen** oben hinzufügen.")
 
 
 def render(T: dict, _rc: int) -> None:
@@ -567,40 +531,54 @@ def render(T: dict, _rc: int) -> None:
         st.divider()
 
         # ── Sondertilgungen ────────────────────────────────────────────────────
-        st.subheader("Einmalrückzahlungen erfassen")
+        st.subheader("Sondertilgungen erfassen")
         sondertilgungen = list(d.get("sondertilgungen", []))
 
-        for i, s in enumerate(sondertilgungen):
-            sc1, sc2, sc3 = st.columns([2, 3, 1])
-            with sc1:
-                new_jahr = sc1.number_input(
-                    "Jahr", AKTUELLES_JAHR - 30, AKTUELLES_JAHR + 50,
-                    value=int(s["jahr"]), step=1,
-                    key=f"rc{_rc}_hyp_st_j_{i}",
-                )
-            with sc2:
-                new_betrag = sc2.number_input(
-                    "Betrag (€)", 0.0, 10_000_000.0,
-                    value=float(s["betrag"]), step=1_000.0,
-                    key=f"rc{_rc}_hyp_st_b_{i}",
-                )
-            with sc3:
-                sc3.write("")
-                sc3.write("")
-                if sc3.button("🗑", key=f"rc{_rc}_hyp_st_del_{i}",
-                              help="Sondertilgung entfernen"):
-                    sondertilgungen.pop(i)
-                    st.session_state["hyp_daten"]["sondertilgungen"] = sondertilgungen
+        def _st_row(lst: list, idx: int, key_pfx: str, session_key: str,
+                    max_j: int = AKTUELLES_JAHR + 50) -> None:
+            """Rendert eine editierbare Zeile mit Ändern + 🗑 Button."""
+            _r1, _r2, _r3, _r4 = st.columns([2, 3, 1, 1])
+            with _r1:
+                _nj = _r1.number_input("Jahr", AKTUELLES_JAHR - 30, max_j,
+                    value=int(lst[idx]["jahr"]), step=1, key=f"{key_pfx}_j_{idx}")
+            with _r2:
+                _nb = _r2.number_input("Betrag (€)", 0.0, 10_000_000.0,
+                    value=float(lst[idx]["betrag"]), step=1_000.0, key=f"{key_pfx}_b_{idx}")
+            with _r3:
+                _r3.write(""); _r3.write("")
+                if _r3.button("Ändern", key=f"{key_pfx}_chg_{idx}", help="Änderung speichern"):
+                    lst[idx] = {"jahr": int(_nj), "betrag": float(_nb)}
+                    lst.sort(key=lambda e: e["jahr"])
+                    st.session_state["hyp_daten"][session_key] = lst
                     st.rerun()
-            sondertilgungen[i] = {"jahr": int(new_jahr), "betrag": float(new_betrag)}
+            with _r4:
+                _r4.write(""); _r4.write("")
+                if _r4.button("🗑", key=f"{key_pfx}_del_{idx}", help="Entfernen"):
+                    lst.pop(idx)
+                    st.session_state["hyp_daten"][session_key] = lst
+                    st.rerun()
+
+        for i in range(len(sondertilgungen)):
+            _st_row(sondertilgungen, i, f"rc{_rc}_hyp_st", "sondertilgungen")
 
         if st.button("➕ Sondertilgung hinzufügen", key=f"rc{_rc}_hyp_st_add"):
             sondertilgungen.append({"jahr": AKTUELLES_JAHR, "betrag": 10_000.0})
             st.session_state["hyp_daten"]["sondertilgungen"] = sondertilgungen
             st.rerun()
 
-        if sondertilgungen != d.get("sondertilgungen", []):
-            st.session_state["hyp_daten"]["sondertilgungen"] = sondertilgungen
+        # Anschluss-Einmalzahlungen hier anzeigen wenn Restschuld-Strategie = einmalzahlungen
+        if d.get("restschuld_behandlung") == "einmalzahlungen":
+            _ezl = list(d.get("anschluss_einmalzahlungen", []))
+            _endjahr_st = int(d.get("endjahr", AKTUELLES_JAHR + 20))
+            _lz_st = int(d.get("anschluss_laufzeit", 10))
+            st.caption("**Sondertilgungen Anschlussfinanzierung** (werden auf die Anschluss-Restschuld angerechnet):")
+            for _ei in range(len(_ezl)):
+                _st_row(_ezl, _ei, f"rc{_rc}_hyp_ez", "anschluss_einmalzahlungen",
+                        max_j=_endjahr_st + _lz_st)
+            if st.button("➕ Sondertilgung Anschluss hinzufügen", key=f"rc{_rc}_hyp_ez_add2"):
+                _ezl.append({"jahr": _endjahr_st, "betrag": 10_000.0})
+                st.session_state["hyp_daten"]["anschluss_einmalzahlungen"] = _ezl
+                st.rerun()
 
         st.divider()
 
