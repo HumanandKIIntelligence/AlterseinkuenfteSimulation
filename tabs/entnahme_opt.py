@@ -539,6 +539,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _hyp_info = get_hyp_info()
         _ausgaben_plan: dict[int, float] = {}
         _rs              = 0.0
+        _behandlung      = "keine"
         _pool_tilgung    = False
         _anschluss_spar  = False
         _einmal_tilgung  = False
@@ -668,6 +669,43 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # Jahresdaten für Sidebar-Vertragsanzeige speichern
         st.session_state["_sb_eo_jd"] = opt["jahresdaten"]
 
+        # ── Checkbox-Override: Selektion aus session_state lesen ─────────────
+        _sels_key = f"rc{_rc}_hvp_sels"
+        if _sels_key not in st.session_state:
+            st.session_state[_sels_key] = {}
+        _sels: dict[str, str | None] = dict(st.session_state[_sels_key])
+        _any_override = any(v for v in _sels.values())
+        _override_jd_raw: list[dict] | None = None
+        _override_netto: float | None = None
+
+        if _any_override:
+            _prod_map_ov = {
+                f"{p.name} ({p.typ})": p
+                for p in _produkte_obj_run
+                if p.id != "__sparkapital__"
+                and p.max_einmalzahlung > 0
+                and p.spaetestes_startjahr > p.fruehestes_startjahr
+            }
+            _override_entsch: list = []
+            _overridden_ids: set = set()
+            for _pn_ov, _sel_ov in _sels.items():
+                if _sel_ov and _pn_ov in _prod_map_ov:
+                    _p_ov = _prod_map_ov[_pn_ov]
+                    _overridden_ids.add(_p_ov.id)
+                    _sj_ov = (_p_ov.fruehestes_startjahr if _sel_ov == "frueh"
+                              else _p_ov.spaetestes_startjahr)
+                    _override_entsch.append((_p_ov, _sj_ov, 1.0))
+            for _bd_prod, _bd_sj, _bd_ant in opt["beste_entscheidungen"]:
+                if _bd_prod.id not in _overridden_ids:
+                    _override_entsch.append((_bd_prod, _bd_sj, _bd_ant))
+            _override_netto, _override_jd_raw = _netto_ueber_horizont(
+                _profil_eo, _ergebnis_eo, _override_entsch, horizon,
+                mieteinnahmen, mietsteigerung,
+                profil2=_profil2_eo, ergebnis2=_ergebnis2_eo, veranlagung=_ver_eo,
+                gehalt_monatlich=gehalt,
+                ausgaben_plan=_ausgaben_plan if _ausgaben_plan else None,
+            )
+
         # Kennzahlen
         _df_kc = pd.DataFrame(opt["jahresdaten"])
         _netto_arbeit = _df_kc.loc[_df_kc.get("Src_Gehalt", pd.Series(0, index=_df_kc.index)) > 0, "Netto"].sum() if "Src_Gehalt" in _df_kc.columns else 0
@@ -697,6 +735,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                        f"{'+' if delta_einmal >= 0 else ''}{_de(delta_einmal)} €", delta_color="normal")
             kc4.metric("Kombinationen geprüft", f"{opt['anzahl_kombinationen']:,}")
         st.caption(f"Kombinationen geprüft: {opt['anzahl_kombinationen']:,}")
+
+        if _override_netto is not None:
+            _delta_ov = _override_netto - opt["bestes_netto"]
+            _delta_sign = "+" if _delta_ov >= 0 else ""
+            st.info(
+                f"🔄 **Benutzerdefinierte Strategie aktiv** · "
+                f"Netto-Gesamt: **{_de(_override_netto)} €** · "
+                f"Δ vs. Optimal: {_delta_sign}{_de(_delta_ov)} €"
+            )
 
         st.success("**Optimale Strategie:**")
         for prod, startjahr, anteil in opt["beste_entscheidungen"]:
@@ -822,51 +869,108 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         })
 
                     if _hvp_rows:
-                        _hvp_df = (
-                            pd.DataFrame(_hvp_rows)
-                            .set_index("Produkt")
-                            .drop(columns=["_vorteil_raw"])
+                        # Checkbox-Tabelle: Früh ✓ / Spät ✓ aktive Simulation
+                        _hvp_ed_rows = []
+                        for _hr in _hvp_rows:
+                            _hvp_ed_rows.append({
+                                "Früh ✓": _sels.get(_hr["Produkt"]) == "frueh",
+                                "Spät ✓": _sels.get(_hr["Produkt"]) == "spaet",
+                                "Früh": _hr["Früh"],
+                                "Spät": _hr["Spät"],
+                                "Netto früh (€)": _hr["Netto früh (€)"],
+                                "Netto spät (€)": _hr["Netto spät (€)"],
+                                "Zinseinsparung (€)": _hr["Zinseinsparung (€)"],
+                                "Beitragsersparnis (€)": _hr["Beitragsersparnis (€)"],
+                                "Renditeverlust (€)": _hr["Renditeverlust (€)"],
+                                "Netto-Vorteil (€)": _hr["Netto-Vorteil (€)"],
+                                "Break-Even p.a.": _hr["Break-Even p.a."],
+                            })
+                        _hvp_ed_df = pd.DataFrame(
+                            _hvp_ed_rows,
+                            index=[_hr["Produkt"] for _hr in _hvp_rows],
                         )
-                        st.dataframe(_hvp_df, use_container_width=True, column_config={
-                            "Früh": st.column_config.NumberColumn(
-                                "Früh",
-                                help="Frühestmögliches Auszahlungsjahr des Produkts. Ab diesem Jahr kann die Einmalauszahlung zur Tilgung des Anschlusskredits genutzt werden.",
-                                format="%d",
-                            ),
-                            "Spät": st.column_config.NumberColumn(
-                                "Spät",
-                                help="Spätestmögliches Auszahlungsjahr. Bis zu diesem Jahr bleibt das Kapital investiert und wächst mit der Aufschub-Rendite weiter.",
-                                format="%d",
-                            ),
-                            "Netto früh (€)": st.column_config.TextColumn(
-                                "Netto früh (€)",
-                                help="Netto-Auszahlungsbetrag im Früh-Jahr nach vereinfachter Steuer (25 % Abgeltungsteuer auf Kursgewinne, ETF 17,5 % nach Teilfreistellung). Dieser Betrag steht maximal zur Tilgung des Anschlusskredits bereit.",
-                            ),
-                            "Netto spät (€)": st.column_config.TextColumn(
-                                "Netto spät (€)",
-                                help="Netto-Auszahlungsbetrag im Spät-Jahr nach Steuer – inkl. Aufschub-Rendite über die Zwischenjahre. Zeigt, was durch Investiert-Bleiben zusätzlich erwirtschaftet werden kann.",
-                            ),
-                            "Zinseinsparung (€)": st.column_config.TextColumn(
-                                "Zinseinsparung (€)",
-                                help="Eingesparte Anschlusskredit-Zinsen, wenn der Nettobetrag (Früh) zur Teil- oder Vollrückzahlung eingesetzt wird. Berechnet als Differenz der Gesamtzinslast vor und nach Tilgung.",
-                            ),
-                            "Beitragsersparnis (€)": st.column_config.TextColumn(
-                                "Beitragsersparnis (€)",
-                                help="Laufende Einzahlungen (Beiträge), die zwischen Früh- und Spät-Jahr entfallen, wenn früh ausgezahlt wird. Nur relevant bei noch laufender Beitragsphase bis zum Spät-Jahr.",
-                            ),
-                            "Renditeverlust (€)": st.column_config.TextColumn(
-                                "Renditeverlust (€)",
-                                help="Entgangener Netto-Zuwachs durch Frühauszahlung statt Aufschub bis zum Spät-Jahr. Berechnet als Netto spät − Netto früh. Je höher der Wert, desto stärker wächst das Produkt durch Warten.",
-                            ),
-                            "Netto-Vorteil (€)": st.column_config.TextColumn(
-                                "Netto-Vorteil (€)",
-                                help="Gesamtvorteil der Frühauszahlung: Zinseinsparung + Beitragsersparnis − Renditeverlust. ✅ Positiv = Frühauszahlung und Hypothekentilgung lohnt sich. ❌ Negativ = Investiert-Bleiben ist rentabler.",
-                            ),
-                            "Break-Even p.a.": st.column_config.TextColumn(
-                                "Break-Even p.a.",
-                                help="Mindestrendite p.a., ab der das Investiert-Bleiben bis zum Spät-Jahr rentabler ist als die Frühauszahlung zur Tilgung. Liegt die tatsächliche Rendite des Produkts über diesem Wert, lohnt sich das Warten.",
-                            ),
-                        })
+                        _ed_sels_tag = "_".join(
+                            f"{i}{(v or 'n')[0]}"
+                            for i, (_, v) in enumerate(sorted(_sels.items()))
+                        ) or "0"
+                        _non_cb = [c for c in _hvp_ed_df.columns if c not in ("Früh ✓", "Spät ✓")]
+                        _edited_hvp = st.data_editor(
+                            _hvp_ed_df,
+                            use_container_width=True,
+                            disabled=_non_cb,
+                            key=f"rc{_rc}_hvp_editor_{_ed_sels_tag}",
+                            column_config={
+                                "Früh ✓": st.column_config.CheckboxColumn(
+                                    "Früh ✓",
+                                    help="Frühauszahlung in der Simulation aktivieren. "
+                                         "Jahresverlauf, Kapital-Zeitleiste und Steuer-/KV-Verlauf "
+                                         "werden sofort aktualisiert. Nicht gleichzeitig mit Spät ✓.",
+                                ),
+                                "Spät ✓": st.column_config.CheckboxColumn(
+                                    "Spät ✓",
+                                    help="Aufschub bis Spät-Jahr in der Simulation aktivieren. "
+                                         "Nicht gleichzeitig mit Früh ✓.",
+                                ),
+                                "Früh": st.column_config.NumberColumn(
+                                    "Früh",
+                                    help="Frühestmögliches Auszahlungsjahr des Produkts. Ab diesem Jahr kann die Einmalauszahlung zur Tilgung des Anschlusskredits genutzt werden.",
+                                    format="%d",
+                                ),
+                                "Spät": st.column_config.NumberColumn(
+                                    "Spät",
+                                    help="Spätestmögliches Auszahlungsjahr. Bis zu diesem Jahr bleibt das Kapital investiert und wächst mit der Aufschub-Rendite weiter.",
+                                    format="%d",
+                                ),
+                                "Netto früh (€)": st.column_config.TextColumn(
+                                    "Netto früh (€)",
+                                    help="Netto-Auszahlungsbetrag im Früh-Jahr nach vereinfachter Steuer (25 % Abgeltungsteuer auf Kursgewinne, ETF 17,5 % nach Teilfreistellung). Dieser Betrag steht maximal zur Tilgung des Anschlusskredits bereit.",
+                                ),
+                                "Netto spät (€)": st.column_config.TextColumn(
+                                    "Netto spät (€)",
+                                    help="Netto-Auszahlungsbetrag im Spät-Jahr nach Steuer – inkl. Aufschub-Rendite über die Zwischenjahre. Zeigt, was durch Investiert-Bleiben zusätzlich erwirtschaftet werden kann.",
+                                ),
+                                "Zinseinsparung (€)": st.column_config.TextColumn(
+                                    "Zinseinsparung (€)",
+                                    help="Eingesparte Anschlusskredit-Zinsen, wenn der Nettobetrag (Früh) zur Teil- oder Vollrückzahlung eingesetzt wird. Berechnet als Differenz der Gesamtzinslast vor und nach Tilgung.",
+                                ),
+                                "Beitragsersparnis (€)": st.column_config.TextColumn(
+                                    "Beitragsersparnis (€)",
+                                    help="Laufende Einzahlungen (Beiträge), die zwischen Früh- und Spät-Jahr entfallen, wenn früh ausgezahlt wird. Nur relevant bei noch laufender Beitragsphase bis zum Spät-Jahr.",
+                                ),
+                                "Renditeverlust (€)": st.column_config.TextColumn(
+                                    "Renditeverlust (€)",
+                                    help="Entgangener Netto-Zuwachs durch Frühauszahlung statt Aufschub bis zum Spät-Jahr. Berechnet als Netto spät − Netto früh. Je höher der Wert, desto stärker wächst das Produkt durch Warten.",
+                                ),
+                                "Netto-Vorteil (€)": st.column_config.TextColumn(
+                                    "Netto-Vorteil (€)",
+                                    help="Gesamtvorteil der Frühauszahlung: Zinseinsparung + Beitragsersparnis − Renditeverlust. ✅ Positiv = Frühauszahlung und Hypothekentilgung lohnt sich. ❌ Negativ = Investiert-Bleiben ist rentabler.",
+                                ),
+                                "Break-Even p.a.": st.column_config.TextColumn(
+                                    "Break-Even p.a.",
+                                    help="Mindestrendite p.a., ab der das Investiert-Bleiben bis zum Spät-Jahr rentabler ist als die Frühauszahlung zur Tilgung. Liegt die tatsächliche Rendite des Produkts über diesem Wert, lohnt sich das Warten.",
+                                ),
+                            },
+                        )
+
+                        # Gegenseitigen Ausschluss erzwingen + session_state aktualisieren
+                        _new_sels: dict[str, str | None] = {}
+                        for _ep_name, _ep_row in _edited_hvp.iterrows():
+                            _ep_name = str(_ep_name)
+                            _ef = bool(_ep_row.get("Früh ✓", False))
+                            _es = bool(_ep_row.get("Spät ✓", False))
+                            _prev = _sels.get(_ep_name)
+                            if _ef and _es:
+                                _new_sels[_ep_name] = "spaet" if _prev == "frueh" else "frueh"
+                            elif _ef:
+                                _new_sels[_ep_name] = "frueh"
+                            elif _es:
+                                _new_sels[_ep_name] = "spaet"
+                            else:
+                                _new_sels[_ep_name] = None
+                        _old_sels_copy = dict(st.session_state[_sels_key])
+                        st.session_state[_sels_key] = _new_sels
+                        if _new_sels != _old_sels_copy:
+                            st.rerun()
 
                         _best_hvp = max(_hvp_rows, key=lambda r: r["_vorteil_raw"])
                         if _best_hvp["_vorteil_raw"] > 0:
@@ -1040,7 +1144,22 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 disabled=not _real_toggle,
                 help="Jährliche Inflationsrate für Kaufkraftkorrektur.",
             ) if _real_toggle else 2.0
-        df_jd = pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
+        df_jd = (
+            pd.DataFrame(_override_jd_raw).set_index("Jahr")
+            if _override_jd_raw is not None
+            else pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
+        )
+
+        if _override_jd_raw is not None:
+            _ov_desc = " · ".join(
+                f"**{pn.rsplit('(', 1)[0].strip()}** {'früh' if sel == 'frueh' else 'spät'}"
+                for pn, sel in _sels.items() if sel
+            )
+            st.info(
+                f"🔄 **Benutzerdefinierte Simulation aktiv** · {_ov_desc}  \n"
+                "Alle Diagramme unten zeigen diese Strategie. "
+                "Checkbox in der Tabelle oben abwählen um zur optimalen Strategie zurückzukehren."
+            )
 
         # Reale Werte: alle numerischen Spalten mit Inflationsdeflaktor skalieren
         _start_j = int(df_jd.index[0]) if len(df_jd) > 0 else 0
