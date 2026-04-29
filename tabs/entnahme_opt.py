@@ -552,6 +552,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _endjahr_hyp             = AKTUELLES_JAHR
         _raten_aus_kapital       = False
 
+        # Geplante Kapital-Entnahmen (aus session_state) – vor Hypothek laden,
+        # damit die Sondertilgung im Endjahr die Anschlussfinanzierung reduziert.
+        _eo_entnahmen_early: list[dict] = list(st.session_state.get("eo_entnahmen", []))
+        _entnahmen_dict: dict[int, float] = {e["jahr"]: e["betrag"] for e in _eo_entnahmen_early}
+
         if _hyp_info:
             _hyp_checkbox = st.checkbox(
                 "🏠 Hypothek in Optimierung berücksichtigen",
@@ -590,11 +595,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     "↳ Strategie und Parameter im Tab **🏠 Hypothek** konfigurieren."
                 )
 
-                _ausgaben_plan = get_ausgaben_plan_optimierung()
+                _sonder_eo_endjahr = _entnahmen_dict.get(_endjahr_hyp, 0.0)
+                _ausgaben_plan = get_ausgaben_plan_optimierung(
+                    sondertilgung_endjahr=_sonder_eo_endjahr
+                )
 
                 if _behandlung == "ratenkredit":
                     _anschluss_spar = _raten_aus_kapital
-                    _ak_zeitleiste_rs = _rs
+                    # Zeitleiste zeigt reduzierte Restschuld nach geplanter Sondertilgung
+                    _ak_zeitleiste_rs = max(0.0, _rs - _sonder_eo_endjahr)
                     _ak_zeitleiste_startjahr = _endjahr_hyp
                     if _raten_aus_kapital:
                         _spkap_pool_startjahr = _hyp_info["startjahr"]
@@ -623,8 +632,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         _ak_zeitleiste_startjahr = _endjahr_hyp
 
         # Geplante Entnahmen in Ausgabenplan einrechnen (aus Kapitalpool)
-        _eo_entnahmen_early: list[dict] = list(st.session_state.get("eo_entnahmen", []))
-        _entnahmen_dict: dict[int, float] = {e["jahr"]: e["betrag"] for e in _eo_entnahmen_early}
         for _entr_jr, _entr_btr in _entnahmen_dict.items():
             _ausgaben_plan[_entr_jr] = _ausgaben_plan.get(_entr_jr, 0.0) + _entr_btr
 
@@ -783,7 +790,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _VERSORGUNG_TYPEN = {"bAV", "Riester", "Rürup", "PrivateRente"}
         _einmal_info         = {j: [] for j in _jahre}  # Einkommens-Einmalzahlungen (nicht aus Pool)
         _einmal_info_kapital = {j: [] for j in _jahre}  # als_kapitalanlage → Pool-Injektion
-        _versorg_info = {j: [] for j in _jahre}
+        _bav_info     = {j: [] for j in _jahre}   # bAV-Produkte (konsolidiert)
+        _riester_info = {j: [] for j in _jahre}   # Riester-Produkte
+        _sonstige_versorg_info = {j: [] for j in _jahre}  # Rürup, PrivateRente
         for _prod, _startjahr, _anteil in opt["beste_entscheidungen"]:
             _aufschub = max(0, _startjahr - _prod.fruehestes_startjahr)
             _fak = (1 + _prod.aufschub_rendite) ** _aufschub
@@ -794,16 +803,21 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _einmal_info_kapital[_startjahr].append(f"{_prod.name}: {_de(_betrag)} €")
                 else:
                     _einmal_info[_startjahr].append(f"{_prod.name}: {_de(_betrag)} €")
-            # Laufende Versorgung: ab Startjahr für die Laufzeit
+            # Laufende Versorgung: ab Startjahr für die Laufzeit – nach Typ aufteilen
             if _anteil < 1.0 and _prod.typ in _VERSORGUNG_TYPEN:
                 _mono = _prod.max_monatsrente * _fak * (1 - _anteil)
                 _lz = _prod.laufzeit_jahre  # 0 = lebenslang
+                _info_target = (
+                    _bav_info if _prod.typ == "bAV"
+                    else _riester_info if _prod.typ == "Riester"
+                    else _sonstige_versorg_info
+                )
                 for _j in _jahre:
                     if _j < _startjahr:
                         continue
                     if _lz > 0 and _j >= _startjahr + _lz:
                         break
-                    _versorg_info[_j].append(f"{_prod.name}: {_de(_mono)} €/Mon.")
+                    _info_target[_j].append(f"{_prod.name}: {_de(_mono)} €/Mon.")
 
         def _hover_lines(info_dict: dict, jahre: list) -> list[str]:
             return [
@@ -811,19 +825,36 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 for j in jahre
             ]
 
-        _cd_einmal  = _hover_lines(_einmal_info,  _jahre)
-        _cd_versorg = _hover_lines(_versorg_info, _jahre)
+        _cd_einmal   = _hover_lines(_einmal_info,         _jahre)
+        _cd_bav      = _hover_lines(_bav_info,            _jahre)
+        _cd_riester  = _hover_lines(_riester_info,        _jahre)
+        _cd_sonstige = _hover_lines(_sonstige_versorg_info, _jahre)
+
+        # Berechnete Kombinationsspalten für bAV und Riester (P1 + P2)
+        _bav_p1     = df_jd["Src_bAV_P1"]     if "Src_bAV_P1"     in df_jd.columns else pd.Series(0, index=df_jd.index)
+        _bav_p2     = df_jd["Src_bAV_P2"]     if "Src_bAV_P2"     in df_jd.columns else pd.Series(0, index=df_jd.index)
+        _riester_p1 = df_jd["Src_Riester_P1"] if "Src_Riester_P1" in df_jd.columns else pd.Series(0, index=df_jd.index)
+        _riester_p2 = df_jd["Src_Riester_P2"] if "Src_Riester_P2" in df_jd.columns else pd.Series(0, index=df_jd.index)
+        df_jd["Src_bAV_Gesamt"]          = _bav_p1 + _bav_p2
+        df_jd["Src_Riester_Gesamt"]       = _riester_p1 + _riester_p2
+        # Sonstige Versorgung = Src_Versorgung minus bAV und Riester (Rürup, PrivateRente, P2-Anteile)
+        if "Src_Versorgung" in df_jd.columns:
+            df_jd["Src_Sonstige_Versorgung"] = (
+                df_jd["Src_Versorgung"] - df_jd["Src_bAV_Gesamt"] - df_jd["Src_Riester_Gesamt"]
+            ).clip(lower=0)
 
         fig_src = go.Figure()
         src_cols = [
-            ("Src_Gehalt",       "Bruttogehalt (aktiv)",    "#78909C", None),
-            ("Src_Zusatzentgelt","Zusatzentgelt (PV, stfr.)","#546E7A", None),
-            ("Src_GesRente",     "Gesetzl. Rente P1",       "#4CAF50", None),
-            ("Src_P2_Rente",     "Gesetzl. Rente P2",       "#81C784", None),
-            ("Src_Versorgung",   "Betriebliche Versorgung", "#2196F3", _cd_versorg),
-            ("Src_Einmal",       "Einmalauszahlungen",      "#FF9800", _cd_einmal),
-            ("Src_Miete",        "Mieteinnahmen",           "#9C27B0", None),
-            # Src_Kapitalverzehr wird auf y2 (sekundäre Achse) dargestellt
+            ("Src_Gehalt",              "Bruttogehalt (aktiv)",      "#78909C", None),
+            ("Src_Zusatzentgelt",       "Zusatzentgelt (PV, stfr.)", "#546E7A", None),
+            ("Src_GesRente",            "Gesetzl. Rente P1",         "#4CAF50", None),
+            ("Src_P2_Rente",            "Gesetzl. Rente P2",         "#81C784", None),
+            ("Src_bAV_Gesamt",          "bAV (gesamt)",              "#1565C0", _cd_bav),
+            ("Src_Riester_Gesamt",      "Riester",                   "#42A5F5", _cd_riester),
+            ("Src_Sonstige_Versorgung", "Versorgung (Rürup/Privat)", "#26C6DA", _cd_sonstige),
+            ("Src_Kapitalverzehr",      "Kapitalverzehr (Pool)",     "#00695C", None),
+            ("Src_Einmal",              "Einmalauszahlungen",        "#FF9800", _cd_einmal),
+            ("Src_Miete",               "Mieteinnahmen",             "#9C27B0", None),
         ]
         for col, label, color, customdata in src_cols:
             if col in df_jd.columns and df_jd[col].sum() > 0:
@@ -849,17 +880,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         marker_color=color,
                         hovertemplate="%{x}: %{y:,.0f} €<extra>" + label + "</extra>",
                     ))
-        # Vorsorge-Beiträge als sichtbarer Abzugsbalken (negativ) – endet automatisch bei Vertragsstart
-        if "Vorsorge_Beitraege" in df_jd.columns and df_jd["Vorsorge_Beitraege"].sum() > 0:
-            _vb_mask = df_jd["Vorsorge_Beitraege"] > 0
-            fig_src.add_trace(go.Bar(
-                name="Vorsorge-Beiträge (Abzug)",
-                x=df_jd[_vb_mask].index,
-                y=-df_jd.loc[_vb_mask, "Vorsorge_Beitraege"],
-                marker_color="#EF5350",
-                opacity=0.85,
-                hovertemplate="%{x}: %{y:,.0f} € Jahresbeitrag<extra>Vorsorge-Beiträge</extra>",
-            ))
+        # Vorsorge-Beiträge werden nicht als Balken dargestellt; nur in der Netto-Hover sichtbar.
 
         # Geplante Entnahmen: nur als y1-Balken wenn kein Pool aktiv (sonst in Src_Kapitalverzehr enthalten)
         _has_pool_data = (
@@ -878,10 +899,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     hovertemplate="%{x}: %{y:,.0f} € Entnahme<extra>Entnahmen (geplant)</extra>",
                 ))
 
-        # ── Ein kombinierter Pool-Flow-Balken pro Jahr auf sekundärer Y-Achse ──
-        # Einzahlung in Pool (Kap_Injektion) und Entnahme aus Pool (Src_Kapitalverzehr)
-        # werden pro Jahr saldiert → ein Balken geht von Nulllinie nach unten.
-        # Pfeil ↓ wenn Einzahlung > Entnahme, ↑ wenn Entnahme > Einzahlung.
+        # ── Zwei getrennte Pool-Flow-Balken nebeneinander (sekundäre Y-Achse) ──
+        # Einzahlung (links, teal) und Entnahme (rechts, rot) als je halbe Balkenbreite.
+        # Beide gehen nach unten (negativ auf y2). Kein Pfeil-Text nötig.
         _hat_pool_y2 = False
         if _has_pool_data:
             _hat_pool_y2 = True
@@ -898,58 +918,80 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             ))
             def _pf_val(col, j):
                 return float(df_jd.loc[j, col]) if col in df_jd.columns and j in df_jd.index else 0.0
-            _pf_inj  = {j: _pf_val(_pf_inj_col, j) for j in _pf_all_yrs}
-            # Gesamtentnahme aus Pool = laufende Annuität + Sonderentnahmen (ausgaben_plan)
-            _pf_vzr  = {j: _pf_val(_pf_vzr_col, j) + _pf_val(_pf_sonder_col, j)
-                        for j in _pf_all_yrs}
-            _pf_net  = {j: _pf_inj[j] - _pf_vzr[j] for j in _pf_all_yrs}  # + = mehr eingebracht
+            _pf_inj = {j: _pf_val(_pf_inj_col, j) for j in _pf_all_yrs}
+            # Gesamtentnahme = laufende Annuität + Sonderentnahmen (ausgaben_plan)
+            _pf_vzr = {j: _pf_val(_pf_vzr_col, j) + _pf_val(_pf_sonder_col, j)
+                       for j in _pf_all_yrs}
+            # Für y2-Skalenberechnung: Maximum aus beiden Richtungen
+            _pf_abs = {j: max(_pf_inj[j], _pf_vzr[j]) for j in _pf_all_yrs}
 
-            def _pf_hover_text(j):
-                parts = []
-                if _pf_inj[j] > 0:
+            # Jahre mit Einzahlung: Balken links (x - 0.2), teal
+            _pf_inj_yrs = [j for j in _pf_all_yrs if _pf_inj[j] > 0]
+            if _pf_inj_yrs:
+                def _pf_inj_hover(j):
+                    parts = [f"Pool-Einzahlung: {_de(_pf_inj[j])} €"]
                     ki_det = "<br>".join(_einmal_info_kapital.get(j, []))
-                    parts.append(f"Einzahlung: {_de(_pf_inj[j])} €")
                     if ki_det:
                         parts.append(f"<i>{ki_det}</i>")
-                _vzr_lfd    = _pf_val(_pf_vzr_col, j)
-                _vzr_sonder = _pf_val(_pf_sonder_col, j)
-                if _vzr_lfd > 0 and _vzr_sonder > 0:
-                    parts.append(f"Entnahme: {_de(_vzr_lfd + _vzr_sonder)} €")
-                    parts.append(f"<i>  lfd. {_de(_vzr_lfd)} € / Sonder {_de(_vzr_sonder)} €</i>")
-                elif _vzr_lfd > 0:
-                    parts.append(f"Entnahme: {_de(_vzr_lfd)} €")
-                elif _vzr_sonder > 0:
-                    parts.append(f"Sonderentnahme: {_de(_vzr_sonder)} €")
-                net = _pf_net[j]
-                parts.append(f"Netto: {'−' if net < 0 else '+'}{_de(abs(net))} €")
-                return "<br>".join(parts)
+                    return "<br>".join(parts)
+                fig_src.add_trace(go.Bar(
+                    name="Pool-Einzahlung",
+                    x=[j - 0.2 for j in _pf_inj_yrs],
+                    y=[-_pf_inj[j] for j in _pf_inj_yrs],
+                    width=0.4,
+                    marker_color="#00838F",
+                    opacity=0.87,
+                    yaxis="y2",
+                    customdata=[_pf_inj_hover(j) for j in _pf_inj_yrs],
+                    hovertemplate="%{x|.0f}:<br>%{customdata}<extra>Pool-Einzahlung</extra>",
+                ))
 
-            _pf_cd    = [_pf_hover_text(j) for j in _pf_all_yrs]
-            _pf_abs   = {j: abs(_pf_net[j]) for j in _pf_all_yrs}
-            _pf_arrow = {j: ("↓" if _pf_net[j] >= 0 else "↑") for j in _pf_all_yrs}
+            # Jahre mit Entnahme: Balken rechts (x + 0.2), rot
+            _pf_vzr_yrs = [j for j in _pf_all_yrs if _pf_vzr[j] > 0]
+            if _pf_vzr_yrs:
+                def _pf_vzr_hover(j):
+                    _vzr_lfd    = _pf_val(_pf_vzr_col, j)
+                    _vzr_sonder = _pf_val(_pf_sonder_col, j)
+                    parts = []
+                    if _vzr_lfd > 0 and _vzr_sonder > 0:
+                        parts.append(f"Pool-Entnahme: {_de(_vzr_lfd + _vzr_sonder)} €")
+                        parts.append(f"<i>lfd. {_de(_vzr_lfd)} € / Sonder {_de(_vzr_sonder)} €</i>")
+                    elif _vzr_lfd > 0:
+                        parts.append(f"Pool-Entnahme (lfd.): {_de(_vzr_lfd)} €")
+                    elif _vzr_sonder > 0:
+                        parts.append(f"Pool-Sonderentnahme: {_de(_vzr_sonder)} €")
+                    return "<br>".join(parts)
+                fig_src.add_trace(go.Bar(
+                    name="Pool-Entnahme",
+                    x=[j + 0.2 for j in _pf_vzr_yrs],
+                    y=[-_pf_vzr[j] for j in _pf_vzr_yrs],
+                    width=0.4,
+                    marker_color="#E53935",
+                    opacity=0.87,
+                    yaxis="y2",
+                    customdata=[_pf_vzr_hover(j) for j in _pf_vzr_yrs],
+                    hovertemplate="%{x|.0f}:<br>%{customdata}<extra>Pool-Entnahme</extra>",
+                ))
 
-            fig_src.add_trace(go.Bar(
-                name="Pool-Kapitalbewegung",
-                x=_pf_all_yrs,
-                y=[-_pf_abs[j] for j in _pf_all_yrs],  # immer nach unten
-                text=[_pf_arrow[j] for j in _pf_all_yrs],
-                textposition="inside",
-                insidetextanchor="middle",
-                textangle=0,           # verhindert auto-Rotation in schmalen Säulen
-                constraintext="none",  # immer anzeigen, auch wenn Säule sehr klein
-                textfont=dict(size=14, color="white"),
-                marker_color="#00838F",
-                opacity=0.87,
-                yaxis="y2",
-                customdata=_pf_cd,
-                hovertemplate="%{x}:<br>%{customdata}<extra>Pool-Kapitalbewegung</extra>",
-            ))
-
+        # Netto-Linie mit Hover-Details zu allen Abzügen
+        _netto_hover = []
+        for _nhj in _jahre:
+            _nh_parts = []
+            _nh_steuer = int(df_jd.loc[_nhj, "Steuer"])              if "Steuer"             in df_jd.columns else 0
+            _nh_kv     = int(df_jd.loc[_nhj, "KV_PV"])               if "KV_PV"              in df_jd.columns else 0
+            _nh_vb     = int(df_jd.loc[_nhj, "Vorsorge_Beitraege"])  if "Vorsorge_Beitraege" in df_jd.columns else 0
+            _nh_lhk    = int(df_jd.loc[_nhj, "LHK"])                 if "LHK"                in df_jd.columns else 0
+            if _nh_steuer > 0: _nh_parts.append(f"Steuer: −{_de(_nh_steuer)} €")
+            if _nh_kv     > 0: _nh_parts.append(f"KV/PV: −{_de(_nh_kv)} €")
+            if _nh_vb     > 0: _nh_parts.append(f"Vorsorgebeitr.: −{_de(_nh_vb)} €")
+            if _nh_lhk    > 0: _nh_parts.append(f"Lebenshaltung: −{_de(_nh_lhk)} €")
+            _netto_hover.append("<br>".join(_nh_parts))
         fig_src.add_trace(go.Scatter(
             name="Netto", x=df_jd.index, y=df_jd["Netto"],
             mode="lines+markers",
             line=dict(color="black", width=2),
-            hovertemplate="%{x}: %{y:,.0f} € Netto<extra></extra>",
+            customdata=_netto_hover,
+            hovertemplate="%{x}: %{y:,.0f} € Netto<br>%{customdata}<extra>Netto</extra>",
         ))
         # Netto nach Hypotheken-Rate: Primärhypothek (rot) + Anschlusskredit (orange), getrennte Linien
         if _ausgaben_plan:
@@ -1021,8 +1063,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # ── Y-Achsen-Bereiche (explizit für Null-Ausrichtung) ────────────────────
         # Ziel: Nulllinie bei genau 1/3 der Chart-Höhe von unten.
         # Formel: |lo| = hi/2  →  f = |lo|/(|lo|+hi) = (hi/2)/(hi/2+hi) = 1/3 ✓
-        _y1_pos_cols = ["Src_Gehalt", "Src_Zusatzentgelt", "Src_GesRente", "Src_P2_Rente",
-                        "Src_Versorgung", "Src_Einmal", "Src_Miete"]
+        _y1_pos_cols = [
+            "Src_Gehalt", "Src_Zusatzentgelt", "Src_GesRente", "Src_P2_Rente",
+            "Src_bAV_Gesamt", "Src_Riester_Gesamt", "Src_Sonstige_Versorgung",
+            "Src_Kapitalverzehr", "Src_Einmal", "Src_Miete",
+        ]
         _y1_pos_sum = sum(
             df_jd[c].clip(lower=0) for c in _y1_pos_cols if c in df_jd.columns
         )

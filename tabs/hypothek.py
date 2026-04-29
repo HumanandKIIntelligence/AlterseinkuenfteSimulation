@@ -235,8 +235,12 @@ def _ez_ausgaben_plan(
     return plan
 
 
-def get_ausgaben_plan_optimierung() -> dict[int, float]:
-    """Ausgaben-Plan für Entnahme-Optimierung: laufende Raten + konfigurierte Restschuld-Strategie."""
+def get_ausgaben_plan_optimierung(sondertilgung_endjahr: float = 0.0) -> dict[int, float]:
+    """Ausgaben-Plan für Entnahme-Optimierung: laufende Raten + konfigurierte Restschuld-Strategie.
+
+    sondertilgung_endjahr: Geplante Einmaltilgung im Endjahr (z.B. aus Kapital-Entnahmen im
+    Entnahme-Tab), die die Restschuld für die Anschlussfinanzierung reduziert.
+    """
     d = st.session_state.get("hyp_daten", {})
     if not d.get("aktiv", False):
         return {}
@@ -249,21 +253,26 @@ def get_ausgaben_plan_optimierung() -> dict[int, float]:
     if restschuld <= 0.0:
         return plan
 
+    # Effektive Restschuld nach geplanter Sondertilgung im Endjahr
+    eff_rs = max(0.0, restschuld - sondertilgung_endjahr)
+
     behandlung = d.get("restschuld_behandlung", "keine")
     endjahr = int(d.get("endjahr", AKTUELLES_JAHR + 20))
     zins = float(d.get("anschluss_zins_pa", 0.04))
     laufzeit = int(d.get("anschluss_laufzeit", 10))
 
     if behandlung == "kapitalanlage":
-        plan[endjahr] = plan.get(endjahr, 0.0) + restschuld
+        if eff_rs > 0.0:
+            plan[endjahr] = plan.get(endjahr, 0.0) + eff_rs
     elif behandlung == "ratenkredit":
-        rate = _annuitaet_rate(restschuld, zins, laufzeit)
-        for i in range(laufzeit):
-            plan[endjahr + 1 + i] = plan.get(endjahr + 1 + i, 0.0) + rate
+        if eff_rs > 0.0:
+            rate = _annuitaet_rate(eff_rs, zins, laufzeit)
+            for i in range(laufzeit):
+                plan[endjahr + 1 + i] = plan.get(endjahr + 1 + i, 0.0) + rate
     elif behandlung == "einmalzahlungen":
         plan = _ez_ausgaben_plan(
             list(d.get("anschluss_einmalzahlungen", [])),
-            get_hyp_schedule(), restschuld, endjahr, zins, laufzeit,
+            get_hyp_schedule(), eff_rs, endjahr, zins, laufzeit,
         )
     return plan
 
