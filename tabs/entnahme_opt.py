@@ -824,7 +824,46 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                             .set_index("Produkt")
                             .drop(columns=["_vorteil_raw"])
                         )
-                        st.dataframe(_hvp_df, use_container_width=True)
+                        st.dataframe(_hvp_df, use_container_width=True, column_config={
+                            "Früh": st.column_config.NumberColumn(
+                                "Früh",
+                                help="Frühestmögliches Auszahlungsjahr des Produkts. Ab diesem Jahr kann die Einmalauszahlung zur Tilgung des Anschlusskredits genutzt werden.",
+                                format="%d",
+                            ),
+                            "Spät": st.column_config.NumberColumn(
+                                "Spät",
+                                help="Spätestmögliches Auszahlungsjahr. Bis zu diesem Jahr bleibt das Kapital investiert und wächst mit der Aufschub-Rendite weiter.",
+                                format="%d",
+                            ),
+                            "Netto früh (€)": st.column_config.TextColumn(
+                                "Netto früh (€)",
+                                help="Netto-Auszahlungsbetrag im Früh-Jahr nach vereinfachter Steuer (25 % Abgeltungsteuer auf Kursgewinne, ETF 17,5 % nach Teilfreistellung). Dieser Betrag steht maximal zur Tilgung des Anschlusskredits bereit.",
+                            ),
+                            "Netto spät (€)": st.column_config.TextColumn(
+                                "Netto spät (€)",
+                                help="Netto-Auszahlungsbetrag im Spät-Jahr nach Steuer – inkl. Aufschub-Rendite über die Zwischenjahre. Zeigt, was durch Investiert-Bleiben zusätzlich erwirtschaftet werden kann.",
+                            ),
+                            "Zinseinsparung (€)": st.column_config.TextColumn(
+                                "Zinseinsparung (€)",
+                                help="Eingesparte Anschlusskredit-Zinsen, wenn der Nettobetrag (Früh) zur Teil- oder Vollrückzahlung eingesetzt wird. Berechnet als Differenz der Gesamtzinslast vor und nach Tilgung.",
+                            ),
+                            "Beitragsersparnis (€)": st.column_config.TextColumn(
+                                "Beitragsersparnis (€)",
+                                help="Laufende Einzahlungen (Beiträge), die zwischen Früh- und Spät-Jahr entfallen, wenn früh ausgezahlt wird. Nur relevant bei noch laufender Beitragsphase bis zum Spät-Jahr.",
+                            ),
+                            "Renditeverlust (€)": st.column_config.TextColumn(
+                                "Renditeverlust (€)",
+                                help="Entgangener Netto-Zuwachs durch Frühauszahlung statt Aufschub bis zum Spät-Jahr. Berechnet als Netto spät − Netto früh. Je höher der Wert, desto stärker wächst das Produkt durch Warten.",
+                            ),
+                            "Netto-Vorteil (€)": st.column_config.TextColumn(
+                                "Netto-Vorteil (€)",
+                                help="Gesamtvorteil der Frühauszahlung: Zinseinsparung + Beitragsersparnis − Renditeverlust. ✅ Positiv = Frühauszahlung und Hypothekentilgung lohnt sich. ❌ Negativ = Investiert-Bleiben ist rentabler.",
+                            ),
+                            "Break-Even p.a.": st.column_config.TextColumn(
+                                "Break-Even p.a.",
+                                help="Mindestrendite p.a., ab der das Investiert-Bleiben bis zum Spät-Jahr rentabler ist als die Frühauszahlung zur Tilgung. Liegt die tatsächliche Rendite des Produkts über diesem Wert, lohnt sich das Warten.",
+                            ),
+                        })
 
                         _best_hvp = max(_hvp_rows, key=lambda r: r["_vorteil_raw"])
                         if _best_hvp["_vorteil_raw"] > 0:
