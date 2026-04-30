@@ -1000,13 +1000,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         # Enforce radio-like behavior (one checkbox per row) + update session_state
         _new_sels: dict[str, str | None] = {}
-        for prod_name in _edited.index:
+        for prod_name, _row in _edited.iterrows():
             prev_sel = _curr_sels.get(prod_name)
             avail = _avail_map.get(prod_name, set())
             # Only accept valid (available) selections
             curr_checked = {
                 mk for mk, cc in _CC.items()
-                if bool(_edited.at[prod_name, cc]) and mk in avail
+                if bool(_row[cc]) and mk in avail
             }
             if len(curr_checked) == 0:
                 _new_sels[prod_name] = None
