@@ -1712,8 +1712,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     return bal / lz
 
                 _ak_rate = _ak_annuitat(_ak_bal, _markt_zins_pa, _anschluss_lz)
-                _ak_xs: list[int] = []
-                _ak_ys: list[float] = []
+                # Startpunkt am Ende des ersten Kredits (visueller Anschluss)
+                _ak_xs: list[int] = [_endjahr_hyp]
+                _ak_ys: list[float] = [_ak_bal]
                 for _ak_y in range(_ak_start, _ak_start + _anschluss_lz):
                     if _ak_bal <= 0:
                         break
