@@ -624,17 +624,28 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             and p.max_einmalzahlung > 0
             and p.spaetestes_startjahr > p.fruehestes_startjahr
         }
+        # Default: früheste Einmalauszahlung für alle Verträge (nur bei erster Initialisierung)
+        if not _sels and _prod_name_map:
+            _sels = {name: "frueh" for name in _prod_name_map}
+            st.session_state[_sels_key] = _sels
+
         _prod_sj_override: dict[str, int] = {}
         for _pn_sel, _sel_val in _sels.items():
-            if _sel_val and _pn_sel in _prod_name_map:
+            if _sel_val in ("frueh", "spaet") and _pn_sel in _prod_name_map:
                 _p_sel = _prod_name_map[_pn_sel]
                 _prod_sj_override[_p_sel.id] = (
                     _p_sel.fruehestes_startjahr if _sel_val == "frueh"
                     else _p_sel.spaetestes_startjahr
                 )
+        # "Monatlich ✓"-Selektion → anteil=0.0 (monatliche Auszahlung statt Pool-Injektion)
+        _mono_prod_ids: set[str] = {
+            _prod_name_map[_pn].id
+            for _pn, _sv in _sels.items()
+            if _sv == "mono" and _pn in _prod_name_map
+        }
         _eff_entsch = [
             (prod, _prod_sj_override.get(prod.id, prod.fruehestes_startjahr),
-             1.0 if prod.max_einmalzahlung > 0 else 0.0)
+             0.0 if prod.id in _mono_prod_ids or prod.max_einmalzahlung == 0 else 1.0)
             for prod in _produkte_obj_run
         ]
 
@@ -804,12 +815,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _hvp_rows.append(_hvp_row_entry)
 
                 if _hvp_rows:
-                    # Checkbox-Tabelle: Früh ✓ / Spät ✓ aktive Simulation
+                    # Checkbox-Tabelle: Früh ✓ / Spät ✓ / Monatlich ✓ – gegenseitig exklusiv
                     _hvp_ed_rows = []
                     for _hr in _hvp_rows:
+                        _hr_prod_obj = _prod_name_map.get(_hr["Produkt"])
+                        _hr_hat_mono = _hr_prod_obj is not None and _hr_prod_obj.max_monatsrente > 0
+                        _hr_sel = _sels.get(_hr["Produkt"])
                         _ed_row: dict = {
-                            "Früh ✓": _sels.get(_hr["Produkt"]) == "frueh",
-                            "Spät ✓": _sels.get(_hr["Produkt"]) == "spaet",
+                            "Früh ✓": _hr_sel == "frueh",
+                            "Spät ✓": _hr_sel == "spaet",
+                            "Monatlich ✓": (_hr_sel == "mono") if _hr_hat_mono else False,
                             "Früh": _hr["Früh"],
                             "Spät": _hr["Spät"],
                             "Netto früh (€)": _hr["Netto früh (€)"],
@@ -830,18 +845,21 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         f"{i}{(v or 'n')[0]}"
                         for i, (_, v) in enumerate(sorted(_sels.items()))
                     ) or "0"
-                    _non_cb = [c for c in _hvp_ed_df.columns if c not in ("Früh ✓", "Spät ✓")]
+                    _CB_COLS = ("Früh ✓", "Spät ✓", "Monatlich ✓")
+                    _non_cb = [c for c in _hvp_ed_df.columns if c not in _CB_COLS]
                     _col_cfg: dict = {
                         "Früh ✓": st.column_config.CheckboxColumn(
                             "Früh ✓",
-                            help="Frühauszahlung in der Simulation aktivieren. "
-                                 "Jahresverlauf, Kapital-Zeitleiste und Steuer-/KV-Verlauf "
-                                 "werden sofort aktualisiert. Nicht gleichzeitig mit Spät ✓.",
+                            help="Frühestmögliche Einmalauszahlung in den Kapitalpool. "
+                                 "Jahresverlauf und Kapital-Zeitleiste werden sofort aktualisiert.",
                         ),
                         "Spät ✓": st.column_config.CheckboxColumn(
                             "Spät ✓",
-                            help="Aufschub bis Spät-Jahr in der Simulation aktivieren. "
-                                 "Nicht gleichzeitig mit Früh ✓.",
+                            help="Spätestmögliche Einmalauszahlung in den Kapitalpool.",
+                        ),
+                        "Monatlich ✓": st.column_config.CheckboxColumn(
+                            "Monatlich ✓",
+                            help="Monatliche Auszahlung im Jahresverlauf anzeigen (nur bei Verträgen mit monatlicher Option).",
                         ),
                         "Früh": st.column_config.NumberColumn("Früh", format="%d",
                             help="Frühestmögliches Auszahlungsjahr des Produkts."),
@@ -871,21 +889,27 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         column_config=_col_cfg,
                     )
 
-                    # Gegenseitigen Ausschluss erzwingen + session_state aktualisieren
+                    # Gegenseitigen Ausschluss erzwingen (Früh/Spät/Monatlich) + state-Update
                     _new_sels: dict[str, str | None] = {}
                     for _ep_name, _ep_row in _edited_hvp.iterrows():
                         _ep_name = str(_ep_name)
-                        _ef = bool(_ep_row.get("Früh ✓", False))
-                        _es = bool(_ep_row.get("Spät ✓", False))
+                        _ef  = bool(_ep_row.get("Früh ✓",     False))
+                        _es  = bool(_ep_row.get("Spät ✓",     False))
+                        _em  = bool(_ep_row.get("Monatlich ✓", False))
+                        # "Monatlich" nur akzeptieren wenn Vertrag monatliche Auszahlung hat
+                        _hp_obj_m = _prod_name_map.get(_ep_name)
+                        if not (_hp_obj_m is not None and _hp_obj_m.max_monatsrente > 0):
+                            _em = False
                         _prev = _sels.get(_ep_name)
-                        if _ef and _es:
-                            _new_sels[_ep_name] = "spaet" if _prev == "frueh" else "frueh"
-                        elif _ef:
-                            _new_sels[_ep_name] = "frueh"
-                        elif _es:
-                            _new_sels[_ep_name] = "spaet"
-                        else:
+                        _candidates = [(k, v) for k, v in [("frueh", _ef), ("spaet", _es), ("mono", _em)] if v]
+                        if not _candidates:
                             _new_sels[_ep_name] = None
+                        elif len(_candidates) == 1:
+                            _new_sels[_ep_name] = _candidates[0][0]
+                        else:
+                            _prev_set = {_prev} if _prev else set()
+                            _newly = [k for k, _ in _candidates if k not in _prev_set]
+                            _new_sels[_ep_name] = _newly[0] if _newly else _candidates[-1][0]
                     _old_sels_copy = dict(st.session_state[_sels_key])
                     st.session_state[_sels_key] = _new_sels
                     if _new_sels != _old_sels_copy:
@@ -1212,6 +1236,32 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         hovertemplate="%{x}: %{y:,.0f} €<extra>" + label + "</extra>",
                     ))
         # Vorsorge-Beiträge werden nicht als Balken dargestellt; nur in der Netto-Hover sichtbar.
+
+        # "Monatlich ✓"-Selektion: Scatter-Linie für monatliche Vertragsauszahlungen
+        for _pn_mono, _sv_mono in _sels.items():
+            if _sv_mono != "mono":
+                continue
+            _p_mono = _prod_name_map.get(_pn_mono)
+            if _p_mono is None or _p_mono.max_monatsrente == 0:
+                continue
+            _sj_m = _p_mono.fruehestes_startjahr
+            _val_pa_m = _p_mono.max_monatsrente * 12
+            _lz_m = _p_mono.laufzeit_jahre if _p_mono.laufzeit_jahre > 0 else horizon
+            _ej_m = _sj_m + _lz_m - 1
+            _xs_m = [j for j in _jahre if _sj_m <= j <= _ej_m]
+            if _xs_m:
+                fig_src.add_trace(go.Scatter(
+                    name=f"{_p_mono.name} (monatl.)",
+                    x=_xs_m, y=[_val_pa_m] * len(_xs_m),
+                    mode="lines+markers",
+                    line=dict(color="#FF6F00", width=3),
+                    marker=dict(size=6, color="#FF6F00"),
+                    hovertemplate=(
+                        f"<b>%{{x}}</b>: {_de(_p_mono.max_monatsrente)} €/Mon."
+                        f" = {_de(_val_pa_m)} €/Jahr<br>{_p_mono.name}"
+                        "<extra>Monatlich</extra>"
+                    ),
+                ))
 
         # Geplante Entnahmen: nur als y1-Balken wenn kein Pool aktiv
         _has_pool_data = (

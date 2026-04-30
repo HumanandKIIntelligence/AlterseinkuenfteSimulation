@@ -785,6 +785,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             st.info("Keine Produkte für Optimierung vorhanden.")
             return
 
+        # ── Session state for per-contract strategy selection ─────────────────
+        _sels_key = f"rc{_rc}_vp_sels"
+        # dict: product_name -> "fm"|"sm"|"fe"|"se"|None
+        _curr_sels: dict[str, str | None] = dict(st.session_state.get(_sels_key, {}))
+
         # ── Optimale Strategie: Netto & Steuer pro Jahr ───────────────────────
         st.subheader("Optimale Strategie – Netto und Steuerbelastung pro Jahr")
 
@@ -793,39 +798,33 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _max_yr_opt = max(_opt_years)
 
         # Hover: aktive Verträge je Jahr aus der optimalen Strategie
-        # beste_entscheidungen: list of (prod, startjahr, anteil)  anteil=1→einmal, 0→mono
         def _opt_hover(yr: int) -> str:
             lines = []
             for _p, _sj, _ant in opt.get("beste_entscheidungen", []):
                 _delay = _sj - _p.fruehestes_startjahr
                 _aufschub = (1 + _p.aufschub_rendite) ** _delay
-                if _ant == 1.0:  # einmal
+                if _ant == 1.0:
                     if yr == _sj:
-                        val = _p.max_einmalzahlung * _aufschub
-                        lines.append(f"  {_p.name}: {_de(val)} € Einmal")
-                elif _ant == 0.0:  # monatlich
+                        lines.append(f"  {_p.name}: {_de(_p.max_einmalzahlung * _aufschub)} € Einmal")
+                elif _ant == 0.0:
                     _ej = (_sj + _p.laufzeit_jahre - 1) if _p.laufzeit_jahre > 0 else _max_yr_opt
                     if _sj <= yr <= _ej:
-                        val = _p.max_monatsrente * _aufschub
-                        lines.append(f"  {_p.name}: {_de(val)} €/Mon.")
-                else:  # kombiniert
+                        lines.append(f"  {_p.name}: {_de(_p.max_monatsrente * _aufschub)} €/Mon.")
+                else:
                     _ej = (_sj + _p.laufzeit_jahre - 1) if _p.laufzeit_jahre > 0 else _max_yr_opt
                     if yr == _sj:
-                        val_e = _p.max_einmalzahlung * _aufschub * _ant
-                        lines.append(f"  {_p.name}: {_de(val_e)} € Einmal (Anteil)")
+                        lines.append(f"  {_p.name}: {_de(_p.max_einmalzahlung * _aufschub * _ant)} € Einmal (Anteil)")
                     if _sj <= yr <= _ej:
-                        val_m = _p.max_monatsrente * _aufschub * (1 - _ant)
-                        lines.append(f"  {_p.name}: {_de(val_m)} €/Mon. (Anteil)")
+                        lines.append(f"  {_p.name}: {_de(_p.max_monatsrente * _aufschub * (1 - _ant))} €/Mon. (Anteil)")
             return ("<b>Aktive Verträge:</b><br>" + "<br>".join(lines)) if lines else "–"
 
         _hover_opt = [_opt_hover(yr) for yr in _opt_years]
 
         # Kennzahlen
-        _rente_rows = _df_opt  # alle Jahre (inkl. Arbeitsjahre wenn vorhanden)
-        _avg_netto_mon = _rente_rows["Netto"].mean() / 12
-        _total_steuer  = _rente_rows["Steuer"].sum()
-        _total_kv      = _rente_rows["KV_PV"].sum()
-        _total_netto   = _rente_rows["Netto"].sum()
+        _avg_netto_mon = _df_opt["Netto"].mean() / 12
+        _total_steuer  = _df_opt["Steuer"].sum()
+        _total_kv      = _df_opt["KV_PV"].sum()
+        _total_netto   = _df_opt["Netto"].sum()
         _overhead_pct  = (_total_steuer + _total_kv) / max(1, _total_steuer + _total_kv + _total_netto) * 100
         _vorteil_mono  = opt["bestes_netto"] - opt["netto_alle_monatlich"]
 
@@ -837,31 +836,67 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _km4.metric("Vorteil vs. alles Monatlich früh", f"{_s_v}{_de(_vorteil_mono)} €",
                     delta_color="normal")
 
-        # Stacked-Bar: Netto + Steuer + KV/PV
+        # Stacked bars: Netto + Steuer + KV/PV
+        _SEL_COLORS = ["#1565C0","#B71C1C","#6A1B9A","#004D40","#E65100",
+                       "#880E4F","#006064","#1B5E20","#F57F17","#4E342E"]
         fig_opt = go.Figure()
         fig_opt.add_trace(go.Bar(
-            name="Netto",
-            x=_df_opt.index, y=_df_opt["Netto"],
-            marker_color="#4CAF50",
-            customdata=_hover_opt,
+            name="Netto", x=_df_opt.index, y=_df_opt["Netto"],
+            marker_color="#4CAF50", customdata=_hover_opt,
             hovertemplate="<b>%{x}</b>: %{y:,.0f} € Netto<br>%{customdata}<extra>Netto</extra>",
         ))
         fig_opt.add_trace(go.Bar(
-            name="Steuer",
-            x=_df_opt.index, y=_df_opt["Steuer"],
+            name="Steuer", x=_df_opt.index, y=_df_opt["Steuer"],
             marker_color="#EF9A9A",
             hovertemplate="<b>%{x}</b>: %{y:,.0f} € Steuer<extra>Steuer</extra>",
         ))
         fig_opt.add_trace(go.Bar(
-            name="KV/PV",
-            x=_df_opt.index, y=_df_opt["KV_PV"],
+            name="KV/PV", x=_df_opt.index, y=_df_opt["KV_PV"],
             marker_color="#FFF176",
             hovertemplate="<b>%{x}</b>: %{y:,.0f} € KV/PV<extra>KV/PV</extra>",
         ))
-        # Durchschnittslinie Netto
+
+        # Selected contract lines (from checkboxes in table below)
+        _sel_ci = 0
+        for _sp in produkte_obj:
+            _mode = _curr_sels.get(_sp.name)
+            if not _mode:
+                continue
+            _sc = _SEL_COLORS[_sel_ci % len(_SEL_COLORS)]
+            _sel_ci += 1
+            _use_spaet = _mode in ("sm", "se")
+            _sj_s = _sp.spaetestes_startjahr if _use_spaet else _sp.fruehestes_startjahr
+            _d_s  = _sj_s - _sp.fruehestes_startjahr
+            _af_s = (1 + _sp.aufschub_rendite) ** _d_s
+            _lbl_s = {"fm": "frühest monatlich", "sm": "spätest monatlich",
+                      "fe": "frühest Einmal", "se": "spätest Einmal"}[_mode]
+            if _mode in ("fm", "sm"):
+                _lz_s = _sp.laufzeit_jahre if _sp.laufzeit_jahre > 0 else horizon
+                _ej_s = min(_sj_s + _lz_s - 1, _max_yr_opt)
+                _val_pa = _sp.max_monatsrente * _af_s * 12
+                _xs_s = [yr for yr in _opt_years if _sj_s <= yr <= _ej_s]
+                _ys_s = [_val_pa] * len(_xs_s)
+                fig_opt.add_trace(go.Scatter(
+                    name=f"{_sp.name} ({_lbl_s})",
+                    x=_xs_s, y=_ys_s, mode="lines+markers",
+                    line=dict(color=_sc, width=3),
+                    marker=dict(size=6, color=_sc),
+                    hovertemplate=(f"<b>%{{x}}</b>: {_de(_sp.max_monatsrente * _af_s)} €/Mon. "
+                                   f"= {_de(_val_pa)} €/Jahr<br>{_sp.name} – {_lbl_s}"
+                                   "<extra></extra>"),
+                ))
+            else:
+                _val_e = _sp.max_einmalzahlung * _af_s
+                fig_opt.add_trace(go.Scatter(
+                    name=f"{_sp.name} ({_lbl_s})",
+                    x=[_sj_s], y=[_val_e], mode="markers",
+                    marker=dict(size=14, symbol="star", color=_sc),
+                    hovertemplate=(f"<b>{_sj_s}</b>: {_de(_val_e)} € Einmal<br>"
+                                   f"{_sp.name} – {_lbl_s}<extra></extra>"),
+                ))
+
         fig_opt.add_hline(
-            y=_df_opt["Netto"].mean(),
-            line_dash="dot", line_color="#2E7D32", line_width=1.5,
+            y=_df_opt["Netto"].mean(), line_dash="dot", line_color="#2E7D32", line_width=1.5,
             annotation_text=f"Ø {_de(_df_opt['Netto'].mean() / 12)} €/Mon.",
             annotation_position="top right",
         )
@@ -880,27 +915,40 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         )
         st.plotly_chart(fig_opt, use_container_width=True)
         st.caption(
-            "Hover über einen Balken zeigt die aktiven Verträge im jeweiligen Jahr "
-            "(Monatlich: ab Startjahr bis Laufzeitende · Einmal: nur im Auszahlungsjahr). "
-            "Ø-Linie = jährliches Durchschnittsnetto der optimalen Strategie."
+            "Balken = optimale Strategie (Netto/Steuer/KV). "
+            "Farbige Linien/Sterne = ausgewählte Vertragsstrategie aus der Tabelle unten. "
+            "Ø-Linie = Durchschnittsnetto."
         )
 
         st.divider()
 
-        # ── Einzelvergleich je Produkt ────────────────────────────────────────
-        # Optimales Timing je Produkt aus dem Optimizer (bereits berechnet)
+        # ── Einzelvergleich mit Checkboxen ────────────────────────────────────
         _opt_timing: dict[str, int] = {
             prod.name: startjahr
             for prod, startjahr, _ in opt.get("beste_entscheidungen", [])
         }
 
+        # Checkbox columns: col_name -> mode_key
+        _CC = {"fm": "🟢 Früh Mono.", "sm": "🔵 Spät Mono.",
+               "fe": "🟠 Früh Einmal", "se": "🟡 Spät Einmal"}
+        _CC_COLS = list(_CC.values())
+
         st.subheader("Einzelvergleich je Vertrag")
-        rows = []
+        _table_rows = []
+        _avail_map: dict[str, set[str]] = {}
         for pd_dict in produkte_dicts:
             p = _aus_dict(pd_dict)
             ist_lv = p.ist_lebensversicherung
-            hat_mono = p.max_monatsrente > 0 and not ist_lv
-            hat_einz = p.max_einmalzahlung > 0
+            hat_mono = p.max_monatsrente > 0 and not ist_lv and p.typ != "ETF"
+            hat_einz = p.max_einmalzahlung > 0 and not p.ist_nur_monatsrente
+            hat_spaet_p = p.spaetestes_startjahr > p.fruehestes_startjahr
+            avail: set[str] = set()
+            if hat_mono:   avail.add("fm")
+            if hat_mono and hat_spaet_p: avail.add("sm")
+            if hat_einz:   avail.add("fe")
+            if hat_einz and hat_spaet_p: avail.add("se")
+            _avail_map[p.name] = avail
+
             v = vergleiche_produkt(p, rendite, horizon)
             bestes = v["bestes"]
             opt_j = _opt_timing.get(p.name, p.fruehestes_startjahr)
@@ -911,10 +959,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             elif opt_j >= p.spaetestes_startjahr:
                 zeitpunkt = "spätestmöglich"
             else:
-                delay = opt_j - p.fruehestes_startjahr
-                zeitpunkt = f"ab {opt_j} (+{delay} J. Aufschub)"
+                zeitpunkt = f"ab {opt_j} (+{opt_j - p.fruehestes_startjahr} J. Aufschub)"
             empfehlung = f"{_LABELS[bestes]}, {zeitpunkt}"
-            rows.append({
+
+            sel = _curr_sels.get(p.name)
+            _table_rows.append({
                 "Vertrag": p.name,
                 "Typ": pd_dict["typ_label"],
                 "Person": p.person,
@@ -922,15 +971,54 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "Monatlich (Total)": f"{_de(v['monatlich']['total'])} €" if hat_mono else "–",
                 "Kombiniert (Total)": f"{_de(v['kombiniert']['total'])} €" if (hat_mono and hat_einz) else "–",
                 "Einfach-Empfehlung ✅": empfehlung,
+                "🟢 Früh Mono.":  sel == "fm" and "fm" in avail,
+                "🔵 Spät Mono.":  sel == "sm" and "sm" in avail,
+                "🟠 Früh Einmal": sel == "fe" and "fe" in avail,
+                "🟡 Spät Einmal": sel == "se" and "se" in avail,
             })
-        st.dataframe(
-            pd.DataFrame(rows).set_index("Vertrag"),
+
+        _df_edit = pd.DataFrame(_table_rows).set_index("Vertrag")
+        _non_cb = [c for c in _df_edit.columns if c not in _CC_COLS]
+
+        _edited = st.data_editor(
+            _df_edit,
+            column_config={
+                "🟢 Früh Mono.":  st.column_config.CheckboxColumn("🟢 Früh\nMono.",  width="small"),
+                "🔵 Spät Mono.":  st.column_config.CheckboxColumn("🔵 Spät\nMono.",  width="small"),
+                "🟠 Früh Einmal": st.column_config.CheckboxColumn("🟠 Früh\nEinmal", width="small"),
+                "🟡 Spät Einmal": st.column_config.CheckboxColumn("🟡 Spät\nEinmal", width="small"),
+            },
+            disabled=_non_cb,
+            key=f"rc{_rc}_vp_edit",
             use_container_width=True,
         )
         st.caption(
-            "Einfach-Empfehlung: Auszahlungsart ohne Steuereffekte. "
-            "Timing (frühest-/spätestmöglich/fixes Jahr) aus der steuerlichen Optimierung."
+            "Checkbox wählt Strategie für Diagramm (nur eine pro Zeile). "
+            "Einfach-Empfehlung ohne Steuereffekte; Timing aus der Optimierung."
         )
+
+        # Enforce radio-like behavior (one checkbox per row) + update session_state
+        _new_sels: dict[str, str | None] = {}
+        for prod_name in _edited.index:
+            prev_sel = _curr_sels.get(prod_name)
+            avail = _avail_map.get(prod_name, set())
+            # Only accept valid (available) selections
+            curr_checked = {
+                mk for mk, cc in _CC.items()
+                if _edited.at[prod_name, cc] and mk in avail
+            }
+            if len(curr_checked) == 0:
+                _new_sels[prod_name] = None
+            elif len(curr_checked) == 1:
+                _new_sels[prod_name] = next(iter(curr_checked))
+            else:
+                # Multiple: keep newly added
+                newly = curr_checked - ({prev_sel} if prev_sel else set())
+                _new_sels[prod_name] = next(iter(newly)) if newly else next(iter(curr_checked))
+
+        if _new_sels != _curr_sels:
+            st.session_state[_sels_key] = _new_sels
+            st.rerun()
 
         st.caption(
             "⚠️ Steuerliche Simulation auf Basis der aktuellen Rechtslage (2024). "

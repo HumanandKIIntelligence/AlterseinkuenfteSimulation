@@ -731,6 +731,14 @@ def _apply_loaded_session(data: dict) -> None:
     st.session_state[_gkey("hh_miet_stg")] = data.get("mietsteigerung", 0.015) * 100
     if data.get("hyp_daten"):
         st.session_state["hyp_daten"] = data["hyp_daten"]
+    # Entnahme-Opt: Auszahlungsselektionen und Pool-Entnahmen wiederherstellen
+    _rc_cur = st.session_state.get("_rc", 0)
+    if data.get("eo_hvp_sels"):
+        st.session_state[f"rc{_rc_cur}_hvp_sels"] = data["eo_hvp_sels"]
+    if data.get("pool_topup_withdrawals"):
+        st.session_state["pool_topup_withdrawals"] = {
+            int(k): float(v) for k, v in data["pool_topup_withdrawals"].items()
+        }
 
 
 def _sidebar_save(profil1: Profil, profil2, veranlagung: str,
@@ -748,6 +756,8 @@ def _sidebar_save(profil1: Profil, profil2, veranlagung: str,
                 mieteinnahmen=mieteinnahmen,
                 mietsteigerung=mietsteigerung,
                 hyp_daten=st.session_state.get("hyp_daten"),
+                eo_hvp_sels=st.session_state.get(f"rc{_RC}_hvp_sels", {}),
+                pool_topup_withdrawals=st.session_state.get("pool_topup_withdrawals", {}),
             )
             st.sidebar.success(f"Gespeichert: {pfad}")
 
