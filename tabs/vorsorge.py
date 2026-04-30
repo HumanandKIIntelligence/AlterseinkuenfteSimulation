@@ -828,20 +828,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         st.divider()
 
         # ── Einzelvergleich je Produkt ────────────────────────────────────────
-        def _zeitpunkt_emp(p: VorsorgeProdukt, bestes: str) -> str:
-            delay = p.spaetestes_startjahr - p.fruehestes_startjahr
-            if delay <= 0:
-                return "frühestmöglich"
-            aufschub = (1 + p.aufschub_rendite) ** delay
-            H_s = max(1, horizon - delay)
-            if bestes == "monatlich":
-                t_frueh = p.max_monatsrente * 12 * horizon
-                t_spaet = p.max_monatsrente * aufschub * 12 * H_s
-            else:
-                K_s = p.max_einmalzahlung * aufschub
-                t_frueh = _annuitaet(p.max_einmalzahlung, rendite, horizon) * 12 * horizon
-                t_spaet = _annuitaet(K_s, rendite, H_s) * 12 * H_s
-            return "spätestmöglich" if t_spaet > t_frueh else "frühestmöglich"
+        # Optimales Timing je Produkt aus dem Optimizer (bereits berechnet)
+        _opt_timing: dict[str, int] = {
+            prod.name: startjahr
+            for prod, startjahr, _ in opt.get("beste_entscheidungen", [])
+        }
 
         st.subheader("Einzelvergleich je Vertrag")
         rows = []
@@ -850,10 +841,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             ist_lv = p.ist_lebensversicherung
             hat_mono = p.max_monatsrente > 0 and not ist_lv
             hat_einz = p.max_einmalzahlung > 0
-            hat_spaet_p = p.spaetestes_startjahr > p.fruehestes_startjahr
             v = vergleiche_produkt(p, rendite, horizon)
             bestes = v["bestes"]
-            zeitpunkt = _zeitpunkt_emp(p, bestes)
+            opt_j = _opt_timing.get(p.name, p.fruehestes_startjahr)
+            if opt_j <= p.fruehestes_startjahr:
+                zeitpunkt = "frühestmöglich"
+            elif opt_j >= p.spaetestes_startjahr:
+                zeitpunkt = "spätestmöglich"
+            else:
+                delay = opt_j - p.fruehestes_startjahr
+                zeitpunkt = f"ab {opt_j} (+{delay} J. Aufschub)"
             empfehlung = f"{_LABELS[bestes]}, {zeitpunkt}"
             rows.append({
                 "Vertrag": p.name,
@@ -869,8 +866,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             use_container_width=True,
         )
         st.caption(
-            "Einfach-Empfehlung vergleicht Gesamteinnahmen ohne Steuereffekte (frühest vs. spätestmöglich). "
-            "Timing-Empfehlung basiert auf Aufschubverzinsung vs. verbleibender Laufzeit."
+            "Einfach-Empfehlung: Auszahlungsart ohne Steuereffekte. "
+            "Timing (frühest-/spätestmöglich/fixes Jahr) aus der steuerlichen Optimierung."
         )
 
         st.caption(
