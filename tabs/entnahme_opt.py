@@ -951,20 +951,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _base_netto_eo = _netto_j_eo - _auto_annuity_eo - _hyp_rate_eo - _mindest_j_topup
                     _manual_w_eo = _manual_withdrawals.get(_tj, 0.0)
                     _pool_bal_eo = max(0.0, _pool_bal_eo - _manual_w_eo)
+                    _abw_val = round(_base_netto_eo + _manual_w_eo)
+                    _abw_str = (f"🔴 {_de(_abw_val)}" if _abw_val < 0
+                                else _de(_abw_val))
                     _topup_rows_eo.append({
                         "Jahr": _tj,
                         "Entnahme aus Pool (€)": _manual_w_eo if _manual_w_eo > 0 else None,
                         "Frei nach Mindest+Hyp. (€)": round(_base_netto_eo),
                         "Mindesthaushalt (€/Jahr)": _mindest_j_topup,
-                        "Abweichung (€)": round(_base_netto_eo + _manual_w_eo),
+                        "Abweichung": _abw_str,
                         "Pool-Bestand (€)": round(_pool_bal_eo),
                     })
                 _topup_df_eo = pd.DataFrame(_topup_rows_eo)
-
-                def _color_abw_eo(val):
-                    if pd.isna(val):
-                        return ""
-                    return f"font-weight: bold; {'color: green' if val >= 0 else 'color: red'}"
 
                 _tu_ver_eo = sum(int(j) * 1000 + int(_manual_withdrawals.get(j, 0)) for j in sorted(df_jd.index))
                 _edited_tu_eo = st.data_editor(
@@ -972,7 +970,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     use_container_width=True,
                     hide_index=True,
                     key=f"rc{_rc}_topup_editor_eo_{_tu_ver_eo}",
-                    disabled=["Jahr", "Frei nach Mindest+Hyp. (€)", "Mindesthaushalt (€/Jahr)", "Abweichung (€)", "Pool-Bestand (€)"],
+                    disabled=["Jahr", "Frei nach Mindest+Hyp. (€)", "Mindesthaushalt (€/Jahr)", "Abweichung", "Pool-Bestand (€)"],
                     column_config={
                         "Jahr": st.column_config.NumberColumn("Jahr", format="%d"),
                         "Entnahme aus Pool (€)": st.column_config.NumberColumn(
@@ -985,8 +983,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                             help="Netto (ohne Pool-Automatik) − Hypothekenrate − Mindesthaushalt. Entspricht der gelben Linie im Diagramm.",
                         ),
                         "Mindesthaushalt (€/Jahr)": st.column_config.NumberColumn("Mindesthaushalt (€/Jahr)", format="%.0f"),
-                        "Abweichung (€)": st.column_config.NumberColumn("Abweichung (€)", format="%.0f",
-                            help="Frei nach Mindest+Hyp. + Pool-Entnahme. Positiv = Ziel erreicht."),
+                        "Abweichung": st.column_config.TextColumn("Abweichung",
+                            help="Frei nach Mindest+Hyp. + Pool-Entnahme. Positiv = Ziel erreicht; 🔴 = Unterdeckung."),
                         "Pool-Bestand (€)": st.column_config.NumberColumn("Pool-Bestand (€)", format="%.0f"),
                     },
                 )
@@ -1626,13 +1624,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 for i, j in enumerate(yrs):
                     curr = series[j]
                     prev = series[yrs[i - 1]] if i > 0 else curr
-                    entn = sum(
-                        float(df.loc[j, f"Src_Kap_{pid}"])
-                        for pid in pool_pids
-                        if f"Src_Kap_{pid}" in df.columns and j in df.index
-                    )
                     inj = float(df.loc[j, "Kap_Injektion"]) if ("Kap_Injektion" in df.columns and j in df.index) else 0.0
-                    sonder = float(df.loc[j, "Sonderausgabe"]) if ("Sonderausgabe" in df.columns and j in df.index) else 0.0
+                    manual_w = _manual_withdrawals.get(j, 0.0)
                     sparrate_j = 0.0
                     if eintritt_j_p1 > 0 and j < eintritt_j_p1:
                         sparrate_j += sparrate_p1 * 12
@@ -1646,12 +1639,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                             parts.append(f"+{_de(rendite_amt)} € Rendite ({rendite_pa * 100:.1f} %)")
                         if sparrate_j > 0.5:
                             parts.append(f"+{_de(sparrate_j)} € Spareinlage")
-                        if entn > 0.5:
-                            parts.append(f"−{_de(entn)} € Entnahme")
+                        if manual_w > 0.5:
+                            parts.append(f"−{_de(manual_w)} € Entnahme")
                         if inj > 0.5:
                             parts.append(f"+{_de(inj)} € Einzahlung")
-                        if sonder > 0.5:
-                            parts.append(f"−{_de(sonder)} € Hyp.-Tilgung")
                     hover.append("<br>".join(parts) if parts else "")
                 return series, hover
 
