@@ -785,94 +785,105 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             st.info("Keine Produkte für Optimierung vorhanden.")
             return
 
-        # Jahresverlauf: vier Szenarien als gruppierte Balken
-        st.subheader("Jahresverlauf der vier Auszahlungsszenarien")
-        _hat_monatlich = any(
-            p.max_monatsrente > 0 and not p.ist_lebensversicherung and p.typ != "ETF"
-            for p in produkte_obj
+        # ── Optimale Strategie: Netto & Steuer pro Jahr ───────────────────────
+        st.subheader("Optimale Strategie – Netto und Steuerbelastung pro Jahr")
+
+        _df_opt = pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
+        _opt_years = list(_df_opt.index)
+        _max_yr_opt = max(_opt_years)
+
+        # Hover: aktive Verträge je Jahr aus der optimalen Strategie
+        # beste_entscheidungen: list of (prod, startjahr, anteil)  anteil=1→einmal, 0→mono
+        def _opt_hover(yr: int) -> str:
+            lines = []
+            for _p, _sj, _ant in opt.get("beste_entscheidungen", []):
+                _delay = _sj - _p.fruehestes_startjahr
+                _aufschub = (1 + _p.aufschub_rendite) ** _delay
+                if _ant == 1.0:  # einmal
+                    if yr == _sj:
+                        val = _p.max_einmalzahlung * _aufschub
+                        lines.append(f"  {_p.name}: {_de(val)} € Einmal")
+                elif _ant == 0.0:  # monatlich
+                    _ej = (_sj + _p.laufzeit_jahre - 1) if _p.laufzeit_jahre > 0 else _max_yr_opt
+                    if _sj <= yr <= _ej:
+                        val = _p.max_monatsrente * _aufschub
+                        lines.append(f"  {_p.name}: {_de(val)} €/Mon.")
+                else:  # kombiniert
+                    _ej = (_sj + _p.laufzeit_jahre - 1) if _p.laufzeit_jahre > 0 else _max_yr_opt
+                    if yr == _sj:
+                        val_e = _p.max_einmalzahlung * _aufschub * _ant
+                        lines.append(f"  {_p.name}: {_de(val_e)} € Einmal (Anteil)")
+                    if _sj <= yr <= _ej:
+                        val_m = _p.max_monatsrente * _aufschub * (1 - _ant)
+                        lines.append(f"  {_p.name}: {_de(val_m)} €/Mon. (Anteil)")
+            return ("<b>Aktive Verträge:</b><br>" + "<br>".join(lines)) if lines else "–"
+
+        _hover_opt = [_opt_hover(yr) for yr in _opt_years]
+
+        # Kennzahlen
+        _rente_rows = _df_opt  # alle Jahre (inkl. Arbeitsjahre wenn vorhanden)
+        _avg_netto_mon = _rente_rows["Netto"].mean() / 12
+        _total_steuer  = _rente_rows["Steuer"].sum()
+        _total_kv      = _rente_rows["KV_PV"].sum()
+        _total_netto   = _rente_rows["Netto"].sum()
+        _overhead_pct  = (_total_steuer + _total_kv) / max(1, _total_steuer + _total_kv + _total_netto) * 100
+        _vorteil_mono  = opt["bestes_netto"] - opt["netto_alle_monatlich"]
+
+        _km1, _km2, _km3, _km4 = st.columns(4)
+        _km1.metric("Ø Netto/Mon. (optimal)", f"{_de(_avg_netto_mon)} €")
+        _km2.metric(f"Steuer gesamt ({horizon} J.)", f"{_de(_total_steuer)} €")
+        _km3.metric("Steuer+KV-Anteil am Brutto", f"{_overhead_pct:.1f} %")
+        _s_v = "+" if _vorteil_mono >= 0 else ""
+        _km4.metric("Vorteil vs. alles Monatlich früh", f"{_s_v}{_de(_vorteil_mono)} €",
+                    delta_color="normal")
+
+        # Stacked-Bar: Netto + Steuer + KV/PV
+        fig_opt = go.Figure()
+        fig_opt.add_trace(go.Bar(
+            name="Netto",
+            x=_df_opt.index, y=_df_opt["Netto"],
+            marker_color="#4CAF50",
+            customdata=_hover_opt,
+            hovertemplate="<b>%{x}</b>: %{y:,.0f} € Netto<br>%{customdata}<extra>Netto</extra>",
+        ))
+        fig_opt.add_trace(go.Bar(
+            name="Steuer",
+            x=_df_opt.index, y=_df_opt["Steuer"],
+            marker_color="#EF9A9A",
+            hovertemplate="<b>%{x}</b>: %{y:,.0f} € Steuer<extra>Steuer</extra>",
+        ))
+        fig_opt.add_trace(go.Bar(
+            name="KV/PV",
+            x=_df_opt.index, y=_df_opt["KV_PV"],
+            marker_color="#FFF176",
+            hovertemplate="<b>%{x}</b>: %{y:,.0f} € KV/PV<extra>KV/PV</extra>",
+        ))
+        # Durchschnittslinie Netto
+        fig_opt.add_hline(
+            y=_df_opt["Netto"].mean(),
+            line_dash="dot", line_color="#2E7D32", line_width=1.5,
+            annotation_text=f"Ø {_de(_df_opt['Netto'].mean() / 12)} €/Mon.",
+            annotation_position="top right",
         )
-        _hat_einmal = any(
-            p.max_einmalzahlung > 0 and not p.ist_nur_monatsrente
-            for p in produkte_obj
-        )
-        _hat_spaet = any(p.spaetestes_startjahr > p.fruehestes_startjahr for p in produkte_obj)
-
-        def _prod_lines(is_einmal: bool, use_spaet: bool, max_year: int) -> list[tuple]:
-            """(name, startjahr, endjahr, hover_line) per qualifying product."""
-            result = []
-            for p in produkte_obj:
-                if is_einmal:
-                    if p.max_einmalzahlung <= 0 or p.ist_nur_monatsrente:
-                        continue
-                    sj = p.spaetestes_startjahr if use_spaet else p.fruehestes_startjahr
-                    ej = sj  # einmal: nur im Auszahlungsjahr
-                    val = p.max_einmalzahlung * (1 + p.aufschub_rendite) ** (sj - p.fruehestes_startjahr)
-                    line = f"  {p.name}: {_de(val)} € Einmal"
-                else:
-                    if p.ist_lebensversicherung or p.typ == "ETF" or p.max_monatsrente <= 0:
-                        continue
-                    sj = p.spaetestes_startjahr if use_spaet else p.fruehestes_startjahr
-                    ej = (sj + p.laufzeit_jahre - 1) if p.laufzeit_jahre > 0 else max_year
-                    val = p.max_monatsrente * (1 + p.aufschub_rendite) ** (sj - p.fruehestes_startjahr)
-                    lz_txt = f", {p.laufzeit_jahre} J." if p.laufzeit_jahre > 0 else ", lebenslang"
-                    line = f"  {p.name}: {_de(val)} €/Mon.{lz_txt}"
-                result.append((p.name, sj, ej, line))
-            return result
-
-        def _hover_per_year(years: list[int], prod_lines: list[tuple], is_einmal: bool) -> list[str]:
-            texts = []
-            for yr in years:
-                active = [desc for _, sj, ej, desc in prod_lines if sj <= yr <= ej]
-                if active:
-                    label = "Auszahlung in diesem Jahr:" if is_einmal else "Laufende Verträge:"
-                    texts.append(f"<b>{label}</b><br>" + "<br>".join(active))
-                else:
-                    texts.append("–")
-            return texts
-
-        # (label, jd_key, color, show, is_einmal, use_spaet)
-        _jv_strategies = [
-            ("Früheste Monatlich", "jahresdaten_mono",         "#4CAF50", _hat_monatlich,                False, False),
-            ("Späteste Monatlich", "jahresdaten_mono_spaet",   "#64B5F6", _hat_monatlich and _hat_spaet, False, True),
-            ("Früheste Einmal",    "jahresdaten_einmal",       "#FF9800", _hat_einmal,                   True,  False),
-            ("Späteste Einmal",    "jahresdaten_einmal_spaet", "#FFB74D", _hat_einmal and _hat_spaet,    True,  True),
-        ]
-        fig_jv = go.Figure()
-        for _label_jv, _key_jv, _color_jv, _show_jv, _is_einmal_jv, _use_spaet_jv in _jv_strategies:
-            if not _show_jv:
-                continue
-            _jd_raw = opt.get(_key_jv, [])
-            if not _jd_raw:
-                continue
-            _df_jv = pd.DataFrame(_jd_raw).set_index("Jahr")
-            _years_jv = list(_df_jv.index)
-            _plines = _prod_lines(_is_einmal_jv, _use_spaet_jv, max(_years_jv))
-            _htexts = _hover_per_year(_years_jv, _plines, _is_einmal_jv)
-            fig_jv.add_trace(go.Bar(
-                name=_label_jv,
-                x=_df_jv.index,
-                y=_df_jv["Netto"],
-                marker_color=_color_jv,
-                customdata=_htexts,
-                hovertemplate=(
-                    f"<b>%{{x}}</b>: %{{y:,.0f}} € Netto<br>%{{customdata}}"
-                    f"<extra>{_label_jv}</extra>"
-                ),
-            ))
         if not profil.bereits_rentner:
-            fig_jv.add_vline(
+            fig_opt.add_vline(
                 x=profil.eintritt_jahr, line_width=2, line_dash="dash", line_color="#5C6BC0",
                 annotation_text="Renteneintritt", annotation_position="top right",
             )
-        fig_jv.update_layout(
-            barmode="group", template="plotly_white", height=420,
+        fig_opt.update_layout(
+            barmode="stack", template="plotly_white", height=420,
             xaxis=dict(title="Jahr", dtick=2),
-            yaxis=dict(title="Netto (€ / Jahr)", tickformat=",.0f"),
+            yaxis=dict(title="€ / Jahr", tickformat=",.0f"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=10, r=10, t=40, b=10),
             separators=",.",
         )
-        st.plotly_chart(fig_jv, use_container_width=True)
+        st.plotly_chart(fig_opt, use_container_width=True)
+        st.caption(
+            "Hover über einen Balken zeigt die aktiven Verträge im jeweiligen Jahr "
+            "(Monatlich: ab Startjahr bis Laufzeitende · Einmal: nur im Auszahlungsjahr). "
+            "Ø-Linie = jährliches Durchschnittsnetto der optimalen Strategie."
+        )
 
         st.divider()
 
