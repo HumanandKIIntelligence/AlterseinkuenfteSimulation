@@ -19,7 +19,6 @@ from engine import (
     _netto_ueber_horizont, kapitalwachstum,
 )
 from tabs import auszahlung
-from tabs.vorsorge import _run_optimierung
 try:
     from tabs.hypothek import (
         get_ausgaben_plan, get_restschuld_end,
@@ -559,74 +558,23 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _entnahmen_dict: dict[int, float] = {e["jahr"]: e["betrag"] for e in _eo_entnahmen_early}
 
         if _hyp_info:
-            _hyp_checkbox = st.checkbox(
-                "🏠 Hypothek in Optimierung berücksichtigen",
-                value=True,
-                key=f"rc{_rc}_eo_hyp_aktiv",
-                help="Berücksichtigt laufende Hypothekraten und die im Tab 🏠 Hypothek "
-                     "konfigurierte Restschuld-Strategie.",
-            )
-            if _hyp_checkbox:
-                _de_h = lambda v: f"{v:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                _rs            = _hyp_info["restschuld_end"]
-                _markt_zins_pa = _hyp_info["anschluss_zins_pa"]
-                _anschluss_lz  = _hyp_info["anschluss_laufzeit"]
-                _behandlung    = _hyp_info.get("restschuld_behandlung", "keine")
-                _raten_aus_kapital = _hyp_info.get("raten_aus_kapital", False)
-                _hyp_ezl       = _hyp_info.get("anschluss_einmalzahlungen", [])
-                _endjahr_hyp   = _hyp_info["endjahr"]
-
-                _st_labels = {
-                    "keine":           "Keine Restschuld-Planung",
-                    "ratenkredit":     (
-                        f"Anschluss-Ratenkredit {_markt_zins_pa*100:.2f} % · {_anschluss_lz} J."
-                        + (" · Raten aus Kapital" if _raten_aus_kapital else "")
-                    ),
-                    "kapitalanlage":   "Kapital-Einmaltilgung im Endjahr",
-                    "einmalzahlungen": (
-                        f"Sondertilgungen ({len(_hyp_ezl)} EZ)" if _hyp_ezl
-                        else "Sondertilgungen (keine EZ erfasst)"
-                    ),
-                }
-                st.caption(
-                    f"Hypothek {_hyp_info['startjahr']}–{_endjahr_hyp} · "
-                    f"Rate {_de_h(_hyp_info['jaehrl_rate'])} €/Jahr · "
-                    f"Restschuld {_de_h(_rs)} € · "
-                    f"Strategie: **{_st_labels.get(_behandlung, '–')}**  \n"
-                    "↳ Strategie und Parameter im Tab **🏠 Hypothek** konfigurieren."
-                )
-
-                _ausgaben_plan = get_ausgaben_plan_optimierung()
-
-                if _behandlung == "ratenkredit":
-                    _anschluss_spar = _raten_aus_kapital
-                    _ak_zeitleiste_rs = _rs
-                    _ak_zeitleiste_startjahr = _endjahr_hyp
-                    if _raten_aus_kapital:
-                        _spkap_pool_startjahr = _hyp_info["startjahr"]
-                        _spkap_pool_wert = kapitalwachstum(
-                            _spkap_orig, _spkap_sparrate, _spkap_rendite,
-                            max(0, _spkap_pool_startjahr - AKTUELLES_JAHR),
-                        )
-                elif _behandlung == "kapitalanlage":
-                    _pool_tilgung = True
-                    _einmal_tilgung = True
-                elif _behandlung == "einmalzahlungen":
-                    _pool_tilgung = True  # immer aus Kapitalpool
-                    if _hyp_ezl:
-                        _primary_ez_sum = sum(
-                            float(e["betrag"]) for e in _hyp_ezl if int(e["jahr"]) <= _endjahr_hyp
-                        )
-                        _ak_zeitleiste_rs = max(0.0, _rs - _primary_ez_sum)
-                        _ak_zeitleiste_startjahr = _endjahr_hyp
-                        _spkap_pool_startjahr = min(int(e["jahr"]) for e in _hyp_ezl)
-                        _spkap_pool_wert = kapitalwachstum(
-                            _spkap_orig, _spkap_sparrate, _spkap_rendite,
-                            max(0, _spkap_pool_startjahr - AKTUELLES_JAHR),
-                        )
-                    else:
-                        _ak_zeitleiste_rs = _rs
-                        _ak_zeitleiste_startjahr = _endjahr_hyp
+            _ausgaben_plan = get_ausgaben_plan()
+            _rs = get_restschuld_end()
+            # Restliche Hypothek-Variablen aus hyp_daten lesen
+            hyp_d = st.session_state.get("hyp_daten", {})
+            _endjahr_hyp = int(hyp_d.get("endjahr", AKTUELLES_JAHR + 20))
+            _markt_zins_pa = float(hyp_d.get("anschluss_zins_pa", 0.04))
+            _anschluss_lz = int(hyp_d.get("anschluss_laufzeit", 10))
+            _hyp_ezl = get_hyp_schedule()
+            _behandlung = str(hyp_d.get("behandlung", "keine"))
+            _pool_tilgung = (_behandlung == "einmalzahlungen")
+            _anschluss_spar = (_behandlung == "ratenkredit")
+            _einmal_tilgung = (_behandlung == "einmalzahlungen")
+            _raten_aus_kapital = bool(hyp_d.get("raten_in_simulation", False))
+            _ak_zeitleiste_rs = _rs
+            _ak_zeitleiste_startjahr = _endjahr_hyp + 1
+            _spkap_pool_startjahr = _spkap_eintritt_j
+            _spkap_pool_wert = _spkap
 
         # Geplante Entnahmen in Ausgabenplan einrechnen (aus Kapitalpool)
         for _entr_jr, _entr_btr in _entnahmen_dict.items():
@@ -654,118 +602,93 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "name": "Sparkapital", "person": "Person 1",
                 "max_einmalzahlung": round(_spkap),
             })
-        with st.spinner("Optimierung läuft …"):
-            opt = _run_optimierung("eo", _profil_eo, _ergebnis_eo,
-                                   _produkte_obj_run, _produkte_dicts_run,
-                                   horizon, mieteinnahmen, mietsteigerung,
-                                   profil2=_profil2_eo, ergebnis2=_ergebnis2_eo,
-                                   veranlagung=_ver_eo, gehalt=gehalt,
-                                   ausgaben_plan=_ausgaben_plan if _ausgaben_plan else None)
-
-        if not opt:
-            st.info("Keine Produkte für Optimierung vorhanden.")
-            return
-
-        # Jahresdaten für Sidebar-Vertragsanzeige speichern
-        st.session_state["_sb_eo_jd"] = opt["jahresdaten"]
-
-        # ── Checkbox-Override: Selektion aus session_state lesen ─────────────
+        # ── Direkte Berechnung: alle Produkte Einmal ab frühestmöglich ──────────
+        # Basis-Entscheidungen: jedes Produkt zum frühestmöglichen Zeitpunkt
+        _base_entsch = [
+            (prod, prod.fruehestes_startjahr, 1.0 if prod.max_einmalzahlung > 0 else 0.0)
+            for prod in _produkte_obj_run
+        ]
+        # Früh/Spät-Selektion aus session_state anwenden
         _sels_key = f"rc{_rc}_hvp_sels"
         if _sels_key not in st.session_state:
             st.session_state[_sels_key] = {}
         _sels: dict[str, str | None] = dict(st.session_state[_sels_key])
-        _any_override = any(v for v in _sels.values())
-        _override_jd_raw: list[dict] | None = None
-        _override_netto: float | None = None
 
-        if _any_override:
-            _prod_map_ov = {
-                f"{p.name} ({p.typ})": p
-                for p in _produkte_obj_run
-                if p.id != "__sparkapital__"
-                and p.max_einmalzahlung > 0
-                and p.spaetestes_startjahr > p.fruehestes_startjahr
-            }
-            _override_entsch: list = []
-            _overridden_ids: set = set()
-            for _pn_ov, _sel_ov in _sels.items():
-                if _sel_ov and _pn_ov in _prod_map_ov:
-                    _p_ov = _prod_map_ov[_pn_ov]
-                    _overridden_ids.add(_p_ov.id)
-                    _sj_ov = (_p_ov.fruehestes_startjahr if _sel_ov == "frueh"
-                              else _p_ov.spaetestes_startjahr)
-                    _override_entsch.append((_p_ov, _sj_ov, 1.0))
-            for _bd_prod, _bd_sj, _bd_ant in opt["beste_entscheidungen"]:
-                if _bd_prod.id not in _overridden_ids:
-                    _override_entsch.append((_bd_prod, _bd_sj, _bd_ant))
-            _override_netto, _override_jd_raw = _netto_ueber_horizont(
-                _profil_eo, _ergebnis_eo, _override_entsch, horizon,
+        # Effektive Entscheidungen basierend auf Benutzer-Selektion
+        _prod_name_map = {
+            f"{p.name} ({p.typ})": p
+            for p in _produkte_obj_run
+            if p.id != "__sparkapital__"
+            and p.max_einmalzahlung > 0
+            and p.spaetestes_startjahr > p.fruehestes_startjahr
+        }
+        _prod_sj_override: dict[str, int] = {}
+        for _pn_sel, _sel_val in _sels.items():
+            if _sel_val and _pn_sel in _prod_name_map:
+                _p_sel = _prod_name_map[_pn_sel]
+                _prod_sj_override[_p_sel.id] = (
+                    _p_sel.fruehestes_startjahr if _sel_val == "frueh"
+                    else _p_sel.spaetestes_startjahr
+                )
+        _eff_entsch = [
+            (prod, _prod_sj_override.get(prod.id, prod.fruehestes_startjahr),
+             1.0 if prod.max_einmalzahlung > 0 else 0.0)
+            for prod in _produkte_obj_run
+        ]
+
+        _eff_netto, _eff_jd_raw = _netto_ueber_horizont(
+            _profil_eo, _ergebnis_eo, _eff_entsch, horizon,
+            mieteinnahmen, mietsteigerung,
+            profil2=_profil2_eo, ergebnis2=_ergebnis2_eo, veranlagung=_ver_eo,
+            gehalt_monatlich=gehalt,
+            ausgaben_plan=_ausgaben_plan if _ausgaben_plan else None,
+        )
+        st.session_state["_sb_eo_jd"] = _eff_jd_raw
+
+        # Referenz-Netto (alle früh) für Delta-Anzeige
+        _any_spaet = any(v == "spaet" for v in _sels.values())
+        _base_netto: float | None = None
+        if _any_spaet:
+            _base_netto, _ = _netto_ueber_horizont(
+                _profil_eo, _ergebnis_eo, _base_entsch, horizon,
                 mieteinnahmen, mietsteigerung,
                 profil2=_profil2_eo, ergebnis2=_ergebnis2_eo, veranlagung=_ver_eo,
                 gehalt_monatlich=gehalt,
                 ausgaben_plan=_ausgaben_plan if _ausgaben_plan else None,
             )
 
-        # Kennzahlen – verwende Override-Simulation wenn aktiv
-        _eff_netto   = _override_netto   if _override_netto   is not None else opt["bestes_netto"]
-        _eff_jd_raw  = _override_jd_raw  if _override_jd_raw  is not None else opt["jahresdaten"]
+        # ── Kennzahlen ────────────────────────────────────────────────────────
         _df_kc = pd.DataFrame(_eff_jd_raw)
         _netto_arbeit = _df_kc.loc[_df_kc.get("Src_Gehalt", pd.Series(0, index=_df_kc.index)) > 0, "Netto"].sum() if "Src_Gehalt" in _df_kc.columns else 0
         _netto_rente  = _df_kc.loc[_df_kc.get("Src_Gehalt", pd.Series(0, index=_df_kc.index)) == 0, "Netto"].sum() if "Src_Gehalt" in _df_kc.columns else _eff_netto
 
         if _netto_arbeit > 0:
-            kc1, kc2, kc3, kc4 = st.columns(4)
+            kc1, kc2, kc3 = st.columns(3)
             kc1.metric("Netto Arbeitsphase", f"{_de(_netto_arbeit)} €",
                        help="Summe Netto-Jahreseinkommen in aktiven Berufsjahren.")
             kc2.metric("Netto Rentenphase", f"{_de(_netto_rente)} €",
                        help=f"Summe Netto-Jahreseinkommen in {horizon} Rentenjahren.")
-            delta_mono = _eff_netto - opt["netto_alle_monatlich"]
-            kc3.metric("Vorteil vs. alles monatlich",
-                       f"{'+' if delta_mono >= 0 else ''}{_de(delta_mono)} €", delta_color="normal")
-            delta_einmal = _eff_netto - opt["netto_alle_einmal"]
-            kc4.metric("Vorteil vs. alles Einmal",
-                       f"{'+' if delta_einmal >= 0 else ''}{_de(delta_einmal)} €", delta_color="normal")
+            kc3.metric("Netto gesamt", f"{_de(_eff_netto)} €")
         else:
-            kc1, kc2, kc3, kc4 = st.columns(4)
-            _kc1_label = "Netto benutzerdefiniert (gesamt)" if _override_netto is not None else "Netto optimal (gesamt)"
-            kc1.metric(_kc1_label, f"{_de(_eff_netto)} €",
+            kc1, kc2 = st.columns(2)
+            kc1.metric("Netto gesamt", f"{_de(_eff_netto)} €",
                        help=f"Summe aller Netto-Jahreseinkommen über {horizon} Jahre.")
-            delta_mono = _eff_netto - opt["netto_alle_monatlich"]
-            kc2.metric("Vorteil vs. alles monatlich",
-                       f"{'+' if delta_mono >= 0 else ''}{_de(delta_mono)} €", delta_color="normal")
-            delta_einmal = _eff_netto - opt["netto_alle_einmal"]
-            kc3.metric("Vorteil vs. alles Einmal",
-                       f"{'+' if delta_einmal >= 0 else ''}{_de(delta_einmal)} €", delta_color="normal")
-            kc4.metric("Kombinationen geprüft", f"{opt['anzahl_kombinationen']:,}")
-        st.caption(f"Kombinationen geprüft: {opt['anzahl_kombinationen']:,}")
+            if _base_netto is not None:
+                _delta_spaet = _eff_netto - _base_netto
+                _sign = "+" if _delta_spaet >= 0 else ""
+                kc2.metric("Δ vs. alle früh",
+                           f"{_sign}{_de(_delta_spaet)} €",
+                           delta_color="normal",
+                           help="Unterschied gegenüber Szenario 'alle Produkte frühestmöglich'.")
 
-        if _override_netto is not None:
-            _delta_ov = _override_netto - opt["bestes_netto"]
-            _delta_sign = "+" if _delta_ov >= 0 else ""
+        if _any_spaet and _base_netto is not None:
+            _delta_ov = _eff_netto - _base_netto
+            _sign = "+" if _delta_ov >= 0 else ""
             st.info(
-                f"🔄 **Benutzerdefinierte Strategie aktiv** · "
-                f"Netto-Gesamt: **{_de(_override_netto)} €** · "
-                f"Δ vs. Optimal: {_delta_sign}{_de(_delta_ov)} €"
+                f"🔄 **Spät-Auszahlung aktiv** · "
+                f"Netto-Gesamt: **{_de(_eff_netto)} €** · "
+                f"Δ vs. alle früh: {_sign}{_de(_delta_ov)} €"
             )
-
-        st.success("**Optimale Strategie:**")
-        for prod, startjahr, anteil in opt["beste_entscheidungen"]:
-            if prod.id == "__sparkapital__":
-                continue
-            einmal_wert = prod.max_einmalzahlung * (1 + prod.aufschub_rendite) ** max(
-                0, startjahr - prod.fruehestes_startjahr)
-            mono_wert = prod.max_monatsrente * (1 + prod.aufschub_rendite) ** max(
-                0, startjahr - prod.fruehestes_startjahr)
-            if anteil == 1.0:
-                modus = f"Einmalauszahlung **{_de(einmal_wert)} €**"
-            elif anteil == 0.0:
-                modus = f"Monatliche Rente **{_de(mono_wert)} €/Mon.**"
-            else:
-                modus = (f"Kombiniert: **{_de(einmal_wert * anteil)} €** Einmal + "
-                         f"**{_de(mono_wert * (1 - anteil))} €/Mon.**")
-            aufschub = startjahr - prod.fruehestes_startjahr
-            note = f" (+{aufschub} J. Aufschub)" if aufschub > 0 else ""
-            st.markdown(f"- **{prod.name}** ({prod.typ}): {modus} ab **{startjahr}**{note}")
 
         # ── Anschlusskredit-Kennzahlen ────────────────────────────────────────
         # Effektive Restschuld: bei Sondertilgungen bereits um EZ reduziert
@@ -788,48 +711,50 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _akc4.metric("Gesamtzinsen", f"{_de(_ak_zinsen)} €",
                          help=f"Gesamtbelastung {_de(_ak_gesamt)} €")
 
-            # ── Marginalkostenvergleich: Früh auszahlen vs. Anschlusskredit ─────
-            _hvp_prods = [
-                p for p in _produkte_obj_run
-                if p.id != "__sparkapital__"
-                and p.max_einmalzahlung > 0
-                and p.spaetestes_startjahr > p.fruehestes_startjahr
-            ]
-            if _hvp_prods and _eff_ak_rs > 0:
-                with st.expander("🔄 Frühauszahlung vs. Anschlusskredit – Vergleich", expanded=True):
-                    st.caption(
-                        "Vergleich: Produkt-Nettobetrag zur Tilgung des Anschlusskredits nutzen "
-                        "(Frühauszahlung) vs. investiert lassen bis zum spätestmöglichen Startjahr. "
-                        "**Positiver Netto-Vorteil** = Frühauszahlung und Tilgung lohnt sich. "
-                        "Steuer vereinfacht (25 % Abgeltungsteuer auf Kursgewinne, ETF 17,5 % nach Teilfreistellung)."
-                    )
-                    _ak_zinsen_gesamt = _ak_rate_j * _anschluss_lz - _eff_ak_rs
+        # ── Empfehlungstabelle: Frühauszahlung in Kapitalpool ────────────────
+        _hvp_prods = [
+            p for p in _produkte_obj_run
+            if p.id != "__sparkapital__"
+            and p.max_einmalzahlung > 0
+            and p.spaetestes_startjahr > p.fruehestes_startjahr
+        ]
+        if _hvp_prods:
+            with st.expander("📋 Empfehlungen zur Auszahlung von Vorsorgeverträgen in den Kapitalpool", expanded=True):
+                st.caption(
+                    "Vergleich der frühest- vs. spätestmöglichen Auszahlung in den Kapitalpool. "
+                    "Break-Even p.a. = Mindestrendite des Vertrags, ab der eine spätere Auszahlung vorteilhafter ist."
+                )
+                _ak_zinsen_gesamt = _eff_ak_rs * _anschluss_lz * 0.0  # only used if _eff_ak_rs > 0
+                if _eff_ak_rs > 0:
+                    _ak_rate_j_hvp = _annuitaet_rate(_eff_ak_rs, _markt_zins_pa, _anschluss_lz)
+                    _ak_zinsen_gesamt = _ak_rate_j_hvp * _anschluss_lz - _eff_ak_rs
 
-                    _hvp_rows = []
-                    for _hp in _hvp_prods:
-                        _F = _hp.fruehestes_startjahr
-                        _S = _hp.spaetestes_startjahr
-                        _n = _S - _F
+                _hvp_rows = []
+                for _hp in _hvp_prods:
+                    _F = _hp.fruehestes_startjahr
+                    _S = _hp.spaetestes_startjahr
+                    _n = _S - _F
 
-                        _aufsch_r = max(0.0, _hp.aufschub_rendite)
-                        _V_F = _hp.max_einmalzahlung
-                        _V_S = _V_F * (1.0 + _aufsch_r) ** _n
+                    _aufsch_r = max(0.0, _hp.aufschub_rendite)
+                    _V_F = _hp.max_einmalzahlung
+                    _V_S = _V_F * (1.0 + _aufsch_r) ** _n
 
-                        _eff_tax = 0.175 if (_hp.typ == "ETF" and not getattr(_hp, "etf_ausschuettend", False)) else 0.25
-                        _einz_F = _hp.einzahlungen_effektiv(_F)
-                        _einz_S = _hp.einzahlungen_effektiv(_S)
-                        _gewinn_F = max(0.0, _V_F - _einz_F)
-                        _gewinn_S = max(0.0, _V_S - _einz_S)
-                        _V_F_net = _V_F - _gewinn_F * _eff_tax
-                        _V_S_net = _V_S - _gewinn_S * _eff_tax
+                    _eff_tax = 0.175 if (_hp.typ == "ETF" and not getattr(_hp, "etf_ausschuettend", False)) else 0.25
+                    _einz_F = _hp.einzahlungen_effektiv(_F)
+                    _einz_S = _hp.einzahlungen_effektiv(_S)
+                    _gewinn_F = max(0.0, _V_F - _einz_F)
+                    _gewinn_S = max(0.0, _V_S - _einz_S)
+                    _V_F_net = _V_F - _gewinn_F * _eff_tax
+                    _V_S_net = _V_S - _gewinn_S * _eff_tax
 
-                        # Beitragsersparnis: Einzahlungen von F bis S, die bei Frühauszahlung entfallen
-                        _beitr_F_S = sum(
-                            _hp.jaehrl_einzahlung * (1.0 + _hp.jaehrl_dynamik) ** max(0, j - AKTUELLES_JAHR)
-                            for j in range(_F, _S)
-                        ) if _hp.jaehrl_einzahlung > 0 else 0.0
+                    # Beitragsersparnis: Einzahlungen von F bis S, die bei Frühauszahlung entfallen
+                    _beitr_F_S = sum(
+                        _hp.jaehrl_einzahlung * (1.0 + _hp.jaehrl_dynamik) ** max(0, j - AKTUELLES_JAHR)
+                        for j in range(_F, _S)
+                    ) if _hp.jaehrl_einzahlung > 0 else 0.0
 
-                        # Zinseinsparung durch Teilrückzahlung des Anschlusskredits
+                    # Zinseinsparung (nur wenn Anschlusskredit vorhanden)
+                    if _eff_ak_rs > 0:
                         _tilgung = min(_V_F_net, _eff_ak_rs)
                         _neue_rs = max(0.0, _eff_ak_rs - _tilgung)
                         if _neue_rs > 0.01:
@@ -837,297 +762,132 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         else:
                             _ak_zinsen_mit = 0.0
                         _zinseinsparung = _ak_zinsen_gesamt - _ak_zinsen_mit
+                    else:
+                        _zinseinsparung = 0.0
 
-                        _renditeverlust = _V_S_net - _V_F_net
-                        _netto_vorteil = _zinseinsparung + _beitr_F_S - _renditeverlust
+                    _renditeverlust = _V_S_net - _V_F_net
+                    _netto_vorteil = _zinseinsparung + _beitr_F_S - _renditeverlust
 
-                        # Break-Even Rendite p.a.: Rendite ab der Investiert-Bleiben rentabler ist
-                        if _n > 0 and _V_F > 0:
-                            _be_num = _V_F_net - _einz_S * _eff_tax + _zinseinsparung + _beitr_F_S
-                            _be_den = _V_F * (1.0 - _eff_tax)
-                            if _be_num > 0 and _be_den > 0:
-                                _be_r = (_be_num / _be_den) ** (1.0 / _n) - 1.0
-                                _be_str = f"{_be_r * 100:.2f} %"
-                            else:
-                                _be_str = "–"
+                    # Break-Even Rendite p.a.: Rendite ab der Investiert-Bleiben rentabler ist
+                    if _n > 0 and _V_F > 0:
+                        _be_num = _V_F_net - _einz_S * _eff_tax + _zinseinsparung + _beitr_F_S
+                        _be_den = _V_F * (1.0 - _eff_tax)
+                        if _be_num > 0 and _be_den > 0:
+                            _be_r = (_be_num / _be_den) ** (1.0 / _n) - 1.0
+                            _be_str = f"{_be_r * 100:.2f} %"
                         else:
                             _be_str = "–"
+                    else:
+                        _be_str = "–"
 
-                        _hvp_rows.append({
-                            "Produkt": f"{_hp.name} ({_hp.typ})",
-                            "Früh": _F,
-                            "Spät": _S,
-                            "Netto früh (€)": _de(_V_F_net),
-                            "Netto spät (€)": _de(_V_S_net),
-                            "Zinseinsparung (€)": _de(_zinseinsparung),
-                            "Beitragsersparnis (€)": _de(_beitr_F_S),
-                            "Renditeverlust (€)": _de(_renditeverlust),
-                            "Netto-Vorteil (€)": (f"+{_de(_netto_vorteil)}" if _netto_vorteil >= 0
-                                                   else _de(_netto_vorteil)),
-                            "Break-Even p.a.": _be_str,
-                            "_vorteil_raw": _netto_vorteil,
-                            "_V_F_net": _V_F_net,
-                            "_beitr_F_S": _beitr_F_S,
-                            "_renditeverlust": _renditeverlust,
-                        })
-
-                    if _hvp_rows:
-                        # Checkbox-Tabelle: Früh ✓ / Spät ✓ aktive Simulation
-                        _hvp_ed_rows = []
-                        for _hr in _hvp_rows:
-                            _hvp_ed_rows.append({
-                                "Früh ✓": _sels.get(_hr["Produkt"]) == "frueh",
-                                "Spät ✓": _sels.get(_hr["Produkt"]) == "spaet",
-                                "Früh": _hr["Früh"],
-                                "Spät": _hr["Spät"],
-                                "Netto früh (€)": _hr["Netto früh (€)"],
-                                "Netto spät (€)": _hr["Netto spät (€)"],
-                                "Zinseinsparung (€)": _hr["Zinseinsparung (€)"],
-                                "Beitragsersparnis (€)": _hr["Beitragsersparnis (€)"],
-                                "Renditeverlust (€)": _hr["Renditeverlust (€)"],
-                                "Netto-Vorteil (€)": _hr["Netto-Vorteil (€)"],
-                                "Break-Even p.a.": _hr["Break-Even p.a."],
-                            })
-                        _hvp_ed_df = pd.DataFrame(
-                            _hvp_ed_rows,
-                            index=[_hr["Produkt"] for _hr in _hvp_rows],
+                    _hvp_row_entry: dict = {
+                        "Produkt": f"{_hp.name} ({_hp.typ})",
+                        "Früh": _F,
+                        "Spät": _S,
+                        "Netto früh (€)": _de(_V_F_net),
+                        "Netto spät (€)": _de(_V_S_net),
+                        "Beitragsersparnis (€)": _de(_beitr_F_S),
+                        "Break-Even p.a.": _be_str,
+                        "_vorteil_raw": _netto_vorteil,
+                        "_V_F_net": _V_F_net,
+                        "_beitr_F_S": _beitr_F_S,
+                        "_renditeverlust": _renditeverlust,
+                    }
+                    if _eff_ak_rs > 0:
+                        _hvp_row_entry["Zinseinsparung (€)"] = _de(_zinseinsparung)
+                        _hvp_row_entry["Renditeverlust (€)"] = _de(_renditeverlust)
+                        _hvp_row_entry["Netto-Vorteil (€)"] = (
+                            f"+{_de(_netto_vorteil)}" if _netto_vorteil >= 0 else _de(_netto_vorteil)
                         )
-                        _ed_sels_tag = "_".join(
-                            f"{i}{(v or 'n')[0]}"
-                            for i, (_, v) in enumerate(sorted(_sels.items()))
-                        ) or "0"
-                        _non_cb = [c for c in _hvp_ed_df.columns if c not in ("Früh ✓", "Spät ✓")]
-                        _edited_hvp = st.data_editor(
-                            _hvp_ed_df,
-                            use_container_width=True,
-                            disabled=_non_cb,
-                            key=f"rc{_rc}_hvp_editor_{_ed_sels_tag}",
-                            column_config={
-                                "Früh ✓": st.column_config.CheckboxColumn(
-                                    "Früh ✓",
-                                    help="Frühauszahlung in der Simulation aktivieren. "
-                                         "Jahresverlauf, Kapital-Zeitleiste und Steuer-/KV-Verlauf "
-                                         "werden sofort aktualisiert. Nicht gleichzeitig mit Spät ✓.",
-                                ),
-                                "Spät ✓": st.column_config.CheckboxColumn(
-                                    "Spät ✓",
-                                    help="Aufschub bis Spät-Jahr in der Simulation aktivieren. "
-                                         "Nicht gleichzeitig mit Früh ✓.",
-                                ),
-                                "Früh": st.column_config.NumberColumn(
-                                    "Früh",
-                                    help="Frühestmögliches Auszahlungsjahr des Produkts. Ab diesem Jahr kann die Einmalauszahlung zur Tilgung des Anschlusskredits genutzt werden.",
-                                    format="%d",
-                                ),
-                                "Spät": st.column_config.NumberColumn(
-                                    "Spät",
-                                    help="Spätestmögliches Auszahlungsjahr. Bis zu diesem Jahr bleibt das Kapital investiert und wächst mit der Aufschub-Rendite weiter.",
-                                    format="%d",
-                                ),
-                                "Netto früh (€)": st.column_config.TextColumn(
-                                    "Netto früh (€)",
-                                    help="Netto-Auszahlungsbetrag im Früh-Jahr nach vereinfachter Steuer (25 % Abgeltungsteuer auf Kursgewinne, ETF 17,5 % nach Teilfreistellung). Dieser Betrag steht maximal zur Tilgung des Anschlusskredits bereit.",
-                                ),
-                                "Netto spät (€)": st.column_config.TextColumn(
-                                    "Netto spät (€)",
-                                    help="Netto-Auszahlungsbetrag im Spät-Jahr nach Steuer – inkl. Aufschub-Rendite über die Zwischenjahre. Zeigt, was durch Investiert-Bleiben zusätzlich erwirtschaftet werden kann.",
-                                ),
-                                "Zinseinsparung (€)": st.column_config.TextColumn(
-                                    "Zinseinsparung (€)",
-                                    help="Eingesparte Anschlusskredit-Zinsen, wenn der Nettobetrag (Früh) zur Teil- oder Vollrückzahlung eingesetzt wird. Berechnet als Differenz der Gesamtzinslast vor und nach Tilgung.",
-                                ),
-                                "Beitragsersparnis (€)": st.column_config.TextColumn(
-                                    "Beitragsersparnis (€)",
-                                    help="Laufende Einzahlungen (Beiträge), die zwischen Früh- und Spät-Jahr entfallen, wenn früh ausgezahlt wird. Nur relevant bei noch laufender Beitragsphase bis zum Spät-Jahr.",
-                                ),
-                                "Renditeverlust (€)": st.column_config.TextColumn(
-                                    "Renditeverlust (€)",
-                                    help="Entgangener Netto-Zuwachs durch Frühauszahlung statt Aufschub bis zum Spät-Jahr. Berechnet als Netto spät − Netto früh. Je höher der Wert, desto stärker wächst das Produkt durch Warten.",
-                                ),
-                                "Netto-Vorteil (€)": st.column_config.TextColumn(
-                                    "Netto-Vorteil (€)",
-                                    help="Gesamtvorteil der Frühauszahlung: Zinseinsparung + Beitragsersparnis − Renditeverlust. ✅ Positiv = Frühauszahlung und Hypothekentilgung lohnt sich. ❌ Negativ = Investiert-Bleiben ist rentabler.",
-                                ),
-                                "Break-Even p.a.": st.column_config.TextColumn(
-                                    "Break-Even p.a.",
-                                    help="Mindestrendite p.a., ab der das Investiert-Bleiben bis zum Spät-Jahr rentabler ist als die Frühauszahlung zur Tilgung. Liegt die tatsächliche Rendite des Produkts über diesem Wert, lohnt sich das Warten.",
-                                ),
-                            },
-                        )
+                    _hvp_rows.append(_hvp_row_entry)
 
-                        # Gegenseitigen Ausschluss erzwingen + session_state aktualisieren
-                        _new_sels: dict[str, str | None] = {}
-                        for _ep_name, _ep_row in _edited_hvp.iterrows():
-                            _ep_name = str(_ep_name)
-                            _ef = bool(_ep_row.get("Früh ✓", False))
-                            _es = bool(_ep_row.get("Spät ✓", False))
-                            _prev = _sels.get(_ep_name)
-                            if _ef and _es:
-                                _new_sels[_ep_name] = "spaet" if _prev == "frueh" else "frueh"
-                            elif _ef:
-                                _new_sels[_ep_name] = "frueh"
-                            elif _es:
-                                _new_sels[_ep_name] = "spaet"
-                            else:
-                                _new_sels[_ep_name] = None
-                        _old_sels_copy = dict(st.session_state[_sels_key])
-                        st.session_state[_sels_key] = _new_sels
-                        if _new_sels != _old_sels_copy:
-                            st.rerun()
+                if _hvp_rows:
+                    # Checkbox-Tabelle: Früh ✓ / Spät ✓ aktive Simulation
+                    _hvp_ed_rows = []
+                    for _hr in _hvp_rows:
+                        _ed_row: dict = {
+                            "Früh ✓": _sels.get(_hr["Produkt"]) == "frueh",
+                            "Spät ✓": _sels.get(_hr["Produkt"]) == "spaet",
+                            "Früh": _hr["Früh"],
+                            "Spät": _hr["Spät"],
+                            "Netto früh (€)": _hr["Netto früh (€)"],
+                            "Netto spät (€)": _hr["Netto spät (€)"],
+                            "Beitragsersparnis (€)": _hr["Beitragsersparnis (€)"],
+                            "Break-Even p.a.": _hr["Break-Even p.a."],
+                        }
+                        if _eff_ak_rs > 0:
+                            _ed_row["Zinseinsparung (€)"] = _hr.get("Zinseinsparung (€)", "–")
+                            _ed_row["Renditeverlust (€)"] = _hr.get("Renditeverlust (€)", "–")
+                            _ed_row["Netto-Vorteil (€)"] = _hr.get("Netto-Vorteil (€)", "–")
+                        _hvp_ed_rows.append(_ed_row)
+                    _hvp_ed_df = pd.DataFrame(
+                        _hvp_ed_rows,
+                        index=[_hr["Produkt"] for _hr in _hvp_rows],
+                    )
+                    _ed_sels_tag = "_".join(
+                        f"{i}{(v or 'n')[0]}"
+                        for i, (_, v) in enumerate(sorted(_sels.items()))
+                    ) or "0"
+                    _non_cb = [c for c in _hvp_ed_df.columns if c not in ("Früh ✓", "Spät ✓")]
+                    _col_cfg: dict = {
+                        "Früh ✓": st.column_config.CheckboxColumn(
+                            "Früh ✓",
+                            help="Frühauszahlung in der Simulation aktivieren. "
+                                 "Jahresverlauf, Kapital-Zeitleiste und Steuer-/KV-Verlauf "
+                                 "werden sofort aktualisiert. Nicht gleichzeitig mit Spät ✓.",
+                        ),
+                        "Spät ✓": st.column_config.CheckboxColumn(
+                            "Spät ✓",
+                            help="Aufschub bis Spät-Jahr in der Simulation aktivieren. "
+                                 "Nicht gleichzeitig mit Früh ✓.",
+                        ),
+                        "Früh": st.column_config.NumberColumn("Früh", format="%d",
+                            help="Frühestmögliches Auszahlungsjahr des Produkts."),
+                        "Spät": st.column_config.NumberColumn("Spät", format="%d",
+                            help="Spätestmögliches Auszahlungsjahr."),
+                        "Netto früh (€)": st.column_config.TextColumn("Netto früh (€)",
+                            help="Netto-Auszahlungsbetrag im Früh-Jahr nach vereinfachter Steuer."),
+                        "Netto spät (€)": st.column_config.TextColumn("Netto spät (€)",
+                            help="Netto-Auszahlungsbetrag im Spät-Jahr nach Steuer inkl. Aufschub-Rendite."),
+                        "Beitragsersparnis (€)": st.column_config.TextColumn("Beitragsersparnis (€)",
+                            help="Laufende Einzahlungen zwischen Früh- und Spät-Jahr, die bei Frühauszahlung entfallen."),
+                        "Break-Even p.a.": st.column_config.TextColumn("Break-Even p.a.",
+                            help="Mindestrendite p.a., ab der Investiert-Bleiben bis Spät-Jahr rentabler ist."),
+                    }
+                    if _eff_ak_rs > 0:
+                        _col_cfg["Zinseinsparung (€)"] = st.column_config.TextColumn("Zinseinsparung (€)",
+                            help="Eingesparte Anschlusskredit-Zinsen bei Tilgung mit Früh-Nettobetrag.")
+                        _col_cfg["Renditeverlust (€)"] = st.column_config.TextColumn("Renditeverlust (€)",
+                            help="Entgangener Netto-Zuwachs durch Frühauszahlung statt Aufschub.")
+                        _col_cfg["Netto-Vorteil (€)"] = st.column_config.TextColumn("Netto-Vorteil (€)",
+                            help="Gesamtvorteil der Frühauszahlung: Zinseinsparung + Beitragsersparnis − Renditeverlust.")
+                    _edited_hvp = st.data_editor(
+                        _hvp_ed_df,
+                        use_container_width=True,
+                        disabled=_non_cb,
+                        key=f"rc{_rc}_hvp_editor_{_ed_sels_tag}",
+                        column_config=_col_cfg,
+                    )
 
-                        _best_hvp = max(_hvp_rows, key=lambda r: r["_vorteil_raw"])
-                        if _best_hvp["_vorteil_raw"] > 0:
-                            _best_name = _best_hvp["Produkt"].rsplit("(", 1)[0].strip()
-                            st.success(
-                                f"✅ **{_best_name}**: Frühauszahlung ({_best_hvp['Früh']}) "
-                                f"spart netto **{_de(_best_hvp['_vorteil_raw'])} €** "
-                                f"gegenüber Aufschub bis {_best_hvp['Spät']}."
-                            )
+                    # Gegenseitigen Ausschluss erzwingen + session_state aktualisieren
+                    _new_sels: dict[str, str | None] = {}
+                    for _ep_name, _ep_row in _edited_hvp.iterrows():
+                        _ep_name = str(_ep_name)
+                        _ef = bool(_ep_row.get("Früh ✓", False))
+                        _es = bool(_ep_row.get("Spät ✓", False))
+                        _prev = _sels.get(_ep_name)
+                        if _ef and _es:
+                            _new_sels[_ep_name] = "spaet" if _prev == "frueh" else "frueh"
+                        elif _ef:
+                            _new_sels[_ep_name] = "frueh"
+                        elif _es:
+                            _new_sels[_ep_name] = "spaet"
                         else:
-                            st.info(
-                                "ℹ️ Bei keinem Produkt lohnt sich die Frühauszahlung zur "
-                                "Hypothekentilgung gegenüber dem Aufschub bis zum spätestmöglichen Startjahr."
-                            )
-
-                        # ── Kombinationsanalyse (mehrere Verträge) ────────────────
-                        if len(_hvp_rows) > 1:
-                            st.divider()
-                            st.markdown("**🔗 Kombinierte Frühauszahlung mehrerer Verträge**")
-
-                            # Optimale Teilmenge: zuerst Verträge mit positivem Vorteil,
-                            # dann nach fallend negativem Vorteil auffüllen bis RS gedeckt.
-                            _pos_rows = sorted(
-                                [r for r in _hvp_rows if r["_vorteil_raw"] > 0],
-                                key=lambda r: -r["_vorteil_raw"],
-                            )
-                            _neg_rows = sorted(
-                                [r for r in _hvp_rows if r["_vorteil_raw"] <= 0],
-                                key=lambda r: -r["_vorteil_raw"],  # least negative first
-                            )
-                            _pos_net = sum(r["_V_F_net"] for r in _pos_rows)
-
-                            if _pos_net >= _eff_ak_rs:
-                                # Nur positive Verträge reichen – prüfe welche minimal nötig
-                                _opt_subset: list[dict] = []
-                                _opt_net = 0.0
-                                for _rr in _pos_rows:
-                                    _opt_subset.append(_rr)
-                                    _opt_net += _rr["_V_F_net"]
-                                    if _opt_net >= _eff_ak_rs:
-                                        break
-                                _subset_label = "Nur rentable Verträge (positiver Netto-Vorteil)"
-                            else:
-                                # Auch weniger rentable Verträge einbeziehen
-                                _opt_subset = list(_pos_rows)
-                                _opt_net = _pos_net
-                                for _rr in _neg_rows:
-                                    if _opt_net >= _eff_ak_rs:
-                                        break
-                                    _opt_subset.append(_rr)
-                                    _opt_net += _rr["_V_F_net"]
-                                _subset_label = "Alle Verträge inkl. weniger rentabler (für maximale Deckung)"
-
-                            # Kennzahlen für optimale Teilmenge
-                            _kombi_net    = sum(r["_V_F_net"]      for r in _opt_subset)
-                            _kombi_beitr  = sum(r["_beitr_F_S"]    for r in _opt_subset)
-                            _kombi_rdvlst = sum(r["_renditeverlust"] for r in _opt_subset)
-                            _kombi_tilg   = min(_kombi_net, _eff_ak_rs)
-                            _kombi_neue_rs = max(0.0, _eff_ak_rs - _kombi_tilg)
-                            if _kombi_neue_rs > 0.01:
-                                _kombi_ak_nach = (_annuitaet_rate(_kombi_neue_rs, _markt_zins_pa, _anschluss_lz)
-                                                  * _anschluss_lz - _kombi_neue_rs)
-                            else:
-                                _kombi_ak_nach = 0.0
-                            _kombi_zinsen  = _ak_zinsen_gesamt - _kombi_ak_nach
-                            _kombi_vorteil = _kombi_zinsen + _kombi_beitr - _kombi_rdvlst
-                            _kombi_deckung = min(100.0, _kombi_net / _eff_ak_rs * 100)
-
-                            # Anzeige
-                            _kc1, _kc2, _kc3, _kc4 = st.columns(4)
-                            _kc1.metric(
-                                "Kombinierter Nettobetrag",
-                                f"{_de(_kombi_net)} €",
-                                help="Summe der Netto-Frühauszahlungen der ausgewählten Verträge.",
-                            )
-                            _kc2.metric(
-                                "Deckungsgrad",
-                                f"{_kombi_deckung:.0f} %",
-                                help=f"Anteil der Anschlusskredit-Restschuld ({_de(_eff_ak_rs)} €), "
-                                     "der durch die kombinierten Auszahlungen gedeckt wird.",
-                            )
-                            _kc3.metric(
-                                "Zinseinsparung",
-                                f"{_de(_kombi_zinsen)} €",
-                                help="Eingesparte AK-Zinsen durch kombinierte Teil- oder Volltilgung.",
-                            )
-                            _kc4.metric(
-                                "Netto-Vorteil Kombination",
-                                f"{'+' if _kombi_vorteil >= 0 else ''}{_de(_kombi_vorteil)} €",
-                                delta_color="normal",
-                                help="Zinseinsparung + Beitragsersparnis − Renditeverlust aller einbezogenen Verträge.",
-                            )
-
-                            # Einbezogene Verträge
-                            _subset_names = " · ".join(
-                                r["Produkt"].rsplit("(", 1)[0].strip() for r in _opt_subset
-                            )
-                            st.caption(f"Verträge ({len(_opt_subset)}): **{_subset_names}**  \n{_subset_label}")
-
-                            if _kombi_deckung >= 100.0 and _kombi_vorteil > 0:
-                                st.success(
-                                    f"✅ Vollständige Tilgung durch **{len(_opt_subset)} Verträge** möglich. "
-                                    f"Netto-Vorteil der Kombination: **{_de(_kombi_vorteil)} €**"
-                                )
-                            elif _kombi_deckung >= 100.0:
-                                st.warning(
-                                    f"⚠️ Vollständige Tilgung technisch möglich ({len(_opt_subset)} Verträge), "
-                                    f"aber der Renditeverlust überwiegt: Netto-Vorteil **{_de(_kombi_vorteil)} €**."
-                                )
-                            elif _kombi_vorteil > 0:
-                                st.success(
-                                    f"✅ Teilrückzahlung **{_de(_kombi_tilg)} €** ({_kombi_deckung:.0f} %) lohnt sich. "
-                                    f"Netto-Vorteil: **{_de(_kombi_vorteil)} €** · "
-                                    f"Verbleibender AK: **{_de(_kombi_neue_rs)} €**"
-                                )
-                            else:
-                                st.info(
-                                    f"ℹ️ Kombinierte Teilrückzahlung **{_de(_kombi_tilg)} €** ({_kombi_deckung:.0f} %) "
-                                    f"lohnt sich nicht: Netto-Vorteil **{_de(_kombi_vorteil)} €**."
-                                )
-
-        st.divider()
-
-        # ── Strategievergleich ────────────────────────────────────────────────
-        st.subheader("Strategievergleich")
-        _vgl_labels = [
-            "Optimal",
-            "Alles Monatlich\n(frühest möglich)",
-            "Alles Monatlich\n(spätestens)",
-            "Alles Einmal\n(frühest möglich)",
-            "Alles Einmal\n(spätestens)",
-        ]
-        _vgl_werte = [
-            opt["bestes_netto"],
-            opt["netto_alle_monatlich"],
-            opt["netto_alle_monatlich_spaet"],
-            opt["netto_alle_einmal"],
-            opt["netto_alle_einmal_spaet"],
-        ]
-        _vgl_farben = ["#4CAF50", "#2196F3", "#64B5F6", "#FF9800", "#FFB74D"]
-        fig_vgl = go.Figure(go.Bar(
-            x=_vgl_labels,
-            y=_vgl_werte,
-            marker_color=_vgl_farben,
-            text=[f"{_de(v)} €" for v in _vgl_werte],
-            textposition="outside",
-        ))
-        fig_vgl.update_layout(
-            template="plotly_white", height=380,
-            yaxis=dict(title=f"Gesamt-Netto über {horizon} Jahre (€)", tickformat=",.0f"),
-            margin=dict(l=10, r=10, t=20, b=10),
-            separators=",.",
-        )
-        st.plotly_chart(fig_vgl, use_container_width=True)
+                            _new_sels[_ep_name] = None
+                    _old_sels_copy = dict(st.session_state[_sels_key])
+                    st.session_state[_sels_key] = _new_sels
+                    if _new_sels != _old_sels_copy:
+                        st.rerun()
 
         st.divider()
 
@@ -1147,21 +907,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 disabled=not _real_toggle,
                 help="Jährliche Inflationsrate für Kaufkraftkorrektur.",
             ) if _real_toggle else 2.0
-        df_jd = (
-            pd.DataFrame(_override_jd_raw).set_index("Jahr")
-            if _override_jd_raw is not None
-            else pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
-        )
-
-        if _override_jd_raw is not None:
+        df_jd = pd.DataFrame(_eff_jd_raw).set_index("Jahr")
+        if _any_spaet:
             _ov_desc = " · ".join(
-                f"**{pn.rsplit('(', 1)[0].strip()}** {'früh' if sel == 'frueh' else 'spät'}"
-                for pn, sel in _sels.items() if sel
+                f"**{pn.rsplit('(', 1)[0].strip()}** spät"
+                for pn, sel in _sels.items() if sel == "spaet"
             )
             st.info(
-                f"🔄 **Benutzerdefinierte Simulation aktiv** · {_ov_desc}  \n"
-                "Alle Diagramme unten zeigen diese Strategie. "
-                "Checkbox in der Tabelle oben abwählen um zur optimalen Strategie zurückzukehren."
+                f"🔄 **Spät-Auszahlung aktiv** · {_ov_desc}  \n"
+                "Alle Diagramme zeigen diese Strategie."
             )
 
         # Reale Werte: alle numerischen Spalten mit Inflationsdeflaktor skalieren
@@ -1182,7 +936,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _bav_info     = {j: [] for j in _jahre}   # bAV-Produkte (konsolidiert)
         _riester_info = {j: [] for j in _jahre}   # Riester-Produkte
         _sonstige_versorg_info = {j: [] for j in _jahre}  # Rürup, PrivateRente
-        for _prod, _startjahr, _anteil in opt["beste_entscheidungen"]:
+        for _prod, _startjahr, _anteil in _eff_entsch:
             _aufschub = max(0, _startjahr - _prod.fruehestes_startjahr)
             _fak = (1 + _prod.aufschub_rendite) ** _aufschub
             # Einmalauszahlung: nur im Startjahr
@@ -1241,7 +995,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             ("Src_bAV_Gesamt",          "bAV (gesamt)",              "#1565C0", _cd_bav),
             ("Src_Riester_Gesamt",      "Riester",                   "#42A5F5", _cd_riester),
             ("Src_Sonstige_Versorgung", "Versorgung (Rürup/Privat)", "#26C6DA", _cd_sonstige),
-            ("Src_Kapitalverzehr",      "Kapitalverzehr (Pool)",     "#00695C", None),
             ("Src_Einmal",              "Einmalauszahlungen",        "#FF9800", _cd_einmal),
             ("Src_Miete",               "Mieteinnahmen",             "#9C27B0", None),
         ]
@@ -1271,10 +1024,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     ))
         # Vorsorge-Beiträge werden nicht als Balken dargestellt; nur in der Netto-Hover sichtbar.
 
-        # Geplante Entnahmen: nur als y1-Balken wenn kein Pool aktiv (sonst in Src_Kapitalverzehr enthalten)
+        # Geplante Entnahmen: nur als y1-Balken wenn kein Pool aktiv
         _has_pool_data = (
-            ("Kap_Injektion" in df_jd.columns and df_jd["Kap_Injektion"].sum() > 0)
-            or ("Src_Kapitalverzehr" in df_jd.columns and df_jd["Src_Kapitalverzehr"].sum() > 0)
+            "Kap_Injektion" in df_jd.columns and df_jd["Kap_Injektion"].sum() > 0
         )
         _sonder_yrs_chart: dict[int, float] = {}
         if _hyp_info and not _has_pool_data:
@@ -1296,30 +1048,27 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 ))
 
         # ── Zwei getrennte Pool-Flow-Balken nebeneinander (sekundäre Y-Achse) ──
-        # Einzahlung (links, teal) und Entnahme (rechts, rot) als je halbe Balkenbreite.
-        # Beide gehen nach unten (negativ auf y2). Kein Pfeil-Text nötig.
+        # Einzahlung (links, teal) und manuelle Entnahmen (rechts, rot) als je halbe Balkenbreite.
+        _manual_w_key = "pool_topup_withdrawals"
+        _manual_withdrawals: dict[int, float] = dict(st.session_state.get(_manual_w_key, {}))
         _hat_pool_y2 = False
         if _has_pool_data:
             _hat_pool_y2 = True
             _pf_inj_col    = "Kap_Injektion"
-            _pf_vzr_col    = "Src_Kapitalverzehr"
             _pf_sonder_col = "Kap_Sonder_Tilgung"
             _pf_all_yrs = sorted(set(
                 (list(df_jd[df_jd[_pf_inj_col] > 0].index)
                  if _pf_inj_col in df_jd.columns else [])
-                + (list(df_jd[df_jd[_pf_vzr_col] > 0].index)
-                   if _pf_vzr_col in df_jd.columns else [])
+                + list(_manual_withdrawals.keys())
                 + (list(df_jd[df_jd[_pf_sonder_col] > 0].index)
                    if _pf_sonder_col in df_jd.columns else [])
             ))
             def _pf_val(col, j):
                 return float(df_jd.loc[j, col]) if col in df_jd.columns and j in df_jd.index else 0.0
             _pf_inj = {j: _pf_val(_pf_inj_col, j) for j in _pf_all_yrs}
-            # Gesamtentnahme = laufende Annuität + Sonderentnahmen (ausgaben_plan)
-            _pf_vzr = {j: _pf_val(_pf_vzr_col, j) + _pf_val(_pf_sonder_col, j)
-                       for j in _pf_all_yrs}
-            # Für y2-Skalenberechnung: Maximum aus beiden Richtungen
-            _pf_abs = {j: max(_pf_inj[j], _pf_vzr[j]) for j in _pf_all_yrs}
+            _pf_vzr_manual = {j: _manual_withdrawals.get(j, 0.0) for j in _pf_all_yrs if _manual_withdrawals.get(j, 0.0) > 0}
+            # Für y2-Skalenberechnung: Maximum aus Einzahlung und manuelle Entnahmen
+            _pf_abs = {j: max(_pf_inj[j], _pf_vzr_manual.get(j, 0.0)) for j in _pf_all_yrs}
 
             # Jahre mit Einzahlung: Balken links (x - 0.2), teal
             _pf_inj_yrs = [j for j in _pf_all_yrs if _pf_inj[j] > 0]
@@ -1342,32 +1091,21 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     hovertemplate="%{x|.0f}:<br>%{customdata}<extra>Pool-Einzahlung</extra>",
                 ))
 
-            # Jahre mit Entnahme: Balken rechts (x + 0.2), rot
-            _pf_vzr_yrs = [j for j in _pf_all_yrs if _pf_vzr[j] > 0]
-            if _pf_vzr_yrs:
-                def _pf_vzr_hover(j):
-                    _vzr_lfd    = _pf_val(_pf_vzr_col, j)
-                    _vzr_sonder = _pf_val(_pf_sonder_col, j)
-                    parts = []
-                    if _vzr_lfd > 0 and _vzr_sonder > 0:
-                        parts.append(f"Pool-Entnahme: {_de(_vzr_lfd + _vzr_sonder)} €")
-                        parts.append(f"<i>lfd. {_de(_vzr_lfd)} € / Sonder {_de(_vzr_sonder)} €</i>")
-                    elif _vzr_lfd > 0:
-                        parts.append(f"Pool-Entnahme (lfd.): {_de(_vzr_lfd)} €")
-                    elif _vzr_sonder > 0:
-                        parts.append(f"Pool-Sonderentnahme: {_de(_vzr_sonder)} €")
-                    return "<br>".join(parts)
+            # Manuelle Pool-Entnahmen aus Top-Up-Tabelle (statt Auto-Annuität)
+            if _pf_vzr_manual:
                 fig_src.add_trace(go.Bar(
-                    name="Pool-Entnahme",
-                    x=[j + 0.2 for j in _pf_vzr_yrs],
-                    y=[-_pf_vzr[j] for j in _pf_vzr_yrs],
+                    name="Pool-Entnahme (manuell)",
+                    x=[j + 0.2 for j in sorted(_pf_vzr_manual)],
+                    y=[-_pf_vzr_manual[j] for j in sorted(_pf_vzr_manual)],
                     width=0.4,
                     marker_color="#E53935",
                     opacity=0.87,
                     yaxis="y2",
-                    customdata=[_pf_vzr_hover(j) for j in _pf_vzr_yrs],
-                    hovertemplate="%{x|.0f}:<br>%{customdata}<extra>Pool-Entnahme</extra>",
+                    hovertemplate="%{x|.0f}: %{y:,.0f} € manuelle Pool-Entnahme<extra>Pool-Entnahme</extra>",
                 ))
+        elif _manual_withdrawals:
+            _hat_pool_y2 = True
+            _pf_abs = {j: v for j, v in _manual_withdrawals.items()}
 
         if _sonder_yrs_chart and not _has_pool_data:
             _hat_pool_y2 = True
@@ -1405,6 +1143,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             customdata=_netto_hover,
             hovertemplate="%{x}: %{y:,.0f} € Netto<br>%{customdata}<extra>Netto</extra>",
         ))
+        # Mindesthaushaltsbetrag als blaue Linie
+        _mindest_mono = st.session_state.get("mindest_haushalt_mono", 0)
+        _mindest_j_line = _mindest_mono * 12
+        if _mindest_j_line > 0:
+            fig_src.add_hline(
+                y=_mindest_j_line,
+                line_width=2, line_dash="dot", line_color="#1565C0",
+                annotation_text=f"Mindesthaushalt {_de(_mindest_mono)} €/Mon.",
+                annotation_position="top left",
+                annotation_font_color="#1565C0",
+            )
         # Netto nach Hypotheken-Rate: Primärhypothek (rot) + Anschlusskredit (orange), getrennte Linien
         if _ausgaben_plan:
             _prim_sched_yrs = {s["Jahr"] for s in get_hyp_schedule()}
@@ -1478,7 +1227,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _y1_pos_cols = [
             "Src_Gehalt", "Src_Zusatzentgelt", "Src_GesRente", "Src_P2_Rente",
             "Src_bAV_Gesamt", "Src_Riester_Gesamt", "Src_Sonstige_Versorgung",
-            "Src_Kapitalverzehr", "Src_Einmal", "Src_Miete",
+            "Src_Einmal", "Src_Miete",
         ]
         _y1_pos_sum = sum(
             df_jd[c].clip(lower=0) for c in _y1_pos_cols if c in df_jd.columns
@@ -1555,9 +1304,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     "Nur der **verbleibende Nettobetrag** fließt in den internen **Kapitalpool** "
                     "und wird dort weiter verzinst.\n\n"
                     "**Pool-Entnahme** (roter Balken, rechte Achse)  \n"
-                    "In den Folgejahren wird aus diesem Pool eine gleichbleibende **Jahresrate (Annuität)** "
-                    "entnommen. Diese Rate erscheint als \"Kapitalverzehr (Pool)\" in den grünen Balken "
-                    "auf der linken Achse und erhöht Ihr Nettoeinkommen.\n\n"
+                    "Manuelle Entnahmen aus dem Kapitalpool (eingetragen in der Tabelle unten). "
+                    "Diese erhöhen das verfügbare Nettoeinkommen im jeweiligen Jahr.\n\n"
                     "**Warum macht das Sinn?**  \n"
                     "Eine einmalige große Auszahlung würde mit dem Spitzensteuersatz des Auszahlungsjahres "
                     "besteuert. Wird das Kapital dagegen über viele Jahre als Annuität entnommen, bleibt "
@@ -1565,6 +1313,87 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     "**Tipp:** Wie hoch die jährliche Pool-Entnahme ist, hängt vom Planungshorizont "
                     "(Slider oben) und der Pool-Rendite im Tab ⚙️ Profil → Erweiterte Einstellungen ab."
                 )
+
+        # ── Mindesthaushaltsbetrag und Pool-Aufstockungsempfehlungen ────────
+        _mindest_j_topup = _mindest_mono * 12
+
+        with st.expander("💰 Empfehlungen von Entnahmen aus dem Kapitalpool zur Aufstockung des Nettogehaltes", expanded=(_mindest_j_topup > 0 and _has_pool_data)):
+            if _mindest_mono == 0:
+                st.info("Bitte Mindesthaushaltsbetrag im Tab 👥 Haushalt → Mindesthaushaltsbetrag festlegen.")
+            elif not _has_pool_data:
+                st.info("Kein Kapitalpool aktiv. Aktiviere 'In Kapitalpool einzahlen' für mindestens ein Vorsorgeprodukt im Tab 🏦 Vorsorge-Bausteine.")
+            else:
+                st.caption(
+                    f"Mindesthaushaltsbetrag: **{_de(_mindest_mono)} €/Mon.** = **{_de(_mindest_j_topup)} €/Jahr**. "
+                    "Trage gewünschte Entnahmen aus dem Kapitalpool ein. "
+                    "Positive Abweichung (grün) = Ziel erreicht, negative (rot) = Nachsteuerung nötig."
+                )
+
+                # Pool-Bestand berechnen (Kap_Injektion kumuliert, minus manuelle Entnahmen)
+                _pool_rendite = getattr(_profil_eo, "kap_pool_rendite_pa", -1.0)
+                if _pool_rendite < 0:
+                    _pool_rendite = getattr(_profil_eo, "rendite_pa", 0.03)
+
+                _topup_rows = []
+                _pool_bal = 0.0
+                for _tj in sorted(df_jd.index):
+                    _inj = float(df_jd.loc[_tj, "Kap_Injektion"]) if "Kap_Injektion" in df_jd.columns else 0.0
+                    _pool_bal = (_pool_bal * (1 + _pool_rendite)) + _inj
+                    _netto_j = float(df_jd.loc[_tj, "Netto"]) if "Netto" in df_jd.columns else 0.0
+                    _auto_annuity = float(df_jd.loc[_tj, "Src_Kapitalverzehr"]) if "Src_Kapitalverzehr" in df_jd.columns else 0.0
+                    _base_netto_j = _netto_j - _auto_annuity  # Netto ohne Pool-Automatik
+                    _manual_w_tu = _manual_withdrawals.get(_tj, 0.0)
+                    _pool_bal = max(0.0, _pool_bal - _manual_w_tu)
+                    _abw = _base_netto_j + _manual_w_tu - _mindest_j_topup
+                    _topup_rows.append({
+                        "Jahr": _tj,
+                        "Entnahme aus Pool (€)": _manual_w_tu if _manual_w_tu > 0 else None,
+                        "Netto ohne Pool (€)": round(_base_netto_j),
+                        "Mindesthaushaltsgeld (€)": _mindest_j_topup,
+                        "Abweichung (€)": round(_abw),
+                        "Pool-Bestand (€)": round(_pool_bal),
+                    })
+
+                _topup_df = pd.DataFrame(_topup_rows)
+
+                def _color_abw(val):
+                    if pd.isna(val):
+                        return ""
+                    color = "color: green" if val >= 0 else "color: red"
+                    return f"font-weight: bold; {color}"
+
+                _tu_ver = sum(int(j) * 1000 + int(_manual_withdrawals.get(j, 0)) for j in sorted(df_jd.index))
+                _edited_tu = st.data_editor(
+                    _topup_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"rc{_rc}_topup_editor_{_tu_ver}",
+                    disabled=["Jahr", "Netto ohne Pool (€)", "Mindesthaushaltsgeld (€)", "Abweichung (€)", "Pool-Bestand (€)"],
+                    column_config={
+                        "Jahr": st.column_config.NumberColumn("Jahr", format="%d"),
+                        "Entnahme aus Pool (€)": st.column_config.NumberColumn(
+                            "Entnahme aus Pool (€)",
+                            min_value=0.0, max_value=5_000_000.0,
+                            format="%.0f", step=1_000.0,
+                            help="Gewünschte manuelle Entnahme aus dem Kapitalpool in diesem Jahr.",
+                        ),
+                        "Netto ohne Pool (€)": st.column_config.NumberColumn("Netto ohne Pool (€)", format="%.0f"),
+                        "Mindesthaushaltsgeld (€)": st.column_config.NumberColumn("Mindesthaushalt (€/Jahr)", format="%.0f"),
+                        "Abweichung (€)": st.column_config.NumberColumn("Abweichung (€)", format="%.0f"),
+                        "Pool-Bestand (€)": st.column_config.NumberColumn("Pool-Bestand (€)", format="%.0f"),
+                    },
+                )
+
+                # Neue manuelle Entnahmen aus Editor übernehmen
+                _new_mw: dict[int, float] = {}
+                for _, _tu_row in _edited_tu.iterrows():
+                    _j_tu = int(_tu_row["Jahr"])
+                    _w_tu = _tu_row.get("Entnahme aus Pool (€)")
+                    if pd.notna(_w_tu) and float(_w_tu) > 0:
+                        _new_mw[_j_tu] = float(_w_tu)
+                if _new_mw != _manual_withdrawals:
+                    st.session_state[_manual_w_key] = _new_mw
+                    st.rerun()
 
         # ── Hypothek-Tilgung: Status-Meldungen ───────────────────────────────
         if _hat_sonder and _rs > 0:
@@ -1660,77 +1489,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     st.dataframe(_df_tp_fmt.set_index("Jahr"), use_container_width=True)
                 else:
                     st.caption("Keine Hypothek konfiguriert.")
-
-        # ── Zwei-Strategie-Vergleich Netto-Verlauf ────────────────────────────
-        with st.expander("📊 Zwei-Strategie-Vergleich", expanded=False):
-            st.caption(
-                "Vergleicht den jährlichen Nettoverlauf der optimalen Strategie mit "
-                "einer manuell gewählten Vergleichsstrategie."
-            )
-            _vgl_opts = [
-                "Alles Monatlich (frühestmöglich)",
-                "Alles Monatlich (spätestmöglich)",
-                "Alles Einmal (frühestmöglich)",
-                "Alles Einmal (spätestmöglich)",
-            ]
-            _sel_vgl = st.selectbox(
-                "Vergleichsstrategie", _vgl_opts, key=f"rc{_rc}_eo_vgl_strat",
-            )
-            # Build the comparison scenario decisions
-            _vgl_sj_frueh  = {p.id: p.fruehestes_startjahr for p in produkte_obj}
-            _vgl_sj_spaet  = {p.id: p.spaetestes_startjahr for p in produkte_obj}
-            if "frühestmöglich" in _sel_vgl:
-                _vgl_sj_map = _vgl_sj_frueh
-            else:
-                _vgl_sj_map = _vgl_sj_spaet
-            if "Monatlich" in _sel_vgl:
-                _vgl_ents = [(p, _vgl_sj_map[p.id], 0.0) for p in produkte_obj]
-            else:
-                _vgl_ents = [(p, _vgl_sj_map[p.id], 1.0) for p in produkte_obj]
-            _, _vgl_jd = _netto_ueber_horizont(
-                _profil_eo, _ergebnis_eo, _vgl_ents, horizon, mieteinnahmen, mietsteigerung,
-                profil2=_profil2_eo, ergebnis2=_ergebnis2_eo, veranlagung=_ver_eo,
-                gehalt_monatlich=gehalt,
-                ausgaben_plan=_ausgaben_plan if _ausgaben_plan else None,
-            )
-            _vgl_df = pd.DataFrame(_vgl_jd).set_index("Jahr")
-            if _real_toggle and _real_inf > 0:
-                _inf_r2 = _real_inf / 100
-                _defl2 = {j: 1.0 / (1 + _inf_r2) ** (j - _start_j) for j in _vgl_df.index}
-                if "Netto" in _vgl_df.columns:
-                    _vgl_df["Netto"] = _vgl_df["Netto"] * _vgl_df.index.map(_defl2)
-            fig_vgl2 = go.Figure()
-            fig_vgl2.add_trace(go.Scatter(
-                name="Optimal",
-                x=df_jd.index, y=df_jd["Netto"],
-                mode="lines+markers",
-                line=dict(color="#4CAF50", width=2.5),
-                hovertemplate="%{x}: %{y:,.0f} € Netto<extra>Optimal</extra>",
-            ))
-            fig_vgl2.add_trace(go.Scatter(
-                name=_sel_vgl,
-                x=_vgl_df.index, y=_vgl_df["Netto"],
-                mode="lines+markers",
-                line=dict(color="#2196F3", width=2, dash="dash"),
-                hovertemplate="%{x}: %{y:,.0f} € Netto<extra>" + _sel_vgl + "</extra>",
-            ))
-            _diff_total = df_jd["Netto"].sum() - _vgl_df["Netto"].sum()
-            _ylabel = "€ / Jahr (real)" if _real_toggle else "€ / Jahr"
-            fig_vgl2.update_layout(
-                template="plotly_white", height=360,
-                xaxis=dict(title="Jahr", dtick=2),
-                yaxis=dict(title=_ylabel, tickformat=",.0f"),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                margin=dict(l=10, r=10, t=50, b=10),
-                separators=",.",
-            )
-            st.plotly_chart(fig_vgl2, use_container_width=True)
-            _sign = "+" if _diff_total >= 0 else ""
-            st.caption(
-                f"Differenz (Optimal − {_sel_vgl}): "
-                f"**{_sign}{_de(_diff_total)} €** über {horizon} Jahre"
-                + (" (inflationsbereinigt)" if _real_toggle else "") + "."
-            )
 
         # ── Kapital-Zeitleiste ─────────────────────────────────────────────────
         # P2 Kapital-Werte
@@ -2097,147 +1855,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 st.session_state["eo_entnahmen"] = _new_en
                 st.rerun()
 
-        # ── Hypothek-Vergleich: Kapitalanlage vs. Ratenkredit ────────────────
-        _restschuld = get_restschuld_end()
-        if _restschuld > 0:
-            with st.expander("🏠 Hypothek-Restschuld: Optionsvergleich", expanded=False):
-                st.caption(
-                    f"Restschuld am Hypothek-Endjahr: **{_de(_restschuld)} €**. "
-                    "Vergleich der Behandlungsoptionen unter Einbeziehung von Steuer, KV und Kapitalrendite."
-                )
-                # Mindest-Netto Eingabe
-                _mindest_j = st.number_input(
-                    "Mindest-Haushaltsnetto (€/Jahr) als Zielgröße",
-                    min_value=0, max_value=500_000,
-                    value=int(st.session_state.get(f"rc{_rc}_eo_mindest_netto_j", 24_000)),
-                    step=1_000,
-                    key=f"rc{_rc}_eo_mindest_netto_j",
-                    help="Jahreswert (= Monatswert × 12), der als Mindestversorgung gelten soll.",
-                )
-
-                # Plan für jede Option berechnen
-                hyp_d = st.session_state.get("hyp_daten", {})
-                endjahr_hyp = int(hyp_d.get("endjahr", AKTUELLES_JAHR + 20))
-                anschluss_zins = float(hyp_d.get("anschluss_zins_pa", 0.04))
-                anschluss_lz = int(hyp_d.get("anschluss_laufzeit", 10))
-
-                try:
-                    from tabs.hypothek import _annuitaet_rate as _hyp_annuitaet_rate
-                    rate_rk = _hyp_annuitaet_rate(_restschuld, anschluss_zins, anschluss_lz)
-                except Exception:
-                    rate_rk = _restschuld / max(1, anschluss_lz)
-
-                _plan_ka = {endjahr_hyp: _restschuld}
-                _plan_rk = {endjahr_hyp + 1 + i: rate_rk for i in range(anschluss_lz)}
-                _plan_keine = {}
-
-                with st.spinner("Vergleich wird berechnet …"):
-                    _opt_ka = _run_optimierung(
-                        "eo_ka", _profil_eo, _ergebnis_eo, produkte_obj, produkte_dicts,
-                        horizon, mieteinnahmen, mietsteigerung,
-                        profil2=_profil2_eo, ergebnis2=_ergebnis2_eo,
-                        veranlagung=_ver_eo, gehalt=gehalt,
-                        ausgaben_plan=_plan_ka,
-                    )
-                    _opt_rk = _run_optimierung(
-                        "eo_rk", _profil_eo, _ergebnis_eo, produkte_obj, produkte_dicts,
-                        horizon, mieteinnahmen, mietsteigerung,
-                        profil2=_profil2_eo, ergebnis2=_ergebnis2_eo,
-                        veranlagung=_ver_eo, gehalt=gehalt,
-                        ausgaben_plan=_plan_rk,
-                    )
-                    _opt_keine = _run_optimierung(
-                        "eo_keine", _profil_eo, _ergebnis_eo, produkte_obj, produkte_dicts,
-                        horizon, mieteinnahmen, mietsteigerung,
-                        profil2=_profil2_eo, ergebnis2=_ergebnis2_eo,
-                        veranlagung=_ver_eo, gehalt=gehalt,
-                        ausgaben_plan=None,
-                    )
-
-                def _min_netto_j(opt_res: dict) -> float:
-                    if not opt_res.get("jahresdaten"):
-                        return float("inf")
-                    return min(r["Netto"] for r in opt_res["jahresdaten"])
-
-                def _min_netto_rente_j(opt_res: dict) -> float:
-                    if not opt_res.get("jahresdaten"):
-                        return float("inf")
-                    renten_jahre = [
-                        r for r in opt_res["jahresdaten"]
-                        if r.get("Src_Gehalt", 0) == 0
-                    ]
-                    return min((r["Netto"] for r in renten_jahre), default=float("inf"))
-
-                _netto_ka   = _opt_ka.get("bestes_netto", 0.0)
-                _netto_rk   = _opt_rk.get("bestes_netto", 0.0)
-                _netto_kein = _opt_keine.get("bestes_netto", 0.0)
-                _min_ka     = _min_netto_rente_j(_opt_ka)
-                _min_rk     = _min_netto_rente_j(_opt_rk)
-
-                # Tabelle
-                import pandas as _pd_cmp
-                df_cmp = _pd_cmp.DataFrame({
-                    "Option": [
-                        "Keine Planung (Restschuld offen)",
-                        "Kapitalanlage-Tilgung",
-                        f"Ratenkredit ({anschluss_zins*100:.1f}%, {anschluss_lz}J.)",
-                    ],
-                    "Netto gesamt (€)": [
-                        round(_netto_kein), round(_netto_ka), round(_netto_rk)
-                    ],
-                    "Diff. zu kein Plan (€)": [
-                        0,
-                        round(_netto_ka - _netto_kein),
-                        round(_netto_rk - _netto_kein),
-                    ],
-                    "Min.-Netto Rentenphase (€/J)": [
-                        "–",
-                        _de(_min_ka) if _min_ka < float("inf") else "–",
-                        _de(_min_rk) if _min_rk < float("inf") else "–",
-                    ],
-                    "Mindest-Netto erreicht?": [
-                        "–",
-                        "✅ Ja" if _min_ka >= _mindest_j else "❌ Nein",
-                        "✅ Ja" if _min_rk >= _mindest_j else "❌ Nein",
-                    ],
-                })
-                st.dataframe(df_cmp.set_index("Option"), use_container_width=True)
-
-                # Empfehlung
-                _ka_ok = _min_ka >= _mindest_j
-                _rk_ok = _min_rk >= _mindest_j
-                if _ka_ok and _rk_ok:
-                    if _netto_ka >= _netto_rk:
-                        st.success(
-                            "**Empfehlung: Kapitalanlage-Tilgung.** "
-                            "Beide Optionen erfüllen das Mindest-Netto; "
-                            f"Kapitalanlage erzielt {_de(_netto_ka - _netto_rk)} € mehr über den Planungshorizont."
-                        )
-                    else:
-                        st.success(
-                            "**Empfehlung: Ratenkredit.** "
-                            "Beide Optionen erfüllen das Mindest-Netto; "
-                            f"Ratenkredit erzielt {_de(_netto_rk - _netto_ka)} € mehr "
-                            "(Kapitalanlage erzielt höhere Rendite als Kreditzins)."
-                        )
-                elif _ka_ok and not _rk_ok:
-                    st.success(
-                        "**Empfehlung: Kapitalanlage-Tilgung.** "
-                        "Nur diese Option hält das Mindest-Netto während der Ratenkredit-Laufzeit."
-                    )
-                elif _rk_ok and not _ka_ok:
-                    st.warning(
-                        "**Empfehlung: Ratenkredit.** "
-                        "Die Kapitalanlage ist ggf. nicht groß genug – der Pool würde das verfügbare "
-                        "Netto im Tilgungsjahr stark reduzieren."
-                    )
-                else:
-                    st.error(
-                        "**Keine Option erfüllt das Mindest-Netto.** "
-                        "Mögliche Maßnahmen: Sondertilgungen erhöhen, Sparquote anpassen, "
-                        "Renteneintritt verschieben oder Mindest-Netto reduzieren."
-                    )
-
         # ── Jahresdetails ─────────────────────────────────────────────────────
         st.subheader("Jahresdetails")
         _min_j_jd = int(df_jd.index.min())
@@ -2366,11 +1983,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             st.caption("Steueraufteilung P1/P2: halbiert (Splitting; Steuerprogression nicht neu berechnet).")
 
         st.divider()
-
-        # ── Top-10 Kombinationen ──────────────────────────────────────────────
-        st.subheader("Top-10 Kombinationen")
-        df_top = pd.DataFrame(opt["top10"]).set_index("Kombination")
-        st.dataframe(df_top, use_container_width=True)
 
         with st.expander("Rohdaten – Jahresverlauf"):
             st.dataframe(df_jd, use_container_width=True)

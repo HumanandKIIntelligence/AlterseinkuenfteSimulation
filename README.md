@@ -4,7 +4,8 @@ Eine interaktive Web-App zur Simulation und Optimierung des Renteneinkommens. Be
 
 ## Features
 
-- **Gesetzliche Rente & Beamtenpension** – DRV-Rentenpunkt-System oder direkte Pensionseingabe mit Versorgungsfreibetrag (§ 19 Abs. 2 EStG)
+- **Gesetzliche Rente** – DRV-Rentenpunkt-System; EP-Jahresberechnung mit Gehaltsperioden (Elternzeit, Teilzeit, Sabbatjahr)
+- **Beamtenpension §14 BeamtVG** – Versorgungssatz-Berechnung aus Dienstbezügen + Dienstjahren (`min(dienstjahre × 1,79375 %, 71,75 %) × Bezüge`); Versorgungsfreibetrag §19 Abs. 2 EStG; für Pensionäre: Direkteingabe
 - **Vorsorgebausteine** – bAV, Riester, Rürup, Lebensversicherung, ETF-Depot (thesaurierend/ausschüttend), private Rentenversicherung; mit korrekter Steuer- und KV-Behandlung je Produkttyp
 - **Einkommensteuer** – §32a EStG Grundtarif 2024 inkl. Solidaritätszuschlag und Kirchensteuer (8 %/9 %); optionales GFB-Wachstum verschiebt alle Steuerzonen dynamisch
 - **Altersentlastungsbetrag** – §24a EStG; automatisch für Personen ab 65, qualifizierend: PrivRV-Ertragsanteil, Riester, BUV/DUV, Mieteinnahmen, Arbeitslohn (nicht GRV/Rürup/bAV)
@@ -12,7 +13,7 @@ Eine interaktive Web-App zur Simulation und Optimierung des Renteneinkommens. Be
 - **Kranken- und Pflegeversicherung** – GKV (KVdR-Pflicht vs. freiwillig §240 SGB V) und PKV; korrekte bAV-Freibetragslogik, BBG-Deckelung und PV-Kinderstaffelung (§55 Abs. 3a SGB XI)
 - **PV-Kinderstaffelung** – §55 Abs. 3a SGB XI; 0–5 Kinder: Abschlag von −0,25 % je Kind ab dem 2. Kind (max. −1,0 %)
 - **Szenarien** – Pessimistisch / Neutral / Optimistisch mit exakter Jahres-Simulation je Szenario
-- **Entnahme-Optimierung** – Brute-Force über alle Startjahr × Auszahlungsart-Kombinationen; 5-Säulen-Strategievergleich (frühest/spätestens × monatlich/einmal); Kapitalverzehr-Kalkulator
+- **Entnahme-Optimierung** – Suche über alle Startjahr × Auszahlungsart-Kombinationen; 5-Säulen-Strategievergleich (frühest/spätestens × monatlich/einmal, optimal); Kapitalverzehr-Kalkulator
 - **Multi-Pool-Kapitalanlage** – Jede Einmalauszahlung wahlweise als eigener reinvestierter Kapitalanlage-Pool; produktspezifische Rendite; Annuitätenverzehr mit Abgeltungsteuer auf Gewinne; separater Pool-Verlauf-Chart
 - **Hypothek-Verwaltung** – Tilgungsplan mit Restschuld-Behandlung (als Kapitalanlage oder Ratenkredit); optionale Einbindung laufender Raten in die Simulation
 - **Dynamische Einzahlungsfelder** – je Vorsorgebaustein: Einmaleinzahlungen, jährl. Beitrag, Dynamik %, Beitragsbefreiungsjahr; auto-berechnete Kostenbasis bis Startjahr
@@ -76,7 +77,7 @@ docker compose logs -f
 docker exec altereinkuenfte-app python -m pytest tests/ -v
 ```
 
-Alle Berechnungslogiken in `engine.py` sind durch Unit-Tests abgedeckt (268 Tests).
+Alle Berechnungslogiken in `engine.py` sind durch Unit-Tests abgedeckt (336 Tests).
 
 ## Projektstruktur
 
@@ -95,7 +96,7 @@ tabs/
   steuern.py        – Steuer & KV-Detailansicht
   dokumentation.py  – Statische Dokumentationsseite
 tests/
-  test_engine.py    – Unit-Tests (268 Tests)
+  test_engine.py    – Unit-Tests (336 Tests)
 data/               – Gespeicherte Profile (JSON)
 ```
 
@@ -116,6 +117,8 @@ data/               – Gespeicherte Profile (JSON)
 | §240 SGB V | Freiwillig GKV: alle Einkünfte beitragspflichtig |
 | §55 Abs. 3a SGB XI | PV-Kinderstaffelung: −0,25 % je Kind ab dem 2. Kind |
 | §77 SGB VI | Rentenabschlag 0,3 %/Monat Frühverrentung |
+| §235 SGB VI | Regelaltersgrenze Jahrgänge 1947–1963 (Übergangsregelung) |
+| §14 BeamtVG | Versorgungssatz Beamtenpension: 1,79375 % je Dienstjahr, max. 71,75 % |
 
 ## Haftungsausschluss
 

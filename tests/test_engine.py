@@ -17,8 +17,10 @@ from engine import (
     SONDERAUSGABEN_PAUSCHBETRAG,
     BAV_FREIBETRAG_MONATLICH,
     BBG_KV_MONATLICH,
+    BBG_RV_MONATLICH,
     SPARERPAUSCHBETRAG,
     MINDEST_BMG_FREIWILLIG_MONO,
+    DURCHSCHNITTSENTGELT_2024,
     altersentlastungsbetrag,
     _pv_satz,
     AKTUELLES_JAHR,
@@ -38,6 +40,10 @@ from engine import (
     _netto_ueber_horizont,
     vergleiche_produkt,
     optimiere_auszahlungen,
+    _gehalt_fuer_jahr,
+    _berechne_pension_beamte,
+    _VERSORGUNGSSATZ_PRO_JAHR,
+    _VERSORGUNGSSATZ_MAX,
     Profil,
     RentenErgebnis,
     VorsorgeProdukt,
@@ -3190,3 +3196,431 @@ class TestSrcBavRiesterFelder:
         r = jd[0]
         expected_brutto = r["Src_bAV_P1"] + r["Src_Riester_P1"]
         assert r["Brutto"] == pytest.approx(expected_brutto, abs=1)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _gehalt_fuer_jahr – Perioden-Lookup-Hilfsfunktion
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGehaltFuerJahr:
+    """_gehalt_fuer_jahr(profil, jahr, basis_gehalt) → periodenspezifisches Gehalt."""
+
+    def _p(self, perioden=None) -> Profil:
+        return _profil(
+            gehalt_perioden=perioden or [],
+            aktuelles_brutto_monatlich=4_000.0,
+        )
+
+    def test_kein_perioden_gibt_basis_zurueck(self):
+        p = self._p([])
+        assert _gehalt_fuer_jahr(p, AKTUELLES_JAHR, 3_000.0) == pytest.approx(3_000.0)
+
+    def test_treffer_gibt_perioden_gehalt(self):
+        perioden = [{"start_jahr": 2027, "end_jahr": 2030, "gehalt_monatlich": 1_500.0}]
+        p = self._p(perioden)
+        assert _gehalt_fuer_jahr(p, 2028, 4_000.0) == pytest.approx(1_500.0)
+
+    def test_kein_treffer_gibt_basis(self):
+        perioden = [{"start_jahr": 2027, "end_jahr": 2030, "gehalt_monatlich": 1_500.0}]
+        p = self._p(perioden)
+        # Jahr vor Periode
+        assert _gehalt_fuer_jahr(p, 2026, 4_000.0) == pytest.approx(4_000.0)
+        # Jahr nach Periode
+        assert _gehalt_fuer_jahr(p, 2031, 4_000.0) == pytest.approx(4_000.0)
+
+    def test_grenzen_inklusiv(self):
+        """start_jahr und end_jahr sind inklusive."""
+        perioden = [{"start_jahr": 2027, "end_jahr": 2029, "gehalt_monatlich": 2_000.0}]
+        p = self._p(perioden)
+        assert _gehalt_fuer_jahr(p, 2027, 4_000.0) == pytest.approx(2_000.0)
+        assert _gehalt_fuer_jahr(p, 2029, 4_000.0) == pytest.approx(2_000.0)
+        assert _gehalt_fuer_jahr(p, 2026, 4_000.0) == pytest.approx(4_000.0)
+        assert _gehalt_fuer_jahr(p, 2030, 4_000.0) == pytest.approx(4_000.0)
+
+    def test_nullgehalt_periode(self):
+        """Elternzeit / Sabbatjahr: Periode mit 0 € ist gültig."""
+        perioden = [{"start_jahr": 2028, "end_jahr": 2028, "gehalt_monatlich": 0.0}]
+        p = self._p(perioden)
+        assert _gehalt_fuer_jahr(p, 2028, 4_000.0) == pytest.approx(0.0)
+        assert _gehalt_fuer_jahr(p, 2027, 4_000.0) == pytest.approx(4_000.0)
+
+    def test_mehrere_perioden_erste_trifft(self):
+        """Bei mehreren Perioden wird die erste passende genutzt."""
+        perioden = [
+            {"start_jahr": 2026, "end_jahr": 2028, "gehalt_monatlich": 1_000.0},
+            {"start_jahr": 2027, "end_jahr": 2029, "gehalt_monatlich": 9_000.0},
+        ]
+        p = self._p(perioden)
+        # 2027 liegt in beiden – erste Periode gewinnt
+        assert _gehalt_fuer_jahr(p, 2027, 4_000.0) == pytest.approx(1_000.0)
+
+    def test_kein_perioden_attribut_gibt_basis(self):
+        """Profil ohne gehalt_perioden (Altprofile) → Basis."""
+        p = _profil()  # kein gehalt_perioden-Keyword → default []
+        assert _gehalt_fuer_jahr(p, AKTUELLES_JAHR, 5_000.0) == pytest.approx(5_000.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _berechne_pension_beamte – § 14 BeamtVG Formel
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBeamtenpensionBerechnung:
+    """_berechne_pension_beamte(profil) → Ruhegehalt nach § 14 BeamtVG."""
+
+    def _beamter(self, **kwargs) -> Profil:
+        defaults = dict(
+            geburtsjahr=AKTUELLES_JAHR - 45,   # 45 Jahre alt
+            renteneintritt_alter=65,            # Pension in 20 Jahren
+            ist_pensionaer=True,
+            bereits_rentner=False,
+            aktuelles_brutto_monatlich=0.0,
+            aktuelle_punkte=0.0,
+            punkte_pro_jahr=0.0,
+            sparkapital=0.0,
+            sparrate=0.0,
+            rendite_pa=0.0,
+            rentenanpassung_pa=0.0,
+            krankenversicherung="GKV",
+            gkv_zusatzbeitrag=0.017,
+            kinder=True,
+        )
+        defaults.update(kwargs)
+        return Profil(**defaults)
+
+    def test_nullbezuege_gibt_null(self):
+        """Ohne Dienstbezüge → 0 (Fallback auf direkte Eingabe)."""
+        p = self._beamter(ruhegehalt_bezuege_mono=0.0, bisherige_dienstjahre=20)
+        assert _berechne_pension_beamte(p) == pytest.approx(0.0)
+
+    def test_versorgungssatz_formel(self):
+        """Versorgungssatz = bisherige_dj + jahre_bis_pension × 1,79375 %."""
+        # 45 Jahre alt, Pension mit 65 → 20 Jahre bis Pension
+        # Dienstjahre gesamt = 15 bisherige + 20 bis Pension = 35
+        # Versorgungssatz = 35 × 1.79375 % = 62.78 %
+        p = self._beamter(ruhegehalt_bezuege_mono=5_000.0, bisherige_dienstjahre=15)
+        erwartet_vs = min(35 * _VERSORGUNGSSATZ_PRO_JAHR, _VERSORGUNGSSATZ_MAX)
+        erwartet_pension = 5_000.0 * erwartet_vs
+        assert _berechne_pension_beamte(p) == pytest.approx(erwartet_pension, rel=1e-6)
+
+    def test_cap_bei_max_versorgungssatz(self):
+        """Versorgungssatz darf 71,75 % (= _VERSORGUNGSSATZ_MAX) nicht überschreiten."""
+        # 45 Jahre alt, Pension mit 65 → 20 Jahre bis Pension
+        # Dienstjahre = 60 → 60 × 1.79375 % = 107.6 % > 71.75 % → gekappt
+        p = self._beamter(ruhegehalt_bezuege_mono=5_000.0, bisherige_dienstjahre=60)
+        pension = _berechne_pension_beamte(p)
+        assert pension == pytest.approx(5_000.0 * _VERSORGUNGSSATZ_MAX, rel=1e-6)
+
+    def test_monotonie_mehr_dienstjahre_hoehere_pension(self):
+        """Mehr bisherige Dienstjahre → höhere Pension (solange kein Cap)."""
+        bezuege = 4_000.0
+        pensionen = [
+            _berechne_pension_beamte(self._beamter(
+                ruhegehalt_bezuege_mono=bezuege, bisherige_dienstjahre=dj
+            ))
+            for dj in [0, 5, 10, 15]
+        ]
+        for i in range(len(pensionen) - 1):
+            assert pensionen[i] < pensionen[i + 1]
+
+    def test_monotonie_hoehere_bezuege_hoehere_pension(self):
+        """Höhere Dienstbezüge → höhere Pension."""
+        dj = 15
+        pensionen = [
+            _berechne_pension_beamte(self._beamter(
+                ruhegehalt_bezuege_mono=b, bisherige_dienstjahre=dj
+            ))
+            for b in [2_000.0, 4_000.0, 6_000.0, 8_000.0]
+        ]
+        for i in range(len(pensionen) - 1):
+            assert pensionen[i] < pensionen[i + 1]
+
+    def test_null_dienstjahre_nur_restjahre(self):
+        """Bisherige Dienstjahre = 0 → Versorgungssatz nur aus Jahren bis Pension."""
+        p = self._beamter(ruhegehalt_bezuege_mono=5_000.0, bisherige_dienstjahre=0)
+        # 45 alt, Pension 65 → 20 Jahre bis Pension
+        erwartet_vs = min(20 * _VERSORGUNGSSATZ_PRO_JAHR, _VERSORGUNGSSATZ_MAX)
+        assert _berechne_pension_beamte(p) == pytest.approx(5_000.0 * erwartet_vs, rel=1e-6)
+
+    def test_konstanten_plausiblitaet(self):
+        """_VERSORGUNGSSATZ_MAX = 40 × _VERSORGUNGSSATZ_PRO_JAHR (40 Dienstjahre für Höchstsatz)."""
+        assert _VERSORGUNGSSATZ_MAX == pytest.approx(40 * _VERSORGUNGSSATZ_PRO_JAHR, rel=1e-6)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Beamtenpension in berechne_rente – Fallback und Formel
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPensionaerBerechneErweitert:
+    """Beamtenpension: § 14 BeamtVG Formel in berechne_rente() vs. Fallback."""
+
+    def _beamter(self, **kwargs) -> Profil:
+        defaults = dict(
+            geburtsjahr=AKTUELLES_JAHR - 45,
+            renteneintritt_alter=65,
+            ist_pensionaer=True,
+            bereits_rentner=False,
+            aktuelles_brutto_monatlich=3_000.0,  # Fallback-Wert
+            aktuelle_punkte=0.0,
+            punkte_pro_jahr=0.0,
+            sparkapital=0.0,
+            sparrate=0.0,
+            rendite_pa=0.0,
+            rentenanpassung_pa=0.0,
+            krankenversicherung="GKV",
+            gkv_zusatzbeitrag=0.017,
+            kinder=True,
+        )
+        defaults.update(kwargs)
+        return Profil(**defaults)
+
+    def test_fallback_wenn_keine_bezuege(self):
+        """Wenn ruhegehalt_bezuege_mono == 0, wird aktuelles_brutto_monatlich verwendet."""
+        p = self._beamter(ruhegehalt_bezuege_mono=0.0, aktuelles_brutto_monatlich=3_500.0)
+        e = berechne_rente(p)
+        assert e.brutto_gesetzlich == pytest.approx(3_500.0)
+
+    def test_berechnet_wenn_bezuege_angegeben(self):
+        """Wenn ruhegehalt_bezuege_mono > 0, wird § 14 BeamtVG genutzt."""
+        p = self._beamter(ruhegehalt_bezuege_mono=6_000.0, bisherige_dienstjahre=10)
+        e = berechne_rente(p)
+        erwartet = _berechne_pension_beamte(p)
+        assert erwartet > 0
+        assert e.brutto_gesetzlich == pytest.approx(erwartet, rel=1e-6)
+
+    def test_berechnet_pension_kleiner_als_fallback_wenn_kurze_dienstzeit(self):
+        """Kurze Dienstzeit → berechnete Pension < Fallback (falls Fallback hoch)."""
+        p_berechnet = self._beamter(
+            ruhegehalt_bezuege_mono=5_000.0,
+            bisherige_dienstjahre=0,
+            aktuelles_brutto_monatlich=5_000.0,
+        )
+        # 20 Jahre bis Pension × 1.79375 % = 35.875 % < 100 % → Pension < Bezüge
+        e = berechne_rente(p_berechnet)
+        assert e.brutto_gesetzlich < 5_000.0
+
+    def test_fallback_und_berechnet_verschieden(self):
+        """Fallback (direkteingabe) und Berechnung liefern unterschiedliche Werte."""
+        p_fallback   = self._beamter(ruhegehalt_bezuege_mono=0.0,
+                                     aktuelles_brutto_monatlich=4_000.0)
+        p_berechnet  = self._beamter(ruhegehalt_bezuege_mono=8_000.0,
+                                     bisherige_dienstjahre=5,
+                                     aktuelles_brutto_monatlich=4_000.0)
+        e_fb = berechne_rente(p_fallback)
+        e_bc = berechne_rente(p_berechnet)
+        assert e_fb.brutto_gesetzlich != pytest.approx(e_bc.brutto_gesetzlich)
+
+    def test_bereits_pensionaer_nutzt_direkteingabe(self):
+        """Bereits in Pension: direktes aktuelles_brutto_monatlich – keine Berechnung."""
+        p = self._beamter(
+            bereits_rentner=True,
+            aktuelles_brutto_monatlich=3_200.0,
+            ruhegehalt_bezuege_mono=8_000.0,  # sollte ignoriert werden
+            bisherige_dienstjahre=30,
+        )
+        e = berechne_rente(p)
+        assert e.brutto_gesetzlich == pytest.approx(3_200.0)
+
+    def test_netto_konsistent_mit_berechnung(self):
+        """Netto = Brutto − Steuer − KV auch bei berechneter Pension."""
+        p = self._beamter(ruhegehalt_bezuege_mono=5_000.0, bisherige_dienstjahre=15)
+        e = berechne_rente(p)
+        assert e.netto_monatlich == pytest.approx(
+            e.brutto_monatlich - e.steuer_monatlich - e.kv_monatlich, rel=1e-9
+        )
+
+    def test_rentenpunkte_null_fuer_pensionaer_mit_berechnung(self):
+        """Pensionäre haben keine Rentenpunkte, auch bei berechneter Pension."""
+        p = self._beamter(ruhegehalt_bezuege_mono=6_000.0, bisherige_dienstjahre=20)
+        e = berechne_rente(p)
+        assert e.gesamtpunkte == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# gehalt_perioden in berechne_rente – EP-Berechnung GRV
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGehaltPeriodenGRV:
+    """Gehaltsperioden beeinflussen Entgeltpunkte-Berechnung für GRV-Versicherte."""
+
+    def _grv(self, **kwargs) -> Profil:
+        """GRV-Profil: Renteneintritt in der Zukunft, Gehalt angegeben."""
+        defaults = dict(
+            geburtsjahr=AKTUELLES_JAHR - 45,
+            renteneintritt_alter=67,     # Rente in 22 Jahren
+            aktuelle_punkte=30.0,
+            aktuelles_brutto_monatlich=4_000.0,
+            sparkapital=0.0,
+            sparrate=0.0,
+            rendite_pa=0.0,
+            rentenanpassung_pa=0.0,
+            krankenversicherung="GKV",
+            gkv_zusatzbeitrag=0.017,
+            kinder=True,
+        )
+        defaults.update(kwargs)
+        return Profil(**defaults)
+
+    def test_ohne_perioden_nutzt_punkte_pro_jahr(self):
+        """Ohne Perioden: gesamtpunkte = aktuelle_punkte + punkte_pro_jahr × jahre."""
+        ppa = 1.5
+        p = self._grv(punkte_pro_jahr=ppa, gehalt_perioden=[])
+        e = berechne_rente(p)
+        erwartet = 30.0 + ppa * p.jahre_bis_rente
+        assert e.gesamtpunkte == pytest.approx(erwartet, rel=1e-6)
+
+    def test_mit_perioden_berechnet_ep_jaehrlich(self):
+        """Mit Perioden und Gehalt: gesamtpunkte berechnet sich jahresweise."""
+        # Basisgehalt 4000 €/Mon. für alle Jahre (keine Perioden)
+        # EP/Jahr = 4000 × 12 / DURCHSCHNITTSENTGELT_2024
+        p = self._grv(gehalt_perioden=[])
+        e_ohne = berechne_rente(p)
+
+        # Mit Perioden: niedrigeres Gehalt in 3 Jahren → niedrigere EP
+        _sj = AKTUELLES_JAHR + 1
+        _ej = AKTUELLES_JAHR + 3
+        perioden = [{"start_jahr": _sj, "end_jahr": _ej, "gehalt_monatlich": 1_000.0}]
+        p2 = self._grv(gehalt_perioden=perioden)
+        e_mit = berechne_rente(p2)
+        # Weniger Verdienst → weniger EP → niedrigere gesamtpunkte
+        assert e_mit.gesamtpunkte < e_ohne.gesamtpunkte
+
+    def test_elternzeit_nullgehalt_senkt_ep(self):
+        """Elternzeit (0 € Gehalt) in 2 Jahren → EP deutlich niedriger."""
+        _sj = AKTUELLES_JAHR + 1
+        _ej = AKTUELLES_JAHR + 2
+        perioden = [{"start_jahr": _sj, "end_jahr": _ej, "gehalt_monatlich": 0.0}]
+        p_mit = self._grv(gehalt_perioden=perioden)
+        p_ohne = self._grv(gehalt_perioden=[])
+        e_mit  = berechne_rente(p_mit)
+        e_ohne = berechne_rente(p_ohne)
+        assert e_mit.gesamtpunkte < e_ohne.gesamtpunkte
+
+    def test_perioden_nur_bei_aktuellem_gehalt_aktiv(self):
+        """Gehaltsperioden wirken nur wenn aktuelles_brutto_monatlich > 0."""
+        perioden = [{"start_jahr": AKTUELLES_JAHR + 1, "end_jahr": AKTUELLES_JAHR + 5,
+                     "gehalt_monatlich": 2_000.0}]
+        # Kein Basisgehalt → Periodenberechnung nicht getriggert → Fallback auf punkte_pro_jahr
+        # punkte_pro_jahr=0 → gesamtpunkte = nur aktuelle_punkte (30)
+        p_kein_basis = self._grv(
+            aktuelles_brutto_monatlich=0.0, gehalt_perioden=perioden,
+            punkte_pro_jahr=0.0,
+        )
+        e = berechne_rente(p_kein_basis)
+        assert e.gesamtpunkte == pytest.approx(30.0, abs=0.1)
+
+    def test_bbg_rv_kappung_in_ep_berechnung(self):
+        """EP-Berechnung kappt Gehalt bei BBG-RV (7.550 €/Mon.)."""
+        # Übergehalt >> BBG-RV: EP sollte gekappt sein
+        p_hoch = self._grv(
+            aktuelles_brutto_monatlich=20_000.0, gehalt_perioden=[],
+        )
+        p_bbg  = self._grv(
+            aktuelles_brutto_monatlich=BBG_RV_MONATLICH, gehalt_perioden=[],
+        )
+        e_hoch = berechne_rente(p_hoch)
+        e_bbg  = berechne_rente(p_bbg)
+        # EP bei 20.000 €/Mon. == EP bei BBG-RV (Kappung wirkt)
+        assert e_hoch.gesamtpunkte == pytest.approx(e_bbg.gesamtpunkte, rel=1e-4)
+
+    def test_perioden_nicht_aktiv_fuer_pensionaere(self):
+        """Pensionäre nutzen keine EP-Berechnung – Perioden haben keinen Einfluss auf EP."""
+        perioden = [{"start_jahr": AKTUELLES_JAHR + 1, "end_jahr": AKTUELLES_JAHR + 5,
+                     "gehalt_monatlich": 0.0}]
+        p = Profil(
+            geburtsjahr=AKTUELLES_JAHR - 45, renteneintritt_alter=65,
+            ist_pensionaer=True, bereits_rentner=False,
+            ruhegehalt_bezuege_mono=6_000.0, bisherige_dienstjahre=20,
+            gehalt_perioden=perioden,
+            aktuelle_punkte=0.0, punkte_pro_jahr=0.0,
+            sparkapital=0.0, sparrate=0.0, rendite_pa=0.0, rentenanpassung_pa=0.0,
+            krankenversicherung="GKV", gkv_zusatzbeitrag=0.017, kinder=True,
+        )
+        e = berechne_rente(p)
+        assert e.gesamtpunkte == 0.0  # Pensionäre haben keine Rentenpunkte
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# gehalt_perioden in _netto_ueber_horizont – Simulations-Einkommen
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGehaltPeriodenSimulation:
+    """Perioden steuern Src_Gehalt und KV in den Arbeitsjahren der Simulation."""
+
+    def _p_noch_aktiv(self, perioden=None) -> Profil:
+        """Renteneintritt in 5 Jahren (eintritt_jahr = AKTUELLES_JAHR + 5)."""
+        return _profil(
+            geburtsjahr=AKTUELLES_JAHR - 62,
+            renteneintritt_alter=67,
+            aktuelle_punkte=30.0, punkte_pro_jahr=0.0,
+            aktuelles_brutto_monatlich=4_000.0,
+            gehalt_perioden=perioden or [],
+        )
+
+    def test_kein_perioden_basis_gehalt_in_src(self):
+        """Ohne Perioden: Src_Gehalt = Basisgehalt × 12 in jedem Arbeitsjahr."""
+        p = self._p_noch_aktiv([])
+        e = berechne_rente(p)
+        basis = 5_000.0
+        _, jd = _netto_ueber_horizont(p, e, [], 3, gehalt_monatlich=basis)
+        _pre = max(0, p.eintritt_jahr - AKTUELLES_JAHR)
+        for i in range(_pre):
+            assert jd[i]["Src_Gehalt"] == pytest.approx(basis * 12, rel=1e-4)
+
+    def test_periode_lowert_src_gehalt(self):
+        """Periode mit niedrigerem Gehalt senkt Src_Gehalt in den betroffenen Jahren."""
+        _sj = AKTUELLES_JAHR + 1
+        _ej = AKTUELLES_JAHR + 2
+        perioden = [{"start_jahr": _sj, "end_jahr": _ej, "gehalt_monatlich": 1_000.0}]
+        p = self._p_noch_aktiv(perioden)
+        e = berechne_rente(p)
+        basis = 4_000.0
+        _, jd = _netto_ueber_horizont(p, e, [], 3, gehalt_monatlich=basis)
+        # Jahr 0 = AKTUELLES_JAHR → keine Periode → Basisgehalt
+        assert jd[0]["Src_Gehalt"] == pytest.approx(basis * 12, rel=1e-4)
+        # Jahr 1 = AKTUELLES_JAHR+1 → Periode mit 1000 €/Mon.
+        assert jd[1]["Src_Gehalt"] == pytest.approx(1_000.0 * 12, rel=1e-4)
+        # Jahr 2 = AKTUELLES_JAHR+2 → Periode mit 1000 €/Mon.
+        assert jd[2]["Src_Gehalt"] == pytest.approx(1_000.0 * 12, rel=1e-4)
+
+    def test_nullgehalt_periode_keine_steuer(self):
+        """Periode mit 0 € Gehalt → kein Bruttoeinkommen → Steuer = 0 in Arbeitsjahren."""
+        _sj = AKTUELLES_JAHR
+        _ej = AKTUELLES_JAHR + 4
+        perioden = [{"start_jahr": _sj, "end_jahr": _ej, "gehalt_monatlich": 0.0}]
+        p = _profil(
+            geburtsjahr=AKTUELLES_JAHR - 62, renteneintritt_alter=67,
+            aktuelle_punkte=0.0, punkte_pro_jahr=0.0,
+            gehalt_perioden=perioden,
+        )
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 3, gehalt_monatlich=4_000.0)
+        _pre = max(0, p.eintritt_jahr - AKTUELLES_JAHR)
+        # Arbeitsjahre mit 0 € Periode → Steuer = 0
+        for i in range(min(_pre, 3)):
+            assert jd[i]["Src_Gehalt"] == pytest.approx(0.0, abs=1)
+
+    def test_hoehere_steuer_ausserhalb_periode(self):
+        """Normale Arbeitsjahre (Basisgehalt) haben höhere Steuer als Niedriglohn-Periode."""
+        _sj = AKTUELLES_JAHR + 2
+        _ej = AKTUELLES_JAHR + 3
+        perioden = [{"start_jahr": _sj, "end_jahr": _ej, "gehalt_monatlich": 500.0}]
+        p = self._p_noch_aktiv(perioden)
+        e = berechne_rente(p)
+        basis = 6_000.0
+        _, jd = _netto_ueber_horizont(p, e, [], 4, gehalt_monatlich=basis)
+        # Jahr 0 (Basisgehalt 6000) vs. Jahr 2 (Periode 500 €/Mon.)
+        assert jd[0]["Steuer"] > jd[2]["Steuer"]
+
+    def test_perioden_wirken_nicht_nach_renteneintritt(self):
+        """Nach Renteneintritt sind Src_Gehalt=0, egal welche Perioden definiert sind."""
+        # Periode, die über den Renteneintritt hinausgeht – sollte in Rentenjahren ignoriert werden
+        _einj = AKTUELLES_JAHR + 5  # = p.eintritt_jahr
+        perioden = [{"start_jahr": _einj - 2, "end_jahr": _einj + 3,
+                     "gehalt_monatlich": 2_000.0}]
+        p = self._p_noch_aktiv(perioden)
+        e = berechne_rente(p)
+        _, jd = _netto_ueber_horizont(p, e, [], 5, gehalt_monatlich=4_000.0)
+        _pre = max(0, p.eintritt_jahr - AKTUELLES_JAHR)
+        # Rentenjahre: Src_Gehalt = 0
+        for i in range(_pre, len(jd)):
+            assert jd[i]["Src_Gehalt"] == 0

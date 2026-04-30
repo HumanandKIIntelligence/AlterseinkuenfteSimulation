@@ -1,5 +1,6 @@
 """Alterseinkünfte Simulation – Hauptdatei."""
 
+import pandas as pd
 import streamlit as st
 
 st.set_page_config(
@@ -9,7 +10,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from engine import Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR, einkommensteuer, BBG_KV_MONATLICH, _pv_satz, DURCHSCHNITTSENTGELT_2024, BBG_RV_MONATLICH
+from engine import (
+    Profil, berechne_rente, berechne_haushalt, AKTUELLES_JAHR, einkommensteuer,
+    BBG_KV_MONATLICH, _pv_satz, DURCHSCHNITTSENTGELT_2024, BBG_RV_MONATLICH,
+    _berechne_pension_beamte, _VERSORGUNGSSATZ_PRO_JAHR, _VERSORGUNGSSATZ_MAX,
+)
 from session_io import save_session, load_session, list_saves
 from tabs import dashboard, simulation, vorsorge, haushalt, dokumentation, entnahme_opt, hypothek
 
@@ -89,6 +94,15 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
     zusatzentgelt_jaehrlich = (float(_get(pfx, "zusatzentgelt", 0.0))
                                if not ist_pensionaer and not bereits_rentner else 0.0)
 
+    # Gehalts-/Dienstbezüge-Perioden: stabiler Key (nicht rc-gepräfixt) damit Werte Reruns überstehen
+    gehalt_perioden = st.session_state.get(f"{pfx}_gehalt_perioden", [])
+    if not isinstance(gehalt_perioden, list):
+        gehalt_perioden = []
+
+    # Beamtenpension-Felder (§ 14 BeamtVG)
+    ruhegehalt_bezuege_mono = float(_get(pfx, "rhg_bezuege", 0.0)) if ist_pensionaer and not bereits_rentner else 0.0
+    bisherige_dienstjahre   = int(_get(pfx, "dienstjahre", 0))     if ist_pensionaer and not bereits_rentner else 0
+
     return Profil(
         geburtsjahr=geburtsjahr,
         renteneintritt_alter=renteneintritt_alter,
@@ -120,6 +134,9 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         kap_pool_rendite_pa=kap_pool_rendite_pa,
         lebenshaltungskosten_monatlich=lebenshaltungskosten_monatlich,
         zusatzentgelt_jaehrlich=zusatzentgelt_jaehrlich,
+        gehalt_perioden=gehalt_perioden,
+        ruhegehalt_bezuege_mono=ruhegehalt_bezuege_mono,
+        bisherige_dienstjahre=bisherige_dienstjahre,
     )
 
 
@@ -165,8 +182,12 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
         f"rc{_RC}_{pfx}_gfb_wachstum":    p.grundfreibetrag_wachstum_pa * 100,
         f"rc{_RC}_{pfx}_lhk":             p.lebenshaltungskosten_monatlich,
         f"rc{_RC}_{pfx}_zusatzentgelt":   p.zusatzentgelt_jaehrlich,
+        f"rc{_RC}_{pfx}_rhg_bezuege":     p.ruhegehalt_bezuege_mono,
+        f"rc{_RC}_{pfx}_dienstjahre":     p.bisherige_dienstjahre,
     }
     st.session_state.update(updates)
+    # Gehaltsperioden: stabiler Key (nicht rc-gepräfixt)
+    st.session_state[f"{pfx}_gehalt_perioden"] = p.gehalt_perioden
 
 
 # ── Profil-Widgets rendern (im Profil-Tab) ────────────────────────────────────
@@ -226,16 +247,57 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int,
                 "Abschlag: 0,3 % je Monat vor Regelaltersgrenze 67."
             )
         if ist_pensionaer:
-            st.markdown("**Beamtenversorgung**")
-            ca_p, cb_p = st.columns(2)
-            with ca_p:
+            st.markdown("**Beamtenversorgung (§ 14 BeamtVG)**")
+            ca_p0, cb_p0 = st.columns(2)
+            with ca_p0:
+                st.number_input(
+                    "Ruhegehaltfähige Dienstbezüge (€/Mon.)", 0.0, 20_000.0,
+                    value=float(_get(pfx, "rhg_bezuege", 0.0)),
+                    step=50.0, key=f"rc{_RC}_{pfx}_rhg_bezuege",
+                    help="Erwartetes Bruttogehalt (Grundgehalt + Familienzuschlag) zum Pensionierungszeitpunkt. "
+                         "Basis für Ruhegehalt nach § 14 Abs. 1 BeamtVG.",
+                )
+            with cb_p0:
+                st.number_input(
+                    "Bisherige Dienstjahre", 0, 50,
+                    value=int(_get(pfx, "dienstjahre", 0)),
+                    step=1, key=f"rc{_RC}_{pfx}_dienstjahre",
+                    help="Bisher abgeleistete ruhegehaltfähige Dienstjahre. "
+                         "Gesamtdienstjahre = Bisherige + Jahre bis Pensionierung.",
+                )
+            # Berechnete Pension anzeigen
+            _rhg_bez  = float(_get(pfx, "rhg_bezuege", 0.0))
+            _dj_bish  = int(_get(pfx, "dienstjahre", 0))
+            _re_alt_p = int(_get(pfx, "re_alter", 67))
+            _geb_p    = int(_get(pfx, "geb", AKTUELLES_JAHR - 40))
+            _dj_rest  = max(0, _re_alt_p - (AKTUELLES_JAHR - _geb_p))
+            _dj_ges   = _dj_bish + _dj_rest
+            _vs       = min(_dj_ges * _VERSORGUNGSSATZ_PRO_JAHR, _VERSORGUNGSSATZ_MAX)
+            _pens_calc = _rhg_bez * _vs if _rhg_bez > 0 else 0.0
+            _cp1, _cp2, _cp3 = st.columns(3)
+            with _cp1:
+                st.metric("Dienstjahre gesamt", f"{_dj_ges} J.",
+                          help=f"Bisherige {_dj_bish} J. + {_dj_rest} J. bis Pensionierung")
+            with _cp2:
+                st.metric("Versorgungssatz", f"{_vs*100:.2f} %",
+                          help=f"§ 14 BeamtVG: min({_dj_ges} × 1,79375 %, 71,75 %)")
+            with _cp3:
+                st.metric("Erwartete Bruttopension", f"{_pens_calc:,.0f} €/Mon." if _pens_calc > 0 else "–",
+                          help="Ruhegehaltfähige Dienstbezüge × Versorgungssatz. "
+                               "0 = bitte Dienstbezüge eingeben.")
+            if _pens_calc == 0:
+                st.info("Bitte Ruhegehaltfähige Dienstbezüge eingeben, um die Pension zu berechnen.")
+            # Fallback-Feld für direkte Eingabe (falls keine Bezüge angegeben)
+            with st.expander("Alternativ: Bruttopension direkt eingeben (Fallback)", expanded=(_rhg_bez == 0)):
                 st.number_input(
                     "Erwartete Bruttopension (€/Mon.)", 0.0, 20_000.0,
-                    value=float(_get(pfx, "akt_brutto", 3_000.0)),
+                    value=float(_get(pfx, "akt_brutto", 0.0)),
                     step=50.0, key=f"rc{_RC}_{pfx}_akt_brutto",
-                    help="Besteuerung nach § 19 Abs. 2 EStG (Versorgungsfreibetrag).",
+                    help="Wird nur genutzt, wenn keine Ruhegehaltfähigen Dienstbezüge angegeben. "
+                         "Besteuerung nach § 19 Abs. 2 EStG (Versorgungsfreibetrag).",
                 )
-            with cb_p:
+            ca_p, cb_p = st.columns(2)
+            with ca_p:
                 st.slider(
                     "Pensionsanpassung p.a. (%)", 0.0, 3.0,
                     value=float(_get(pfx, "ren_anp", 0.0)),
@@ -289,6 +351,65 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int,
             help="Aktuelles Bruttogehalt für die Steuer- und KV-Simulation in den Arbeitsjahren. "
                  "0 = Simulation startet erst ab Renteneintritt (kein Arbeitsphasen-Verlauf).",
         )
+
+        # ── Gehalts-/Dienstbezüge-Perioden ───────────────────────────────────
+        _gp_label = "📅 Dienstbezüge-Perioden (Besoldungsänderungen)" if ist_pensionaer \
+                    else "📅 Gehaltsänderungen (Perioden)"
+        _gp_help  = ("Zeiträume, in denen sich die Dienstbezüge ändern (z.B. Beförderung, "
+                     "Besoldungsgruppe). Beeinflussen das Simulations-Einkommen in den Arbeitsjahren."
+                     ) if ist_pensionaer else (
+                     "Zeiträume, in denen sich das Bruttogehalt vorübergehend ändert "
+                     "(z.B. Teilzeit, Elternzeit, Sabbatjahr). Beeinflussen Rentenentgeltpunkte "
+                     "und Simulations-Einkommen.")
+        with st.expander(_gp_label, expanded=False):
+            st.caption(_gp_help)
+            _gp_key   = f"{pfx}_gehalt_perioden"
+            _gp_raw   = st.session_state.get(_gp_key, [])
+            if not isinstance(_gp_raw, list):
+                _gp_raw = []
+            _re_alt_gp = int(_get(pfx, "re_alter", 67))
+            _geb_gp    = int(_get(pfx, "geb", AKTUELLES_JAHR - 40))
+            _ein_j_gp  = _geb_gp + _re_alt_gp
+            _gp_df = pd.DataFrame(
+                _gp_raw if _gp_raw else [],
+                columns=["start_jahr", "end_jahr", "gehalt_monatlich"],
+            )
+            _gp_edited = st.data_editor(
+                _gp_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                key=f"rc{_RC}_{pfx}_gp_editor",
+                column_config={
+                    "start_jahr": st.column_config.NumberColumn(
+                        "Start-Jahr", min_value=AKTUELLES_JAHR - 30,
+                        max_value=_ein_j_gp, step=1, format="%d",
+                        help="Jahr, ab dem das geänderte Gehalt gilt.",
+                    ),
+                    "end_jahr": st.column_config.NumberColumn(
+                        "End-Jahr", min_value=AKTUELLES_JAHR,
+                        max_value=_ein_j_gp, step=1, format="%d",
+                        help="Letztes Jahr mit diesem Gehalt (inkl.).",
+                    ),
+                    "gehalt_monatlich": st.column_config.NumberColumn(
+                        "Bruttogehalt (€/Mon.)" if not ist_pensionaer else "Dienstbezüge (€/Mon.)",
+                        min_value=0.0, max_value=30_000.0, step=100.0, format="%.0f",
+                    ),
+                },
+            )
+            # Gültige Zeilen speichern (beide Jahresfelder und Gehalt gesetzt)
+            _gp_new = []
+            for _, _gpr in _gp_edited.iterrows():
+                try:
+                    _sj = int(_gpr["start_jahr"]) if pd.notna(_gpr["start_jahr"]) else 0
+                    _ej = int(_gpr["end_jahr"])   if pd.notna(_gpr["end_jahr"])   else 0
+                    _gm = float(_gpr["gehalt_monatlich"]) if pd.notna(_gpr["gehalt_monatlich"]) else -1.0
+                except (TypeError, ValueError):
+                    continue
+                if _sj > 0 and _ej >= _sj and _gm >= 0:
+                    _gp_new.append({"start_jahr": _sj, "end_jahr": _ej, "gehalt_monatlich": _gm})
+            if _gp_new != _gp_raw:
+                st.session_state[_gp_key] = _gp_new
+                st.rerun()
 
     if show_kapital:
         st.markdown("**Kapital**")

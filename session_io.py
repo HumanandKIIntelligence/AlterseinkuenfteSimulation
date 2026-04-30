@@ -59,6 +59,9 @@ _PROFIL_LADE_DEFAULTS: dict = {
     "kap_pool_rendite_pa":            -1.0,
     "lebenshaltungskosten_monatlich":  0.0,
     "zusatzentgelt_jaehrlich":         0.0,
+    "gehalt_perioden":                 [],
+    "ruhegehalt_bezuege_mono":         0.0,
+    "bisherige_dienstjahre":           0,
 }
 
 

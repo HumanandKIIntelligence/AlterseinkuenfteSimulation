@@ -5,7 +5,7 @@ Keine Haftung für steuerliche oder rechtliche Entscheidungen.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field as _dc_field, replace
 from datetime import date as _date
 import numpy as np
 
@@ -283,6 +283,18 @@ class Profil:
     # Gilt nur bis Rentenbeginn (eintritt_jahr). Nur für Nicht-Beamte.
     zusatzentgelt_jaehrlich: float = 0.0  # €/Jahr (z.B. ATZ-Aufstockungsbetrag)
 
+    # Gehaltsperioden: Zeiträume mit abweichendem Gehalt vor Renteneintritt.
+    # Jede Periode: {"start_jahr": int, "end_jahr": int, "gehalt_monatlich": float}
+    # GRV: beeinflussen EP-Berechnung und Simulations-Einkommen
+    # Beamte: beeinflussen Simulations-Einkommen (Pension aus Dienstbezügen unten)
+    gehalt_perioden: list = _dc_field(default_factory=list)
+
+    # Beamtenpension-Berechnung nach § 14 BeamtVG (nur wenn ist_pensionaer=True, nicht bereits_rentner)
+    # Versorgungssatz = min(bisherige_dienstjahre + jahre_bis_pension) × 1,79375 %, 71,75 %)
+    # Bruttopension = ruhegehalt_bezuege_mono × versorgungssatz
+    ruhegehalt_bezuege_mono: float = 0.0  # Ruhegehaltfähige Dienstbezüge (€/Mon.)
+    bisherige_dienstjahre: int = 0        # Bisher abgeleistete ruhegehaltfähige Dienstjahre
+
     @property
     def aktuelles_alter(self) -> int:
         return AKTUELLES_JAHR - self.geburtsjahr
@@ -321,6 +333,33 @@ class RentenErgebnis:
 
 # ── Kernberechnungen ──────────────────────────────────────────────────────────
 
+def _gehalt_fuer_jahr(profil: "Profil", jahr: int, basis_gehalt: float) -> float:
+    """Bruttogehalt für ein Simulationsjahr; Perioden überschreiben den Basiswert."""
+    for p in getattr(profil, "gehalt_perioden", []):
+        if isinstance(p, dict) and p.get("start_jahr", 0) <= jahr <= p.get("end_jahr", 0):
+            return float(p.get("gehalt_monatlich", basis_gehalt))
+    return basis_gehalt
+
+
+# Versorgungssatz-Faktor nach § 14 Abs. 1 BeamtVG (Bund)
+_VERSORGUNGSSATZ_PRO_JAHR = 0.0179375  # 1,79375 % pro Dienstjahr
+_VERSORGUNGSSATZ_MAX      = 0.7175     # 71,75 % Maximum
+
+
+def _berechne_pension_beamte(p: "Profil") -> float:
+    """Bruttopension nach § 14 BeamtVG aus Dienstbezügen und Dienstjahren.
+
+    Versorgungssatz = min((bisherige_dienstjahre + jahre_bis_pension) × 1,79375 %, 71,75 %)
+    Gibt 0 zurück, wenn keine Bezüge eingegeben wurden (Fallback auf direkte Eingabe).
+    """
+    if p.ruhegehalt_bezuege_mono <= 0:
+        return 0.0
+    _jahre_bis = max(0, p.renteneintritt_alter - p.aktuelles_alter)
+    _dienstjahre_gesamt = p.bisherige_dienstjahre + _jahre_bis
+    _versorgungssatz = min(_dienstjahre_gesamt * _VERSORGUNGSSATZ_PRO_JAHR, _VERSORGUNGSSATZ_MAX)
+    return p.ruhegehalt_bezuege_mono * _versorgungssatz
+
+
 def kapitalwachstum(kapital: float, sparrate: float, rendite_pa: float, jahre: int) -> float:
     """Endkapital nach `jahre` Jahren mit monatlicher Sparrate und Zinseszins."""
     if jahre <= 0:
@@ -350,19 +389,29 @@ def berechne_rente(p: Profil) -> RentenErgebnis:  # noqa: C901
 
     # ── Einkommensberechnung ──────────────────────────────────────────────────
     if p.bereits_rentner:
-        # Rente wird bereits bezogen: direkte Bruttoeingabe, kein Ansparen
+        # Bereits in Ruhestand (GRV-Rentner oder Pensionär): direkte Bruttoeingabe
         brutto_gesetzlich = p.aktuelles_brutto_monatlich
         kapital           = p.sparkapital
         rentenbeginn      = p.rentenbeginn_jahr
     elif p.ist_pensionaer:
-        # Beamter noch aktiv: erwartete Bruttopension direkt eingegeben
-        brutto_gesetzlich = p.aktuelles_brutto_monatlich
+        # Beamter, noch aktiv: Pension nach § 14 BeamtVG wenn Dienstbezüge angegeben
+        _pension_berechnet = _berechne_pension_beamte(p)
+        brutto_gesetzlich = _pension_berechnet if _pension_berechnet > 0 else p.aktuelles_brutto_monatlich
         kapital           = kapitalwachstum(p.sparkapital, p.sparrate, p.rendite_pa,
                                             p.jahre_bis_rente)
         rentenbeginn      = p.eintritt_jahr
     else:
-        # Standard GRV
-        gesamtpunkte  = p.aktuelle_punkte + p.punkte_pro_jahr * p.jahre_bis_rente
+        # GRV-Rentner (noch aktiv): Entgeltpunkte berücksichtigen Gehaltsperioden
+        if p.gehalt_perioden and p.aktuelles_brutto_monatlich > 0:
+            # Jahresweise EP-Berechnung mit periodenspezifischem Gehalt
+            _ep_ab_heute = 0.0
+            for _j in range(AKTUELLES_JAHR, p.eintritt_jahr):
+                _g = _gehalt_fuer_jahr(p, _j, p.aktuelles_brutto_monatlich)
+                _aufstock = p.zusatzentgelt_jaehrlich if _j < p.eintritt_jahr else 0.0
+                _ep_ab_heute += min(_g * 12 + _aufstock, BBG_RV_MONATLICH * 12) / DURCHSCHNITTSENTGELT_2024
+            gesamtpunkte = p.aktuelle_punkte + _ep_ab_heute
+        else:
+            gesamtpunkte  = p.aktuelle_punkte + p.punkte_pro_jahr * p.jahre_bis_rente
         rentenwert    = RENTENWERT_2024 * (1 + p.rentenanpassung_pa) ** p.jahre_bis_rente
         monate_frueh  = max(0, round((regelaltersgrenze(p.geburtsjahr) - p.renteneintritt_alter) * 12))
         abschlag      = monate_frueh * ABSCHLAG_PRO_MONAT
@@ -854,7 +903,8 @@ def _netto_ueber_horizont(
             gesetzl_j  = gesetzl_mono * 12 * (1 + profil.rentenanpassung_pa) ** _r_y
             ba_aktuell = ba
         else:
-            gesetzl_j  = gehalt_monatlich * 12   # Bruttogehalt § 19 EStG voll steuerpflichtig
+            _g_mono    = _gehalt_fuer_jahr(profil, jahr, gehalt_monatlich)
+            gesetzl_j  = _g_mono * 12   # Bruttogehalt § 19 EStG voll steuerpflichtig
             ba_aktuell = 1.0
 
         miet_j = mieteinnahmen_monatlich * 12 * (1 + mietsteigerung_pa) ** y
@@ -1219,8 +1269,8 @@ def _netto_ueber_horizont(
         if ist_pkv:
             kv_p1 = profil.pkv_beitrag * 12
         elif not in_rente:
-            # Arbeitnehmerjahre: AN-Anteil auf Gehalt (AG zahlt die andere Hälfte)
-            kv_p1 = min(gehalt_monatlich, BBG_KV_MONATLICH) * 12 * kv_rate_halb
+            # Arbeitnehmerjahre: AN-Anteil auf periodenkorrigiertes Gehalt (AG zahlt die andere Hälfte)
+            kv_p1 = min(_g_mono, BBG_KV_MONATLICH) * 12 * kv_rate_halb
         elif ist_freiwillig:
             # Freiwillig GKV §240 SGB V + §106 SGB VI (Beitragszuschuss):
             # GRV-Rente: DRV zahlt halben GKV-Beitrag → Person zahlt nur 7,3 % + Zusatz/2

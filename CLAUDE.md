@@ -66,6 +66,11 @@ docker exec altereinkuenfte-app pip install pytest -q
 | `TestGetrenntSteuer` | Getrennt-Netto = P1_solo + P2_solo; nicht inflationiert durch fehlende P2-Steuer; Zusammen > Getrennt bei ungleichem Einkommen |
 | `TestKapFehlbetrag` | Kein Fehlbetrag ohne Pool (0 statt Sonderausgabe); direkter Netto-Abzug bleibt; Fehlbetrag gesetzt wenn Pool unzureichend |
 | `TestVorsorgeBeitraege` | jaehrl_einzahlung → Vorsorge_Beitraege pro Jahr; Netto-Differenz exakt; Beitragsbefreiung stoppt Abzug; einzel_einzahlung kein laufender Abzug |
+| `TestGehaltFuerJahr` | `_gehalt_fuer_jahr()`: kein Treffer → Basis, Treffer → Periodengehalt, inklusive Grenzen, Nullgehalt (Elternzeit), mehrere Perioden |
+| `TestBeamtenpensionBerechnung` | `_berechne_pension_beamte()`: Nullbezüge → 0, Versorgungssatz-Formel, Cap 71,75 %, Monotonie Dienstjahre/Bezüge |
+| `TestPensionaerBerechneErweitert` | Beamtenpension in `berechne_rente()`: Fallback auf `aktuelles_brutto_monatlich`, § 14 BeamtVG wenn Bezüge angegeben, bereits-Pensionär nutzt Direkteingabe |
+| `TestGehaltPeriodenGRV` | `gehalt_perioden` → EP in `berechne_rente()`: ohne Perioden = punkte_pro_jahr, Perioden senken EP, Elternzeit, BBG-Kappung, Pensionäre unberührt |
+| `TestGehaltPeriodenSimulation` | `gehalt_perioden` → Src_Gehalt in `_netto_ueber_horizont()`: Periodengehalt in Arbeitsjahren, keine Wirkung nach Renteneintritt |
 
 ---
 
@@ -133,9 +138,11 @@ Profil-Tab (app.py) + Mieteinnahmen
 | `ertragsanteil(alter)` | §22 Nr. 1 S. 3a bb EStG: Tabellenwert als Dezimalzahl |
 | `kapitalwachstum(kapital, sparrate, rendite_pa, jahre)` | Zinseszins mit monatlicher Sparrate |
 | `_resolve_pool_rendite(prod, profil)` | Rendite-Priorität: `prod.kap_rendite_pa ≥ 0` → `profil.kap_pool_rendite_pa ≥ 0` → `profil.rendite_pa` |
-| `berechne_rente(profil)` | Vollberechnung → `RentenErgebnis` (inkl. AEB, _pv_satz) |
+| `_gehalt_fuer_jahr(profil, jahr, basis_gehalt)` | Gibt Periodengehalt zurück wenn `jahr` in einem Eintrag von `profil.gehalt_perioden` liegt, sonst `basis_gehalt` |
+| `_berechne_pension_beamte(profil)` | § 14 BeamtVG: `min((bisherige_dj + jahre_bis_pension) × 1,79375 %, 71,75 %) × ruhegehalt_bezuege_mono`; gibt 0 wenn keine Bezüge angegeben |
+| `berechne_rente(profil)` | Vollberechnung → `RentenErgebnis` (inkl. AEB, _pv_satz, Beamtenpension-Formel, Gehaltsperioden-EP) |
 | `berechne_haushalt(erg1, erg2, veranlagung, mieteinnahmen_monatlich, profil1, profil2)` | Haushaltseinkommen mit Splitting, Mieteinnahmen und AEB auf Miete |
-| `_netto_ueber_horizont(..., gehalt_monatlich, ausgaben_plan)` | Jahressimulation; Multi-Pool-Architektur; Rentenanpassung p.a.; KVdR vs. freiwillig GKV; optionaler Ausgabenplan (Hypothek) |
+| `_netto_ueber_horizont(..., gehalt_monatlich, ausgaben_plan)` | Jahressimulation; Multi-Pool-Architektur; Rentenanpassung p.a.; KVdR vs. freiwillig GKV; Gehaltsperioden in Arbeitsjahren; optionaler Ausgabenplan (Hypothek) |
 | `optimiere_auszahlungen(..., gehalt_monatlich)` | Brute-Force über alle Startjahr × Auszahlungsart-Kombinationen |
 
 ### Wichtige Konstanten (engine.py)
@@ -153,6 +160,9 @@ Profil-Tab (app.py) + Mieteinnahmen
 | `RIESTER_KINDERZULAGE_ALT` | 185,0 € | §85 Abs. 1 S. 1 EStG (Kinder vor 2008) |
 | `GRUNDSICHERUNG_SCHWELLE` | 1.100,0 € | §41 SGB XII – indikativer Schwellenwert, kein Rechtsanspruch |
 | `DURCHSCHNITTSENTGELT_2024` | 43.142,0 € | DRV – Rentenpunkt-Hochrechnung (EP = Brutto / DURCHSCHNITTSENTGELT) |
+| `BBG_RV_MONATLICH` | 7.550,0 € | Beitragsbemessungsgrenze Rentenversicherung 2024 |
+| `_VERSORGUNGSSATZ_PRO_JAHR` | 0,0179375 | § 14 Abs. 1 BeamtVG: 1,79375 % Ruhegehalt je Dienstjahr |
+| `_VERSORGUNGSSATZ_MAX` | 0,7175 | § 14 Abs. 1 S. 4 BeamtVG: max. 71,75 % (= 40 Dienstjahre) |
 
 ---
 
@@ -165,7 +175,13 @@ Profil-Tab (app.py) + Mieteinnahmen
 - **Beihilfe + PKV:** Eigener Versicherungsarten-Radio im Profil-Tab
 - **DUV:** Dienstunfähigkeitsversicherung mit Ertragsanteil §22 Nr. 1 S. 3a bb; nicht KVdR-pflichtig
 - **Rentenpunkte:** Werden auf 0 gesetzt; `rentenanpassung_pa` konfigurierbar per Slider (Default 0 %)
-- **Profil-Eingabe:** Erwartete Bruttopension direkt als €/Mon. (kein Rentenpunkt-System)
+- **Profil-Eingabe (aktiver Beamter, `bereits_rentner=False`):** Pension wird nach §14 BeamtVG berechnet via `_berechne_pension_beamte()`:
+  - Eingaben: `ruhegehalt_bezuege_mono` (ruhegehaltfähige Dienstbezüge €/Mon.) + `bisherige_dienstjahre`
+  - Formel: `min((bisherige_dj + jahre_bis_pension) × 1,79375 %, 71,75 %) × ruhegehalt_bezuege_mono`
+  - Fallback: wenn `ruhegehalt_bezuege_mono == 0`, wird `aktuelles_brutto_monatlich` als direkte Pensionseingabe genutzt (Abwärtskompatibilität)
+  - UI: 3 berechnete Metriken (Dienstjahre gesamt, Versorgungssatz %, Bruttopension); collapsed Expander für Legacy-Direkteingabe
+  - Gehaltsperioden: `gehalt_perioden`-Expander (Dienstbezüge-Perioden) für Zeiträume mit abweichenden Bezügen
+- **Profil-Eingabe (bereits Pensionär, `bereits_rentner=True`):** Einfaches Direkteingabefeld für monatliche Bruttopension; keine §14-Berechnung
 
 ## DUV / BUV
 
@@ -320,6 +336,9 @@ Im Strategievergleich-Balkendiagramm werden 5 Säulen angezeigt.
 - **`grundfreibetrag_wachstum_pa`** (float, default 0.0): Jährliches GFB-Wachstum p.a. (z.B. 0.01 = 1 %). Pro Simulationsjahr: `gfb = GRUNDFREIBETRAG_2024 × (1+wachstum)^y`. UI: Slider im "Erweiterte Einstellungen"-Expander.
 - **`kap_pool_rendite_pa`** (float, default -1.0): Profilweite Default-Pool-Rendite für alle `als_kapitalanlage`-Produkte. Wird von `prod.kap_rendite_pa` überschrieben wenn ≥ 0. UI: Checkbox + Slider im "Erweiterte Einstellungen"-Expander.
 - **`lebenshaltungskosten_monatlich`** (float, default 0.0): Monatliche Fixausgaben (Lebenshaltungskosten). Wird jährlich in `_netto_ueber_horizont()` vom Netto abgezogen (`LHK`-Feld in Jahresdaten). UI: number_input im "Erweiterte Einstellungen"-Expander.
+- **`gehalt_perioden`** (list, default []): Zeiträume mit abweichendem Gehalt/Bezügen. Jeder Eintrag: `{"start_jahr": int, "end_jahr": int, "gehalt_monatlich": float}`. Bei GRV: beeinflusst EP-Berechnung und Simulationsgehalt. Bei Beamten: Dienstbezüge-Perioden. UI: `st.data_editor` im Expander "📅 Gehaltsänderungen (Perioden)"; stabiler Key `f"{pfx}_gehalt_perioden"`.
+- **`ruhegehalt_bezuege_mono`** (float, default 0.0): Ruhegehaltfähige Dienstbezüge in €/Mon. (nur aktive Beamte, `ist_pensionaer=True` und `bereits_rentner=False`). Basis für §14-BeamtVG-Formel. 0 → Fallback auf `aktuelles_brutto_monatlich`.
+- **`bisherige_dienstjahre`** (int, default 0): Bereits abgeleistete Dienstjahre (aktive Beamte). Fließt in `_berechne_pension_beamte()` als Summand ein: `bisherige_dj + jahre_bis_pension`.
 
 ## RentenErgebnis – Felder
 

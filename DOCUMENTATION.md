@@ -28,7 +28,9 @@ Umfassende Beschreibung aller Funktionen, Berechnungslogiken und Eingabefelder.
 | Geburtsjahr | Grundlage für Altersentlastungsbetrag (§24a EStG), Ertragsanteil (§22 EStG), Progressionsstufen |
 | Renteneintrittsalter | Zieldatum für Rentenbeginn; Frührentenabschlag ab < 67 (0,3 %/Monat); Warnung bei < 63 |
 | Rentenpunkte | Entgeltpunkte der DRV; Monatsrente = Punkte × Rentenwert (39,32 €/Punkt, West, 01.07.2024) |
-| Beamtenpension | Direkte Eingabe der erwarteten Bruttopension in €/Mon. (kein Rentenpunkt-System) |
+| Beamtenpension (aktiv) | §14 BeamtVG: `min((bisherige_dj + jahre_bis_pension) × 1,79375 %, 71,75 %) × Dienstbezüge`. Eingabe: ruhegehaltfähige Dienstbezüge €/Mon. + bisherige Dienstjahre. Drei berechnete Kennzahlen (Dienstjahre gesamt, Versorgungssatz %, Bruttopension). Fallback auf direkte Pensionseingabe wenn keine Bezüge angegeben. |
+| Beamtenpension (bereits Pensionär) | Direkteingabe der monatlichen Bruttopension; keine §14-Berechnung |
+| Gehaltsperioden | Zeiträume mit abweichendem Gehalt/Bezügen (Elternzeit, Teilzeit, Sabbatjahr). Bei GRV: beeinflusst EP-Jahresberechnung und Simulationsgehalt. Bei Beamten: Dienstbezüge-Perioden. |
 | Rentenanpassung p.a. | Jährliche Steigerungsrate der gesetzlichen Rente (GRV-Default 2 %; Pensionäre separat konfigurierbar, Default 0 %) |
 
 ### Krankenversicherung
@@ -187,11 +189,13 @@ Detailansicht der steuerlichen Behandlung jedes Vorsorgebausteins mit den releva
 
 ### Auszahlungsoptimierung
 
-Brute-Force-Suche über alle Kombinationen aus:
+Suche über alle Kombinationen aus:
 - Startjahr je Produkt (frühestmöglich bis spätestmöglich)
 - Auszahlungsart (monatliche Rente vs. Einmalauszahlung, soweit möglich)
 
 Ziel: Maximierung des durchschnittlichen monatlichen Nettoeinkommens über den Planungshorizont.
+
+**Referenzstrategien** für Vergleich: alle Produkte frühestmöglich monatlich, frühestmöglich einmal, spätestmöglich monatlich, spätestmöglich einmal. Die optimale Strategie ist stets ≥ jeder Referenzstrategie.
 
 ### Jahresverlauf
 
@@ -327,12 +331,13 @@ Mindest-BMG: 1.096,67 €/Mon. (§240 Abs. 4 SGB V). BBG-Deckel: 5.175 €/Mon.
 | §55 Abs. 3a SGB XI | PV-Kinderstaffelung: −0,25 % je Kind ab dem 2. Kind |
 | §77 SGB VI | Rentenabschlag 0,3 %/Monat Frühverrentung |
 | §83 EStG | Riester-Grundzulage 466 €/Jahr + 185 €/Kind |
+| §14 BeamtVG | Versorgungssatz Beamtenpension: 1,79375 % je Dienstjahr, max. 71,75 % (40 Dienstjahre) |
 
 ---
 
 ## 9. Bekannte Vereinfachungen
 
-- **Rentenabschlag:** Feste Regelaltersgrenze 67 für alle Jahrgänge; Übergangsregelung 1947–1963 (§235 SGB VI) nicht berücksichtigt
+- **Regelaltersgrenze:** §235 SGB VI-Übergangsregelung für Jahrgänge 1947–1963 ist korrekt implementiert (`regelaltersgrenze(geburtsjahr)`); Rentenabschlag 0,3 %/Monat bei Frühverrentung (§77 SGB VI)
 - **LV-Altvertrag (vor 2005):** Pauschal steuerfrei; 5-Jahres-Beitragspflicht und 60%-Todesfallschutz werden nicht geprüft
 - **Abgeltungsteuer:** 25 % auf Kapitalerträge (Soli/KiSt auf Abgeltungsteuer nicht berücksichtigt)
 - **ETF thesaurierend:** Teilfreistellung 30 % (§20 Abs. 1 InvStG); Vorabpauschale nicht berücksichtigt

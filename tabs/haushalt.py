@@ -89,6 +89,20 @@ def render(
             f"**Person 2:** {_status(p2)}"
         )
 
+        # ── Mindesthaushaltsbetrag ────────────────────────────────────────────
+        with st.expander("🏠 Mindesthaushaltsbetrag", expanded=False):
+            st.caption("Monatlicher Mindestbetrag für die Haushaltsversorgung. Wird im Tab 💡 Entnahme-Optimierung als Zielgröße verwendet.")
+            _mindest_mono_val = st.number_input(
+                "Mindesthaushaltsbetrag (€/Monat)",
+                min_value=0, max_value=20_000,
+                value=int(st.session_state.get("mindest_haushalt_mono", 2_000)),
+                step=100,
+                key="mindest_haushalt_mono",
+                help=f"Jahreswert: {int(st.session_state.get('mindest_haushalt_mono', 2000)) * 12:,} €/Jahr",
+            )
+            if _mindest_mono_val > 0:
+                st.caption(f"**Jahresbetrag: {_mindest_mono_val * 12:,.0f} €/Jahr**")
+
         # ── Lebenshaltungskosten ───────────────────────────────────────────────
         with st.expander("💸 Lebenshaltungskosten"):
             lhk1, lhk2 = st.columns(2)
