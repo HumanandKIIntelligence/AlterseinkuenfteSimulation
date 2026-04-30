@@ -802,30 +802,35 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             except (ValueError, IndexError):
                 return None, "einmal"
 
-        # Migrate old format to "YYYY_mono"/"YYYY_einmal"
-        _vp_sels_is_old = bool(_curr_sels) and any(
-            v in _OLD_SELS_VP for v in _curr_sels.values() if v is not None
-        )
         _prod_by_name_vp = {p.name: p for p in produkte_obj}
+        _prod_by_id_early = {p.id: p for p in produkte_obj}
 
+        # Migrate: old format values ("fm"/"sm"/"fe"/"se") and/or name-based keys → id-based YYYY_mode
+        _vp_sels_is_old = bool(_curr_sels) and (
+            any(v in _OLD_SELS_VP for v in _curr_sels.values() if v is not None)
+            or any(k in _prod_by_name_vp and k not in _prod_by_id_early for k in _curr_sels)
+        )
         if _vp_sels_is_old:
             _migrated: dict[str, str | None] = {}
-            for _nm_m, _sv_m in _curr_sels.items():
-                _po_m = _prod_by_name_vp.get(_nm_m)
+            for _k_m, _sv_m in _curr_sels.items():
+                # Resolve product: prefer id lookup, fall back to name
+                _po_m = _prod_by_id_early.get(_k_m) or _prod_by_name_vp.get(_k_m)
                 if _po_m is None or _sv_m is None:
-                    _migrated[_nm_m] = None
                     continue
-                _old_mode_m = "mono" if _sv_m in ("fm", "sm") else "einmal"
-                _old_year_m = _po_m.spaetestes_startjahr if _sv_m in ("sm", "se") else _po_m.fruehestes_startjahr
-                _migrated[_nm_m] = f"{_old_year_m}_{_old_mode_m}"
+                if _sv_m in _OLD_SELS_VP:
+                    _old_mode_m = "mono" if _sv_m in ("fm", "sm") else "einmal"
+                    _old_year_m = _po_m.spaetestes_startjahr if _sv_m in ("sm", "se") else _po_m.fruehestes_startjahr
+                    _migrated[_po_m.id] = f"{_old_year_m}_{_old_mode_m}"
+                else:
+                    _migrated[_po_m.id] = _sv_m
             _curr_sels = _migrated
             st.session_state[_sels_key] = _curr_sels
 
-        # Defaults beim ersten Laden setzen (vor Chart-Rendering)
+        # Defaults beim ersten Laden setzen (vor Chart-Rendering), keyed by p.id
         if not _curr_sels:
             for _p_d in produkte_obj:
                 _dm_d = "mono" if _p_d.max_monatsrente > 0 else "einmal"
-                _curr_sels[_p_d.name] = f"{_p_d.fruehestes_startjahr}_{_dm_d}"
+                _curr_sels[_p_d.id] = f"{_p_d.fruehestes_startjahr}_{_dm_d}"
             st.session_state[_sels_key] = _curr_sels
 
         # ── Optimale Strategie: Netto & Steuer pro Jahr ───────────────────────
@@ -888,7 +893,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _vp_yr_lines: dict[int, list[str]] = {yr: [] for yr in _opt_years}
 
         for _sp in produkte_obj:
-            _sel_raw = _curr_sels.get(_sp.name)
+            _sel_raw = _curr_sels.get(_sp.id)
             if not _sel_raw:
                 continue
             _sj_s, _mode_s = _parse_sel_vp(_sel_raw)
@@ -989,7 +994,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         st.subheader("Einzelvergleich je Vertrag")
         _table_rows = []
-        _avail_map: dict[str, set[str]] = {}
+        _avail_map: dict[str, set[str]] = {}      # keyed by name (legacy compat)
+        _avail_id_map: dict[str, set[str]] = {}   # keyed by id
         for pd_dict in produkte_dicts:
             p = _aus_dict(pd_dict)
             ist_lv = p.ist_lebensversicherung
@@ -1002,6 +1008,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             if hat_einz:                 avail.add("fe")
             if hat_einz and hat_spaet_p: avail.add("se")
             _avail_map[p.name] = avail
+            _avail_id_map[p.id] = avail
 
             v = vergleiche_produkt(p, rendite, horizon)
             bestes = v["bestes"]
@@ -1027,18 +1034,19 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "_hat_mono":   hat_mono,
                 "_hat_einz":   hat_einz,
                 "_hat_spaet":  hat_spaet_p,
+                "_prod_obj":   p,
             })
 
-        # Default: früheste Mono wenn verfügbar, sonst früheste Einmal; Jahr = fruehestes_startjahr
+        # Default: früheste Mono wenn verfügbar, sonst früheste Einmal; keyed by p.id
         if not _curr_sels and _avail_map:
             _curr_sels = {}
-            for _nm_d, _av_d in _avail_map.items():
-                _po_d = _prod_by_name_vp.get(_nm_d)
+            for _id_d, _av_d in _avail_id_map.items():
+                _po_d = _prod_by_id_early.get(_id_d)
                 if _po_d is None:
                     continue
                 _dm_d = "mono" if "fm" in _av_d else "einmal" if "fe" in _av_d else None
                 if _dm_d:
-                    _curr_sels[_nm_d] = f"{_po_d.fruehestes_startjahr}_{_dm_d}"
+                    _curr_sels[_id_d] = f"{_po_d.fruehestes_startjahr}_{_dm_d}"
             st.session_state[_sels_key] = _curr_sels
 
         _INFO_COLS = ["Typ", "Person", "Einmal (Total / Mon.)", "Monatlich (Total)",
@@ -1048,17 +1056,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _unified_rows = []
         for r in _table_rows:
             prod_name = r["Vertrag"]
-            sel       = _curr_sels.get(prod_name)
-            _po_r     = _prod_by_name_vp.get(prod_name)
+            _po_r     = r["_prod_obj"]          # use stored obj — avoids name-collision lookup
+            sel       = _curr_sels.get(_po_r.id)
             _sel_yr, _sel_mode = _parse_sel_vp(sel)
-            _yr_val = _sel_yr if _sel_yr is not None else (
-                _po_r.fruehestes_startjahr if _po_r else 0)
+            _yr_val = _sel_yr if _sel_yr is not None else _po_r.fruehestes_startjahr
             _hat_mono_r = r["_hat_mono"]
-            entry = {"Vertrag": prod_name}
+            entry = {"Vertrag": prod_name, "_prod_id": _po_r.id}
             for c in _INFO_COLS:
                 entry[c] = r[c]
-            entry["Früh"]             = _po_r.fruehestes_startjahr if _po_r else 0
-            entry["Spät"]             = _po_r.spaetestes_startjahr if _po_r else 0
+            entry["Früh"]             = _po_r.fruehestes_startjahr
+            entry["Spät"]             = _po_r.spaetestes_startjahr
             entry["Auszahlungsjahr"]  = int(_yr_val)
             entry["Montl. Auszahlung"] = bool(_sel_mode == "mono" and _hat_mono_r)
             _unified_rows.append(entry)
@@ -1080,14 +1087,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             help="Monatliche Rente auszahlen (nur für Verträge mit Monatsrenteoption).",
         )
 
-        _uni_df = pd.DataFrame(_unified_rows).set_index("Vertrag")
+        # Index by product ID so duplicate-named products stay distinct
+        _prod_by_id_vp = {p.id: p for p in produkte_obj}
+        _uni_df = pd.DataFrame(_unified_rows).set_index("_prod_id")
+        _uni_df.index.name = None  # hide index header in table
         _sels_tag = "_".join(
             f"{i}{str(v or 'n')[:4]}" for i, (_, v) in enumerate(sorted(_curr_sels.items()))
         ) or "0"
+        _non_cb_vp_ids = ["Vertrag"] + _INFO_COLS + ["Früh", "Spät"]
         _edited_uni = st.data_editor(
             _uni_df,
             column_config=_col_cfg_uni,
-            disabled=_non_cb_vp,
+            disabled=_non_cb_vp_ids,
             key=f"rc{_rc}_vp_edit_uni_{_sels_tag}",
             use_container_width=True,
         )
@@ -1095,18 +1106,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         st.caption("Tabelle wählt Strategie für das Diagramm (eine Auszahlungsart pro Vertrag). "
                    "Standard: früheste Monatsrente; bei reinen Einmalauszahlungen früheste Einmalauszahlung.")
 
-        # ── Enforcement: validate + update state ────────────────────────────
+        # ── Enforcement: validate + update state (keyed by product ID) ──────
         _new_sels: dict[str, str | None] = {}
 
-        for prod_name, _row in _edited_uni.iterrows():
-            prod_name = str(prod_name)
-            _po_e = _prod_by_name_vp.get(prod_name)
+        for _prod_id_e, _row in _edited_uni.iterrows():
+            _prod_id_e = str(_prod_id_e)
+            _po_e = _prod_by_id_vp.get(_prod_id_e)
             if _po_e is None:
-                _new_sels[prod_name] = _curr_sels.get(prod_name)
                 continue
             _hat_mono_e  = _po_e.max_monatsrente > 0
             _hp_frueh_e  = _po_e.fruehestes_startjahr
             _hp_spaet_e  = _po_e.spaetestes_startjahr
+            _disp_name   = _row.get("Vertrag", _prod_id_e)
 
             _raw_yr  = _row.get("Auszahlungsjahr")
             new_year = int(_raw_yr) if _raw_yr is not None else _hp_frueh_e
@@ -1114,20 +1125,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
             if new_year < _hp_frueh_e or new_year > _hp_spaet_e:
                 st.warning(
-                    f"Auszahlungsjahr {new_year} für «{prod_name}» liegt außerhalb "
+                    f"Auszahlungsjahr {new_year} für «{_disp_name}» liegt außerhalb "
                     f"[{_hp_frueh_e}, {_hp_spaet_e}] – auf {_hp_frueh_e} gesetzt."
                 )
                 new_year = max(_hp_frueh_e, min(_hp_spaet_e, new_year))
 
             if new_montl and not _hat_mono_e:
                 st.error(
-                    f"«{prod_name}» unterstützt keine Monatsrente – "
+                    f"«{_disp_name}» unterstützt keine Monatsrente – "
                     "Montl. Auszahlung wurde deaktiviert."
                 )
                 new_montl = False
 
             mode = "mono" if new_montl else "einmal"
-            _new_sels[prod_name] = f"{new_year}_{mode}"
+            _new_sels[_prod_id_e] = f"{new_year}_{mode}"
 
         if _new_sels != _curr_sels:
             st.session_state[_sels_key] = _new_sels
