@@ -976,6 +976,46 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     st.session_state[_manual_w_key] = _new_mw_eo
                     st.rerun()
 
+        # ── Hypothek-Jahresraten als aufklappbare Infobox ─────────────────────
+        if _ausgaben_plan and _hyp_info:
+            _prim_sched_yrs_exp = {s["Jahr"] for s in get_hyp_schedule()}
+            _rate_jahre_exp = sorted(yr for yr in _ausgaben_plan if yr in _prim_sched_yrs_exp)
+            if _rate_jahre_exp:
+                with st.expander("📋 Hypothek-Jahresraten – Quelle: 🔵 Kapital / 🔴 Einkommen", expanded=False):
+                    _spar_col_jd_exp = "Kap_Pool___sparkapital__"
+                    _rate_rows_exp = []
+                    for _rj in _rate_jahre_exp:
+                        _rate_exp = _ausgaben_plan[_rj]
+                        if _raten_aus_kapital:
+                            if _spar_col_jd_exp in df_jd.columns and _rj in df_jd.index:
+                                _kap_avail_exp = float(df_jd.loc[_rj, _spar_col_jd_exp])
+                            else:
+                                _kap_avail_exp = kapitalwachstum(
+                                    _spkap_orig, _spkap_sparrate, _spkap_rendite,
+                                    max(0, _rj - AKTUELLES_JAHR),
+                                )
+                            _aus_kapital_exp = _kap_avail_exp >= _rate_exp
+                        else:
+                            _kap_avail_exp = 0.0
+                            _aus_kapital_exp = False
+                        _rate_rows_exp.append({
+                            "Jahr": _rj,
+                            "Jahresrate (€)": f"{_rate_exp:,.0f}".replace(",", "."),
+                            "Kapital verfügbar (€)": f"{_kap_avail_exp:,.0f}".replace(",", ".") if _raten_aus_kapital else "–",
+                            "Quelle": "Kapital" if _aus_kapital_exp else "Einkommen",
+                        })
+                    _df_rates_exp = pd.DataFrame(_rate_rows_exp).set_index("Jahr")
+
+                    def _color_rows_exp(row: "pd.Series") -> list[str]:
+                        if row["Quelle"] == "Kapital":
+                            return ["background-color: #BBDEFB"] * len(row)
+                        return ["background-color: #FFCDD2"] * len(row)
+
+                    st.dataframe(
+                        _df_rates_exp.style.apply(_color_rows_exp, axis=1),
+                        use_container_width=True,
+                    )
+
         st.divider()
 
         # ── Steuer- und KV-Verlauf ────────────────────────────────────────────
@@ -1513,47 +1553,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "Kapital oder Strategie anpassen."
             )
 
-        # ── Hypothek-Jahresraten: farbliche Quelle-Tabelle ───────────────────
-        if _ausgaben_plan and _hyp_info:
-            _prim_sched_yrs = {s["Jahr"] for s in get_hyp_schedule()}
-            _rate_jahre = sorted(yr for yr in _ausgaben_plan if yr in _prim_sched_yrs)
-            if _rate_jahre:
-                _spar_col_jd = "Kap_Pool___sparkapital__"
-                _rate_rows = []
-                _kap_running = _spkap_pool_wert if _raten_aus_kapital else 0.0
-                for _rj in _rate_jahre:
-                    _rate = _ausgaben_plan[_rj]
-                    if _raten_aus_kapital:
-                        # Kapital zu Jahresbeginn: aus df_jd falls vorhanden, sonst Schätzung
-                        if _spar_col_jd in df_jd.columns and _rj in df_jd.index:
-                            _kap_avail = float(df_jd.loc[_rj, _spar_col_jd])
-                        else:
-                            _kap_avail = kapitalwachstum(
-                                _spkap_orig, _spkap_sparrate, _spkap_rendite,
-                                max(0, _rj - AKTUELLES_JAHR),
-                            )
-                        _aus_kapital = _kap_avail >= _rate
-                    else:
-                        _kap_avail = 0.0
-                        _aus_kapital = False
-                    _rate_rows.append({
-                        "Jahr": _rj,
-                        "Jahresrate (€)": f"{_rate:,.0f}".replace(",", "."),
-                        "Kapital verfügbar (€)": f"{_kap_avail:,.0f}".replace(",", ".") if _raten_aus_kapital else "–",
-                        "Quelle": "Kapital" if _aus_kapital else "Einkommen",
-                    })
-                _df_rates = pd.DataFrame(_rate_rows).set_index("Jahr")
-
-                def _color_rows(row: "pd.Series") -> list[str]:
-                    if row["Quelle"] == "Kapital":
-                        return ["background-color: #BBDEFB"] * len(row)
-                    return ["background-color: #FFCDD2"] * len(row)
-
-                st.caption("**Hypothek-Jahresraten** – Quelle: 🔵 Kapital / 🔴 Einkommen")
-                st.dataframe(
-                    _df_rates.style.apply(_color_rows, axis=1),
-                    use_container_width=True,
-                )
 
         # ── Tilgungsplan (aufklappbar) ────────────────────────────────────────
         if _hyp_info:
