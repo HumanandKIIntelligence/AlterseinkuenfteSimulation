@@ -587,23 +587,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         produkte_obj = [_aus_dict(p) for p in produkte_dicts]
         _produkte_obj_run   = list(produkte_obj)
         _produkte_dicts_run = list(produkte_dicts)
-        _use_spar_pool = (_pool_tilgung or _anschluss_spar or _raten_aus_kapital) and _spkap > 0
-        if _use_spar_pool:
-            _spar_prod = VorsorgeProdukt(
-                id="__sparkapital__", typ="ETF", name="Kapital bei Renteneintritt", person="Person 1",
-                max_einmalzahlung=_spkap_pool_wert, max_monatsrente=0.0, laufzeit_jahre=0,
-                fruehestes_startjahr=_spkap_pool_startjahr,
-                spaetestes_startjahr=_spkap_pool_startjahr,
-                aufschub_rendite=0.0, einzahlungen_gesamt=_spkap_orig,
-                als_kapitalanlage=True, kap_rendite_pa=_spkap_rendite,
-                erzwungener_anteil=1.0,
-            )
-            _produkte_obj_run.insert(0, _spar_prod)
-            _produkte_dicts_run.insert(0, {
-                "id": "__sparkapital__", "typ": "ETF", "typ_label": "Kapital bei Renteneintritt",
-                "name": "Kapital bei Renteneintritt", "person": "Person 1",
-                "max_einmalzahlung": round(_spkap),
-            })
+        _use_spar_pool = False  # Sparkapital wird ausschließlich in der Kapital-Zeitleiste dargestellt
         # ── Direkte Berechnung: alle Produkte Einmal ab frühestmöglich ──────────
         # Basis-Entscheidungen: jedes Produkt zum frühestmöglichen Zeitpunkt
         _base_entsch = [
@@ -661,9 +645,24 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             for _pn, _sv in _sels.items()
             if _sv is not None and str(_sv).endswith("_mono") and _pn in _prod_name_map
         }
+        # Produkte, die in der Tabelle angezeigt werden (variable Jahr + Einmal vorhanden)
+        _in_table_ids: set[str] = {p.id for p in _prod_name_map.values()}
+
+        def _entsch_anteil(prod) -> float:
+            """Anteil 0.0=mono, 1.0=einmal. Produkte ohne Tabelleneintrag nutzen natürlichen Modus."""
+            if prod.id in _mono_prod_ids or prod.max_einmalzahlung == 0:
+                return 0.0
+            # In Tabelle, aber Nutzer wählte Einmal (nicht in _mono_prod_ids): Einmal
+            if prod.id in _in_table_ids:
+                return 1.0
+            # Nicht in Tabelle (fixes Jahr o. nur Einmal): Mono bevorzugen wenn verfügbar
+            if prod.max_monatsrente > 0:
+                return 0.0
+            return 1.0
+
         _eff_entsch = [
             (prod, _prod_sj_override.get(prod.id, prod.fruehestes_startjahr),
-             0.0 if prod.id in _mono_prod_ids or prod.max_einmalzahlung == 0 else 1.0)
+             _entsch_anteil(prod))
             for prod in _produkte_obj_run
         ]
 
@@ -839,49 +838,57 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _hvp_rows.append(_hvp_row_entry)
 
                 if _hvp_rows:
-                    # Unified table: Auszahlungsjahr (NumberColumn) + Montl. Auszahlung (Checkbox)
-                    _hvp_ed_rows = []
-                    for _hr in _hvp_rows:
-                        _hr_prod_name = _hr["Produkt"]
+                    # Split rows: products with both mono+einmal get Montl. checkbox; others don't
+                    _hvp_ed_rows_both: list[dict] = []
+                    _hvp_ed_rows_single: list[dict] = []
+                    _hvp_idx_both: list[str] = []
+                    _hvp_idx_single: list[str] = []
+
+                    def _build_ed_row(hr: dict) -> dict:
+                        _hr_prod_name = hr["Produkt"]
                         _hr_prod_obj  = _prod_name_map.get(_hr_prod_name)
-                        _hr_hat_mono  = _hr_prod_obj is not None and _hr_prod_obj.max_monatsrente > 0
                         _hr_sel       = _sels.get(_hr_prod_name)
                         _hr_year, _hr_mode = _parse_sel(_hr_sel)
                         _hr_year_val = _hr_year if _hr_year is not None else (
-                            _hr_prod_obj.fruehestes_startjahr if _hr_prod_obj else _hr["Früh"])
-                        _ed_row: dict = {
+                            _hr_prod_obj.fruehestes_startjahr if _hr_prod_obj else hr["Früh"])
+                        row: dict = {
                             "Auszahlungsjahr": int(_hr_year_val),
-                            "Montl. Auszahlung": bool(_hr_mode == "mono" and _hr_hat_mono),
-                            "Früh": _hr["Früh"],
-                            "Spät": _hr["Spät"],
-                            "Netto früh (€)": _hr["Netto früh (€)"],
-                            "Netto spät (€)": _hr["Netto spät (€)"],
-                            "Beitragsersparnis (€)": _hr["Beitragsersparnis (€)"],
-                            "Break-Even p.a.": _hr["Break-Even p.a."],
+                            "Früh": hr["Früh"],
+                            "Spät": hr["Spät"],
+                            "Netto früh (€)": hr["Netto früh (€)"],
+                            "Netto spät (€)": hr["Netto spät (€)"],
+                            "Beitragsersparnis (€)": hr["Beitragsersparnis (€)"],
+                            "Break-Even p.a.": hr["Break-Even p.a."],
                         }
                         if _eff_ak_rs > 0:
-                            _ed_row["Zinseinsparung (€)"] = _hr.get("Zinseinsparung (€)", "–")
-                            _ed_row["Renditeverlust (€)"] = _hr.get("Renditeverlust (€)", "–")
-                            _ed_row["Netto-Vorteil (€)"] = _hr.get("Netto-Vorteil (€)", "–")
-                        _hvp_ed_rows.append(_ed_row)
-                    _hvp_ed_df = pd.DataFrame(
-                        _hvp_ed_rows,
-                        index=[_hr["Produkt"] for _hr in _hvp_rows],
-                    )
+                            row["Zinseinsparung (€)"] = hr.get("Zinseinsparung (€)", "–")
+                            row["Renditeverlust (€)"] = hr.get("Renditeverlust (€)", "–")
+                            row["Netto-Vorteil (€)"] = hr.get("Netto-Vorteil (€)", "–")
+                        return row, _hr_prod_obj, _hr_mode
+
+                    for _hr in _hvp_rows:
+                        _hr_prod_name = _hr["Produkt"]
+                        _hr_po = _prod_name_map.get(_hr_prod_name)
+                        _hr_hat_mono = _hr_po is not None and _hr_po.max_monatsrente > 0
+                        _hr_hat_einz = _hr_po is not None and _hr_po.max_einmalzahlung > 0
+                        _ed_r, _po_r, _mode_r = _build_ed_row(_hr)
+                        if _hr_hat_mono and _hr_hat_einz:
+                            _ed_r["Montl. Auszahlung"] = bool(_mode_r == "mono")
+                            _hvp_ed_rows_both.append(_ed_r)
+                            _hvp_idx_both.append(_hr_prod_name)
+                        else:
+                            _hvp_ed_rows_single.append(_ed_r)
+                            _hvp_idx_single.append(_hr_prod_name)
+
                     _ed_sels_tag = "_".join(
                         f"{i}{str(v or 'n')[:4]}"
                         for i, (_, v) in enumerate(sorted(_sels.items()))
                     ) or "0"
-                    _EDIT_COLS_HVP = ("Auszahlungsjahr", "Montl. Auszahlung")
-                    _non_cb = [c for c in _hvp_ed_df.columns if c not in _EDIT_COLS_HVP]
-                    _col_cfg: dict = {
+
+                    _col_cfg_base_hvp: dict = {
                         "Auszahlungsjahr": st.column_config.NumberColumn(
                             "Auszahlungsjahr", min_value=2020, max_value=2099, step=1, format="%d",
                             help="Auszahlungsjahr – muss zwischen Früh und Spät liegen.",
-                        ),
-                        "Montl. Auszahlung": st.column_config.CheckboxColumn(
-                            "Montl. Auszahlung",
-                            help="Monatliche Rente auszahlen (nur für Verträge mit Monatsrenteoption).",
                         ),
                         "Früh": st.column_config.NumberColumn("Früh", format="%d",
                             help="Frühestmögliches Auszahlungsjahr des Produkts."),
@@ -897,52 +904,77 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                             help="Mindestrendite p.a., ab der Investiert-Bleiben bis Spät-Jahr rentabler ist."),
                     }
                     if _eff_ak_rs > 0:
-                        _col_cfg["Zinseinsparung (€)"] = st.column_config.TextColumn("Zinseinsparung (€)",
+                        _col_cfg_base_hvp["Zinseinsparung (€)"] = st.column_config.TextColumn("Zinseinsparung (€)",
                             help="Eingesparte Anschlusskredit-Zinsen bei Tilgung mit Früh-Nettobetrag.")
-                        _col_cfg["Renditeverlust (€)"] = st.column_config.TextColumn("Renditeverlust (€)",
+                        _col_cfg_base_hvp["Renditeverlust (€)"] = st.column_config.TextColumn("Renditeverlust (€)",
                             help="Entgangener Netto-Zuwachs durch Frühauszahlung statt Aufschub.")
-                        _col_cfg["Netto-Vorteil (€)"] = st.column_config.TextColumn("Netto-Vorteil (€)",
+                        _col_cfg_base_hvp["Netto-Vorteil (€)"] = st.column_config.TextColumn("Netto-Vorteil (€)",
                             help="Gesamtvorteil der Frühauszahlung: Zinseinsparung + Beitragsersparnis − Renditeverlust.")
-                    _edited_hvp = st.data_editor(
-                        _hvp_ed_df,
-                        use_container_width=True,
-                        disabled=_non_cb,
-                        key=f"rc{_rc}_hvp_editor_{_ed_sels_tag}",
-                        column_config=_col_cfg,
+
+                    _col_cfg_both_hvp = dict(_col_cfg_base_hvp)
+                    _col_cfg_both_hvp["Montl. Auszahlung"] = st.column_config.CheckboxColumn(
+                        "Montl. Auszahlung",
+                        help="Monatliche Rente (☑) oder Einmalauszahlung (☐).",
                     )
+
+                    _edited_hvp_both   = None
+                    _edited_hvp_single = None
+
+                    if _hvp_ed_rows_both:
+                        _df_hvp_both = pd.DataFrame(_hvp_ed_rows_both, index=_hvp_idx_both)
+                        _non_cb_both = [c for c in _df_hvp_both.columns if c not in ("Auszahlungsjahr", "Montl. Auszahlung")]
+                        _edited_hvp_both = st.data_editor(
+                            _df_hvp_both,
+                            use_container_width=True,
+                            disabled=_non_cb_both,
+                            key=f"rc{_rc}_hvp_editor_both_{_ed_sels_tag}",
+                            column_config=_col_cfg_both_hvp,
+                        )
+                    if _hvp_ed_rows_single:
+                        if _hvp_ed_rows_both:
+                            st.caption("Verträge mit fester Auszahlungsart (kein Monatl./Einmal-Wechsel):")
+                        _df_hvp_single = pd.DataFrame(_hvp_ed_rows_single, index=_hvp_idx_single)
+                        _non_cb_single = [c for c in _df_hvp_single.columns if c != "Auszahlungsjahr"]
+                        _edited_hvp_single = st.data_editor(
+                            _df_hvp_single,
+                            use_container_width=True,
+                            disabled=_non_cb_single,
+                            key=f"rc{_rc}_hvp_editor_single_{_ed_sels_tag}",
+                            column_config=_col_cfg_base_hvp,
+                        )
 
                     # Enforcement: validate year range + mono support; update state
                     _new_sels: dict[str, str | None] = {}
-                    for _ep_name, _ep_row in _edited_hvp.iterrows():
-                        _ep_name   = str(_ep_name)
-                        _hp_obj_m  = _prod_name_map.get(_ep_name)
-                        if _hp_obj_m is None:
-                            _new_sels[_ep_name] = _sels.get(_ep_name)
-                            continue
-                        _hp_hat_mono = _hp_obj_m.max_monatsrente > 0
-                        _hp_frueh    = _hp_obj_m.fruehestes_startjahr
-                        _hp_spaet    = _hp_obj_m.spaetestes_startjahr
 
-                        _raw_year = _ep_row.get("Auszahlungsjahr")
-                        new_year  = int(_raw_year) if _raw_year is not None else _hp_frueh
-                        new_montl = bool(_ep_row.get("Montl. Auszahlung", False))
+                    def _process_hvp_editor(edited_df, has_checkbox: bool) -> None:
+                        if edited_df is None:
+                            return
+                        for _ep_name, _ep_row in edited_df.iterrows():
+                            _ep_name  = str(_ep_name)
+                            _hp_obj_m = _prod_name_map.get(_ep_name)
+                            if _hp_obj_m is None:
+                                _new_sels[_ep_name] = _sels.get(_ep_name)
+                                continue
+                            _hp_hat_mono = _hp_obj_m.max_monatsrente > 0
+                            _hp_frueh    = _hp_obj_m.fruehestes_startjahr
+                            _hp_spaet    = _hp_obj_m.spaetestes_startjahr
+                            _raw_year = _ep_row.get("Auszahlungsjahr")
+                            new_year  = int(_raw_year) if _raw_year is not None else _hp_frueh
+                            if new_year < _hp_frueh or new_year > _hp_spaet:
+                                st.warning(
+                                    f"Auszahlungsjahr {new_year} für «{_ep_name}» liegt außerhalb "
+                                    f"[{_hp_frueh}, {_hp_spaet}] – auf {_hp_frueh} gesetzt."
+                                )
+                                new_year = max(_hp_frueh, min(_hp_spaet, new_year))
+                            if has_checkbox:
+                                new_montl = bool(_ep_row.get("Montl. Auszahlung", False))
+                            else:
+                                new_montl = _hp_hat_mono  # single-option: use product's natural mode
+                            mode = "mono" if new_montl else "einmal"
+                            _new_sels[_ep_name] = f"{new_year}_{mode}"
 
-                        if new_year < _hp_frueh or new_year > _hp_spaet:
-                            st.warning(
-                                f"Auszahlungsjahr {new_year} für «{_ep_name}» liegt außerhalb "
-                                f"[{_hp_frueh}, {_hp_spaet}] – auf {_hp_frueh} gesetzt."
-                            )
-                            new_year = max(_hp_frueh, min(_hp_spaet, new_year))
-
-                        if new_montl and not _hp_hat_mono:
-                            st.error(
-                                f"«{_ep_name}» unterstützt keine Monatsrente – "
-                                "Montl. Auszahlung wurde deaktiviert."
-                            )
-                            new_montl = False
-
-                        mode = "mono" if new_montl else "einmal"
-                        _new_sels[_ep_name] = f"{new_year}_{mode}"
+                    _process_hvp_editor(_edited_hvp_both, has_checkbox=True)
+                    _process_hvp_editor(_edited_hvp_single, has_checkbox=False)
 
                     _old_sels_copy = dict(st.session_state[_sels_key])
                     st.session_state[_sels_key] = _new_sels
@@ -986,8 +1018,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _manual_w_eo = _manual_withdrawals.get(_tj, 0.0)
                     _pool_bal_eo = max(0.0, _pool_bal_eo - _manual_w_eo)
                     _abw_val = round(_base_netto_eo + _manual_w_eo)
-                    _abw_str = (f"🔴 {_de(_abw_val)}" if _abw_val < 0
-                                else _de(_abw_val))
+                    _abw_str = (f"🔴 {_de(_abw_val)}" if _abw_val < _mindest_j_topup
+                                else f"🟢 {_de(_abw_val)}")
                     _topup_rows_eo.append({
                         "Jahr": _tj,
                         "Entnahme aus Pool (€)": _manual_w_eo if _manual_w_eo > 0 else None,
@@ -1018,7 +1050,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         ),
                         "Mindesthaushalt (€/Jahr)": st.column_config.NumberColumn("Mindesthaushalt (€/Jahr)", format="%.0f"),
                         "Abweichung": st.column_config.TextColumn("Abweichung",
-                            help="Frei nach Ausg.+Hyp. + Pool-Entnahme. Positiv = Ziel erreicht; 🔴 = Unterdeckung."),
+                            help="Frei nach Ausg.+Hyp. + Pool-Entnahme. 🟢 = Mindesthaushalt erreicht; 🔴 = Unterdeckung."),
                         "Pool-Bestand (€)": st.column_config.NumberColumn("Pool-Bestand (€)", format="%.0f"),
                     },
                 )
@@ -1077,12 +1109,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # ── Steuer- und KV-Verlauf ────────────────────────────────────────────
         st.subheader("Steuer- und KV-Verlauf")
         fig_tax = go.Figure()
+        # ESt + Soli + KiSt = Steuer minus Abgeltungsteuer (Steuer_Progressiv enthält kein Soli)
+        _abgelt_series = df_jd["Steuer_Abgeltung"] if "Steuer_Abgeltung" in df_jd.columns else pd.Series(0, index=df_jd.index)
+        _est_soli_series = df_jd["Steuer"] - _abgelt_series
         fig_tax.add_trace(go.Bar(
-            name="Progressivsteuer", x=df_jd.index, y=df_jd["Steuer_Progressiv"],
+            name="ESt + Soli", x=df_jd.index, y=_est_soli_series,
             marker_color="#EF9A9A",
-            hovertemplate="%{x}: %{y:,.0f} €<extra>Progressivsteuer</extra>",
+            hovertemplate="%{x}: %{y:,.0f} €<extra>ESt + Soli</extra>",
         ))
-        if "Steuer_Abgeltung" in df_jd.columns:
+        if "Steuer_Abgeltung" in df_jd.columns and df_jd["Steuer_Abgeltung"].sum() > 0:
             fig_tax.add_trace(go.Bar(
                 name="Abgeltungsteuer", x=df_jd.index, y=df_jd["Steuer_Abgeltung"],
                 marker_color="#FFCDD2",
@@ -1616,9 +1651,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                                   else _profil2_eo.eintritt_jahr)
             _spkap2 = float(getattr(_ergebnis2_eo, "kapital_bei_renteneintritt", 0.0))
 
-        _spar_col = "Kap_Pool___sparkapital__"
-        _hat_spar_post = (_use_spar_pool and _spar_col in df_jd.columns
-                          and df_jd[_spar_col].sum() > 0)
+        _hat_spar_post = False  # Sparkapital nicht mehr als Pool-Produkt — Zeitleiste verfolgt es direkt
 
         # Vorsorge-Pools (als_kapitalanlage-Produkte, ohne synthetisches Sparkapital)
         _real_pool_pids = [
@@ -1688,7 +1721,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     if j < _spkap_eintritt_j and not _profil_eo.bereits_rentner:
                         return kapitalwachstum(_spkap_orig, _spkap_sparrate, _spkap_rendite,
                                                j - AKTUELLES_JAHR)
-                    return kapitalwachstum(_spkap, 0.0, _spkap_rendite, max(0, j - _spkap_eintritt_j))
+                    # Kapital wird durch monatliche Annuität abgebaut
+                    _monatl_kap = float(getattr(_ergebnis_eo, "kapital_monatlich", 0.0))
+                    return max(0.0, kapitalwachstum(_spkap, -_monatl_kap, _spkap_rendite,
+                                                    max(0, j - _spkap_eintritt_j)))
 
                 # Reconstruct product-pool trajectory independently:
                 # • grows by rendite • injected via Kap_Injektion • auto-annuity subtracted

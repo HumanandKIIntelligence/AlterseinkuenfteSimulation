@@ -17,6 +17,7 @@ import streamlit as st
 from engine import (
     Profil, RentenErgebnis, VorsorgeProdukt,
     vergleiche_produkt, optimiere_auszahlungen, _annuitaet,
+    _netto_ueber_horizont,
 )
 
 
@@ -833,6 +834,30 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 _curr_sels[_p_d.id] = f"{_p_d.fruehestes_startjahr}_{_dm_d}"
             st.session_state[_sels_key] = _curr_sels
 
+        # ── Netto/Steuer/KV aus Benutzer-Selektion berechnen ─────────────────
+        _vp_mono_ids_sel = {
+            pid for pid, sv in _curr_sels.items() if sv and str(sv).endswith("_mono")
+        }
+        _vp_sj_ov_sel: dict[str, int] = {}
+        for _pid_sel, _sv_sel in _curr_sels.items():
+            _yr_sel, _ = _parse_sel_vp(_sv_sel)
+            if _yr_sel is not None:
+                _vp_sj_ov_sel[_pid_sel] = _yr_sel
+        _vp_eff_entsch = [
+            (p, _vp_sj_ov_sel.get(p.id, p.fruehestes_startjahr),
+             0.0 if (p.id in _vp_mono_ids_sel or p.max_einmalzahlung == 0
+                     or (p.id not in _curr_sels and p.max_monatsrente > 0))
+             else 1.0)
+            for p in produkte_obj
+        ]
+        _, _vp_jd_raw = _netto_ueber_horizont(
+            profil, ergebnis, _vp_eff_entsch, horizon,
+            mieteinnahmen, mietsteigerung,
+            profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
+            gehalt_monatlich=gehalt,
+        )
+        _df_sel = pd.DataFrame(_vp_jd_raw).set_index("Jahr")
+
         # ── Optimale Strategie: Netto & Steuer pro Jahr ───────────────────────
         st.subheader("Optimale Strategie – Netto und Steuerbelastung pro Jahr")
 
@@ -864,10 +889,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _hover_opt = [_opt_hover(yr) for yr in _opt_years]
 
         # Kennzahlen
-        _avg_netto_mon = _df_opt["Netto"].mean() / 12
-        _total_steuer  = _df_opt["Steuer"].sum()
-        _total_kv      = _df_opt["KV_PV"].sum()
-        _total_netto   = _df_opt["Netto"].sum()
+        _avg_netto_mon = _df_sel["Netto"].mean() / 12
+        _total_steuer  = _df_sel["Steuer"].sum()
+        _total_kv      = _df_sel["KV_PV"].sum()
+        _total_netto   = _df_sel["Netto"].sum()
         _overhead_pct  = (_total_steuer + _total_kv) / max(1, _total_steuer + _total_kv + _total_netto) * 100
         _km1, _km2, _km3, _km4 = st.columns(4)
         _km1.metric("Ø Netto/Mon. (optimal)", f"{_de(_avg_netto_mon)} €")
@@ -883,7 +908,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                        "#880E4F","#006064","#1B5E20","#F57F17","#4E342E"]
         fig_opt = go.Figure()
         fig_opt.add_trace(go.Bar(
-            name="Netto", x=_df_opt.index, y=_df_opt["Netto"],
+            name="Netto", x=_df_sel.index, y=_df_sel["Netto"],
             marker_color="#4CAF50", customdata=_hover_opt,
             hovertemplate="<b>%{x}</b>: %{y:,.0f} € Netto<br>%{customdata}<extra>Netto</extra>",
         ))
@@ -894,9 +919,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         for _sp in produkte_obj:
             _sel_raw = _curr_sels.get(_sp.id)
-            if not _sel_raw:
-                continue
-            _sj_s, _mode_s = _parse_sel_vp(_sel_raw)
+            if _sel_raw:
+                _sj_s, _mode_s = _parse_sel_vp(_sel_raw)
+            else:
+                # Produkt ohne gespeicherte Selektion: Defaults verwenden
+                _sj_s = _sp.fruehestes_startjahr
+                _mode_s = "mono" if (_sp.max_monatsrente > 0 and not _sp.ist_lebensversicherung and _sp.typ != "ETF") else "einmal"
             if _sj_s is None:
                 continue
             _d_s  = max(0, _sj_s - _sp.fruehestes_startjahr)
@@ -943,19 +971,19 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         # Steuer und KV/PV oben auf dem kompletten Betrag
         fig_opt.add_trace(go.Bar(
-            name="Steuer", x=_df_opt.index, y=_df_opt["Steuer"],
+            name="Steuer", x=_df_sel.index, y=_df_sel["Steuer"],
             marker_color="#EF9A9A",
             hovertemplate="<b>%{x}</b>: %{y:,.0f} € Steuer<extra>Steuer</extra>",
         ))
         fig_opt.add_trace(go.Bar(
-            name="KV/PV", x=_df_opt.index, y=_df_opt["KV_PV"],
+            name="KV/PV", x=_df_sel.index, y=_df_sel["KV_PV"],
             marker_color="#FFF176",
             hovertemplate="<b>%{x}</b>: %{y:,.0f} € KV/PV<extra>KV/PV</extra>",
         ))
 
         fig_opt.add_hline(
-            y=_df_opt["Netto"].mean(), line_dash="dot", line_color="#2E7D32", line_width=1.5,
-            annotation_text=f"Ø {_de(_df_opt['Netto'].mean() / 12)} €/Mon.",
+            y=_df_sel["Netto"].mean(), line_dash="dot", line_color="#2E7D32", line_width=1.5,
+            annotation_text=f"Ø {_de(_df_sel['Netto'].mean() / 12)} €/Mon.",
             annotation_position="top right",
         )
         if not profil.bereits_rentner:
@@ -1048,97 +1076,131 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 if _dm_d:
                     _curr_sels[_id_d] = f"{_po_d.fruehestes_startjahr}_{_dm_d}"
             st.session_state[_sels_key] = _curr_sels
+        else:
+            # Neu hinzugefügte Produkte mit Standardwerten einsetzen
+            _sels_updated = False
+            for _id_n, _av_n in _avail_id_map.items():
+                if _id_n not in _curr_sels:
+                    _po_n = _prod_by_id_early.get(_id_n)
+                    if _po_n:
+                        _dm_n = "mono" if "fm" in _av_n else "einmal" if "fe" in _av_n else None
+                        if _dm_n:
+                            _curr_sels[_id_n] = f"{_po_n.fruehestes_startjahr}_{_dm_n}"
+                            _sels_updated = True
+            if _sels_updated:
+                st.session_state[_sels_key] = _curr_sels
 
         _INFO_COLS = ["Typ", "Person", "Einmal (Total / Mon.)", "Monatlich (Total)",
                       "Kombiniert (Total)", "Einfach-Empfehlung ✅"]
 
-        # Build unified table rows
-        _unified_rows = []
+        # Build unified table rows; split by whether product supports BOTH mono+einmal
+        _prod_by_id_vp = {p.id: p for p in produkte_obj}
+        _rows_both: list[dict] = []   # mono AND einmal → show Montl. checkbox
+        _rows_single: list[dict] = [] # only one option → no checkbox
+
         for r in _table_rows:
-            prod_name = r["Vertrag"]
-            _po_r     = r["_prod_obj"]          # use stored obj — avoids name-collision lookup
-            sel       = _curr_sels.get(_po_r.id)
+            prod_name   = r["Vertrag"]
+            _po_r       = r["_prod_obj"]
+            _hat_mono_r = r["_hat_mono"]
+            _hat_einz_r = r["_hat_einz"]
+            _hat_spaet_r2 = r["_hat_spaet"]
+            # Nur anzeigen wenn Auszahlungsjahr wählbar ODER beide Auszahlungsarten möglich
+            if not _hat_spaet_r2 and not (_hat_mono_r and _hat_einz_r):
+                continue
+            sel         = _curr_sels.get(_po_r.id)
             _sel_yr, _sel_mode = _parse_sel_vp(sel)
             _yr_val = _sel_yr if _sel_yr is not None else _po_r.fruehestes_startjahr
-            _hat_mono_r = r["_hat_mono"]
             entry = {"Vertrag": prod_name, "_prod_id": _po_r.id}
             for c in _INFO_COLS:
                 entry[c] = r[c]
-            entry["Früh"]             = _po_r.fruehestes_startjahr
-            entry["Spät"]             = _po_r.spaetestes_startjahr
-            entry["Auszahlungsjahr"]  = int(_yr_val)
-            entry["Montl. Auszahlung"] = bool(_sel_mode == "mono" and _hat_mono_r)
-            _unified_rows.append(entry)
+            entry["Früh"]            = _po_r.fruehestes_startjahr
+            entry["Spät"]            = _po_r.spaetestes_startjahr
+            entry["Auszahlungsjahr"] = int(_yr_val)
+            if _hat_mono_r and _hat_einz_r:
+                entry["Montl. Auszahlung"] = bool(_sel_mode == "mono")
+                _rows_both.append(entry)
+            else:
+                _rows_single.append(entry)
 
-        _EDIT_COLS_VP = ("Auszahlungsjahr", "Montl. Auszahlung")
-        _non_cb_vp    = ["Vertrag"] + _INFO_COLS + ["Früh", "Spät"]
-
-        _col_cfg_uni: dict = {c: st.column_config.TextColumn(c) for c in _INFO_COLS}
-        _col_cfg_uni["Früh"] = st.column_config.NumberColumn(
-            "Früh", format="%d", help="Frühestmögliches Auszahlungsjahr.")
-        _col_cfg_uni["Spät"] = st.column_config.NumberColumn(
-            "Spät", format="%d", help="Spätestmögliches Auszahlungsjahr.")
-        _col_cfg_uni["Auszahlungsjahr"] = st.column_config.NumberColumn(
-            "Auszahlungsjahr", min_value=2020, max_value=2099, step=1, format="%d",
-            help="Auszahlungsjahr – muss zwischen Früh und Spät liegen.",
-        )
-        _col_cfg_uni["Montl. Auszahlung"] = st.column_config.CheckboxColumn(
-            "Montl. Auszahlung",
-            help="Monatliche Rente auszahlen (nur für Verträge mit Monatsrenteoption).",
-        )
-
-        # Index by product ID so duplicate-named products stay distinct
-        _prod_by_id_vp = {p.id: p for p in produkte_obj}
-        _uni_df = pd.DataFrame(_unified_rows).set_index("_prod_id")
-        _uni_df.index.name = None  # hide index header in table
         _sels_tag = "_".join(
             f"{i}{str(v or 'n')[:4]}" for i, (_, v) in enumerate(sorted(_curr_sels.items()))
         ) or "0"
-        _non_cb_vp_ids = ["Vertrag"] + _INFO_COLS + ["Früh", "Spät"]
-        _edited_uni = st.data_editor(
-            _uni_df,
-            column_config=_col_cfg_uni,
-            disabled=_non_cb_vp_ids,
-            key=f"rc{_rc}_vp_edit_uni_{_sels_tag}",
-            use_container_width=True,
+        _col_cfg_base: dict = {c: st.column_config.TextColumn(c) for c in _INFO_COLS}
+        _col_cfg_base["Früh"] = st.column_config.NumberColumn("Früh", format="%d",
+            help="Frühestmögliches Auszahlungsjahr.")
+        _col_cfg_base["Spät"] = st.column_config.NumberColumn("Spät", format="%d",
+            help="Spätestmögliches Auszahlungsjahr.")
+        _col_cfg_base["Auszahlungsjahr"] = st.column_config.NumberColumn(
+            "Auszahlungsjahr", min_value=2020, max_value=2099, step=1, format="%d",
+            help="Auszahlungsjahr – muss zwischen Früh und Spät liegen.",
+        )
+        _disabled_base = ["Vertrag"] + _INFO_COLS + ["Früh", "Spät"]
+
+        _col_cfg_both = dict(_col_cfg_base)
+        _col_cfg_both["Montl. Auszahlung"] = st.column_config.CheckboxColumn(
+            "Montl. Auszahlung",
+            help="Monatliche Rente (☑) oder Einmalauszahlung (☐).",
         )
 
-        st.caption("Tabelle wählt Strategie für das Diagramm (eine Auszahlungsart pro Vertrag). "
-                   "Standard: früheste Monatsrente; bei reinen Einmalauszahlungen früheste Einmalauszahlung.")
+        _edited_both   = None
+        _edited_single = None
 
-        # ── Enforcement: validate + update state (keyed by product ID) ──────
+        if _rows_both:
+            _df_both = pd.DataFrame(_rows_both).set_index("_prod_id")
+            _df_both.index.name = None
+            _edited_both = st.data_editor(
+                _df_both, column_config=_col_cfg_both, disabled=_disabled_base,
+                key=f"rc{_rc}_vp_edit_both_{_sels_tag}", use_container_width=True,
+                hide_index=True,
+            )
+        if _rows_single:
+            if _rows_both:
+                st.caption("Verträge mit fester Auszahlungsart (kein Monatliche/Einmal-Wechsel):")
+            _df_single = pd.DataFrame(_rows_single).set_index("_prod_id")
+            _df_single.index.name = None
+            _edited_single = st.data_editor(
+                _df_single, column_config=_col_cfg_base, disabled=_disabled_base,
+                key=f"rc{_rc}_vp_edit_single_{_sels_tag}", use_container_width=True,
+                hide_index=True,
+            )
+
+        st.caption("Auszahlungsjahr und Modus wählen. Montl.-Checkbox nur bei Verträgen "
+                   "mit beiden Auszahlungsoptionen. Standard: früheste Monatsrente bzw. Einmalauszahlung.")
+
+        # ── Enforcement: validate + update state ────────────────────────────
+        def _process_vp_editor(edited_df, has_checkbox: bool) -> None:
+            if edited_df is None:
+                return
+            for _pid_e, _row in edited_df.iterrows():
+                _pid_e = str(_pid_e)
+                _po_e = _prod_by_id_vp.get(_pid_e)
+                if _po_e is None:
+                    continue
+                _hp_frueh_e = _po_e.fruehestes_startjahr
+                _hp_spaet_e = _po_e.spaetestes_startjahr
+                _disp_name  = _row.get("Vertrag", _pid_e)
+                _raw_yr = _row.get("Auszahlungsjahr")
+                new_year = int(_raw_yr) if _raw_yr is not None else _hp_frueh_e
+                if new_year < _hp_frueh_e or new_year > _hp_spaet_e:
+                    st.warning(
+                        f"Auszahlungsjahr {new_year} für «{_disp_name}» liegt außerhalb "
+                        f"[{_hp_frueh_e}, {_hp_spaet_e}] – auf {_hp_frueh_e} gesetzt."
+                    )
+                    new_year = max(_hp_frueh_e, min(_hp_spaet_e, new_year))
+                if has_checkbox:
+                    new_montl = bool(_row.get("Montl. Auszahlung", False))
+                else:
+                    new_montl = _po_e.max_monatsrente > 0
+                mode = "mono" if new_montl else "einmal"
+                _new_sels[_pid_e] = f"{new_year}_{mode}"
+
         _new_sels: dict[str, str | None] = {}
-
-        for _prod_id_e, _row in _edited_uni.iterrows():
-            _prod_id_e = str(_prod_id_e)
-            _po_e = _prod_by_id_vp.get(_prod_id_e)
-            if _po_e is None:
-                continue
-            _hat_mono_e  = _po_e.max_monatsrente > 0
-            _hp_frueh_e  = _po_e.fruehestes_startjahr
-            _hp_spaet_e  = _po_e.spaetestes_startjahr
-            _disp_name   = _row.get("Vertrag", _prod_id_e)
-
-            _raw_yr  = _row.get("Auszahlungsjahr")
-            new_year = int(_raw_yr) if _raw_yr is not None else _hp_frueh_e
-            new_montl = bool(_row.get("Montl. Auszahlung", False))
-
-            if new_year < _hp_frueh_e or new_year > _hp_spaet_e:
-                st.warning(
-                    f"Auszahlungsjahr {new_year} für «{_disp_name}» liegt außerhalb "
-                    f"[{_hp_frueh_e}, {_hp_spaet_e}] – auf {_hp_frueh_e} gesetzt."
-                )
-                new_year = max(_hp_frueh_e, min(_hp_spaet_e, new_year))
-
-            if new_montl and not _hat_mono_e:
-                st.error(
-                    f"«{_disp_name}» unterstützt keine Monatsrente – "
-                    "Montl. Auszahlung wurde deaktiviert."
-                )
-                new_montl = False
-
-            mode = "mono" if new_montl else "einmal"
-            _new_sels[_prod_id_e] = f"{new_year}_{mode}"
+        _process_vp_editor(_edited_both, has_checkbox=True)
+        _process_vp_editor(_edited_single, has_checkbox=False)
+        # Produkte ohne Auswahlmöglichkeit (fixes Jahr + feste Auszahlungsart) beibehalten
+        for _pid_fix, _sv_fix in _curr_sels.items():
+            if _pid_fix not in _new_sels:
+                _new_sels[_pid_fix] = _sv_fix
 
         if _new_sels != _curr_sels:
             st.session_state[_sels_key] = _new_sels

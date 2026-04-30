@@ -3624,3 +3624,237 @@ class TestGehaltPeriodenSimulation:
         # Rentenjahre: Src_Gehalt = 0
         for i in range(_pre, len(jd)):
             assert jd[i]["Src_Gehalt"] == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Steuer/KV in Vorsorge- und Entnahme-Opt-Diagrammen
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _gkv_profil(**kwargs) -> Profil:
+    """GKV-KVdR-Profil mit Renteneintritt in 7 Jahren für Chart-Tests."""
+    defaults = dict(
+        geburtsjahr=AKTUELLES_JAHR - 60,
+        renteneintritt_alter=67,
+        aktuelle_punkte=30.0,
+        punkte_pro_jahr=1.0,
+        zusatz_monatlich=0.0,
+        sparkapital=0.0,
+        sparrate=0.0,
+        rendite_pa=0.0,
+        rentenanpassung_pa=0.0,
+        krankenversicherung="GKV",
+        kvdr_pflicht=True,
+        kinder=True,
+        kinder_anzahl=1,
+    )
+    defaults.update(kwargs)
+    return Profil(**defaults)
+
+
+def _rv_produkt(**kwargs) -> VorsorgeProdukt:
+    defaults = dict(
+        id="test-rv",
+        typ="PrivateRente",
+        name="Test-RV",
+        person="Person 1",
+        max_einmalzahlung=60_000.0,
+        max_monatsrente=400.0,
+        laufzeit_jahre=0,
+        aufschub_rendite=0.0,
+    )
+    defaults.update(kwargs)
+    p = _gkv_profil()
+    defaults.setdefault("fruehestes_startjahr", p.eintritt_jahr)
+    defaults.setdefault("spaetestes_startjahr", p.eintritt_jahr)
+    return VorsorgeProdukt(**defaults)
+
+
+class TestVorsorgeChartSteuerKV:
+    """Steuer/KV in _netto_ueber_horizont korrekt nach mono/einmal-Selektion."""
+
+    def _p(self, **kw):
+        return _gkv_profil(**kw)
+
+    def test_mono_vs_einmal_steuer_unterschiedlich(self):
+        """Einmal vs. mono: Steuer im Auszahlungsjahr muss sich unterscheiden."""
+        p = self._p()
+        e = berechne_rente(p)
+        prod = _bav_produkt(
+            id="bav-1",
+            max_einmalzahlung=60_000.0, max_monatsrente=400.0,
+            fruehestes_startjahr=p.eintritt_jahr,
+            spaetestes_startjahr=p.eintritt_jahr,
+        )
+        _, jd_mono   = _netto_ueber_horizont(p, e, [(prod, p.eintritt_jahr, 0.0)], 10, 0, 0)
+        _, jd_einmal = _netto_ueber_horizont(p, e, [(prod, p.eintritt_jahr, 1.0)], 10, 0, 0)
+        assert jd_einmal[0]["Steuer"] != jd_mono[0]["Steuer"], \
+            "Steuer muss sich im Auszahlungsjahr zwischen Einmal und Mono unterscheiden"
+
+    def test_einmal_steuer_spitze_im_auszahlungsjahr(self):
+        """Einmalauszahlung erzeugt Steuer-Spitze im Auszahlungsjahr."""
+        p = self._p()
+        e = berechne_rente(p)
+        prod = _bav_produkt(
+            id="bav-1",
+            max_einmalzahlung=100_000.0, max_monatsrente=0.0,
+            fruehestes_startjahr=p.eintritt_jahr,
+            spaetestes_startjahr=p.eintritt_jahr,
+        )
+        _, jd = _netto_ueber_horizont(p, e, [(prod, p.eintritt_jahr, 1.0)], 10, 0, 0)
+        assert jd[0]["Steuer"] > jd[5]["Steuer"], \
+            "Einmalincome muss im Auszahlungsjahr höhere Steuer erzeugen als in späteren Jahren"
+
+    def test_mono_steuer_kein_sprung(self):
+        """Monatliche Auszahlung: keine starke Steuer-Spitze im ersten Jahr."""
+        p = self._p()
+        e = berechne_rente(p)
+        prod = _rv_produkt(id="rv-1", max_einmalzahlung=0.0, max_monatsrente=600.0)
+        _, jd = _netto_ueber_horizont(p, e, [(prod, p.eintritt_jahr, 0.0)], 10, 0, 0)
+        yr0 = jd[0]["Steuer"]
+        yr5 = jd[5]["Steuer"]
+        if yr0 > 0:
+            assert abs(yr5 - yr0) / yr0 < 0.20, \
+                f"Monatl. Rente sollte keine starke Steuerspitze erzeugen (yr0={yr0:.0f}, yr5={yr5:.0f})"
+
+    def test_mono_vs_einmal_kv_pv_unterschiedlich(self):
+        """KV_PV unterscheidet sich zwischen mono und einmal bei bAV."""
+        p = self._p()
+        e = berechne_rente(p)
+        prod = _bav_produkt(
+            id="bav-1",
+            max_einmalzahlung=60_000.0, max_monatsrente=400.0,
+            fruehestes_startjahr=p.eintritt_jahr,
+            spaetestes_startjahr=p.eintritt_jahr,
+        )
+        _, jd_mono   = _netto_ueber_horizont(p, e, [(prod, p.eintritt_jahr, 0.0)], 5, 0, 0)
+        _, jd_einmal = _netto_ueber_horizont(p, e, [(prod, p.eintritt_jahr, 1.0)], 5, 0, 0)
+        kv_sum_mono   = sum(r["KV_PV"] for r in jd_mono)
+        kv_sum_einmal = sum(r["KV_PV"] for r in jd_einmal)
+        assert kv_sum_mono != kv_sum_einmal, \
+            "KV_PV-Summe muss sich zwischen mono und einmal unterscheiden"
+
+    def test_spaetes_auszahlungsjahr_verschiebt_steuer_spitze(self):
+        """Spätere Auszahlung verschiebt die Steuer-Spitze ins spätere Jahr."""
+        p = self._p()
+        e = berechne_rente(p)
+        frueh_j = p.eintritt_jahr
+        spaet_j = p.eintritt_jahr + 5
+        prod = _bav_produkt(
+            id="bav-1",
+            max_einmalzahlung=80_000.0, max_monatsrente=0.0,
+            fruehestes_startjahr=frueh_j,
+            spaetestes_startjahr=spaet_j,
+            aufschub_rendite=0.02,
+        )
+        _, jd_frueh = _netto_ueber_horizont(p, e, [(prod, frueh_j, 1.0)], 10, 0, 0)
+        _, jd_spaet = _netto_ueber_horizont(p, e, [(prod, spaet_j, 1.0)], 10, 0, 0)
+        # Früh: Spitze in Jahr 0; Spät: Spitze in Jahr 5
+        assert jd_frueh[0]["Steuer"] > jd_frueh[5]["Steuer"], "Frühe Einmal-Steuer-Spitze in Jahr 0"
+        assert jd_spaet[5]["Steuer"] > jd_spaet[0]["Steuer"], "Späte Einmal-Steuer-Spitze in Jahr 5"
+
+    def test_bav_grosser_vs_kleiner_mono_kv(self):
+        """Höhere monatliche bAV-Rente (über Freibetrag) → höhere KV als kleinere."""
+        p = self._p()
+        e = berechne_rente(p)
+        bav_klein = _bav_produkt(
+            id="bav-k", max_einmalzahlung=0.0, max_monatsrente=100.0,
+            fruehestes_startjahr=p.eintritt_jahr, spaetestes_startjahr=p.eintritt_jahr,
+        )
+        bav_gross = _bav_produkt(
+            id="bav-g", max_einmalzahlung=0.0, max_monatsrente=600.0,
+            fruehestes_startjahr=p.eintritt_jahr, spaetestes_startjahr=p.eintritt_jahr,
+        )
+        _, jd_klein = _netto_ueber_horizont(p, e, [(bav_klein, p.eintritt_jahr, 0.0)], 5, 0, 0)
+        _, jd_gross = _netto_ueber_horizont(p, e, [(bav_gross, p.eintritt_jahr, 0.0)], 5, 0, 0)
+        assert jd_gross[0]["KV_PV"] > jd_klein[0]["KV_PV"], \
+            "Höhere bAV-Monatsrente über Freibetrag muss höhere KV ergeben"
+
+    def test_netto_steigt_mit_mono_auszahlung(self):
+        """Monatliche Auszahlung erhöht das Netto in jedem Auszahlungsjahr."""
+        p = self._p()
+        e = berechne_rente(p)
+        prod = _bav_produkt(
+            id="bav-1", max_einmalzahlung=0.0, max_monatsrente=300.0,
+            fruehestes_startjahr=p.eintritt_jahr, spaetestes_startjahr=p.eintritt_jahr,
+        )
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 5, 0, 0)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [(prod, p.eintritt_jahr, 0.0)], 5, 0, 0)
+        for i in range(5):
+            assert jd_mit[i]["Netto"] > jd_ohne[i]["Netto"], \
+                f"Monatliche bAV muss Netto in Jahr {i} erhöhen"
+
+
+class TestEntnahmeOptChartSteuerKV:
+    """Steuer/KV in _netto_ueber_horizont korrekt für Entnahme-Opt-Diagramme."""
+
+    def _p(self, **kw):
+        return _gkv_profil(**kw)
+
+    def test_private_rv_mono_kein_kvdr_beitrag(self):
+        """Private RV-Monatsrente erhöht KV bei KVdR-Pflichtmitglied NICHT."""
+        p = self._p(kvdr_pflicht=True)
+        e = berechne_rente(p)
+        rv = _rv_produkt(id="rv-1", max_einmalzahlung=0.0, max_monatsrente=500.0)
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 5, 0, 0)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [(rv, p.eintritt_jahr, 0.0)], 5, 0, 0)
+        assert jd_mit[0]["KV_PV"] == pytest.approx(jd_ohne[0]["KV_PV"], abs=1), \
+            "Private RV-Monatsrente darf bei KVdR-Pflicht keine KV erhöhen"
+
+    def test_freiwillig_gkv_private_rv_erhoeht_kv(self):
+        """Private RV-Monatsrente erhöht KV bei freiwilliger GKV (§240 SGB V)."""
+        p = self._p(kvdr_pflicht=False)
+        e = berechne_rente(p)
+        rv = _rv_produkt(id="rv-1", max_einmalzahlung=0.0, max_monatsrente=500.0)
+        _, jd_ohne = _netto_ueber_horizont(p, e, [], 5, 0, 0)
+        _, jd_mit  = _netto_ueber_horizont(p, e, [(rv, p.eintritt_jahr, 0.0)], 5, 0, 0)
+        assert jd_mit[0]["KV_PV"] > jd_ohne[0]["KV_PV"], \
+            "Private RV-Monatsrente muss bei freiwilliger GKV KV erhöhen"
+
+    def test_bav_einmal_kv_naechste_jahre_erhoehen(self):
+        """bAV-Einmalauszahlung wird auf 120 Monate verteilt (§229 SGB V): KV auch in Folgejahren."""
+        p = self._p(kvdr_pflicht=True)
+        e = berechne_rente(p)
+        bav = _bav_produkt(
+            id="bav-e", max_einmalzahlung=120_000.0, max_monatsrente=0.0,
+            fruehestes_startjahr=p.eintritt_jahr, spaetestes_startjahr=p.eintritt_jahr,
+        )
+        _, jd     = _netto_ueber_horizont(p, e, [(bav, p.eintritt_jahr, 1.0)], 12, 0, 0)
+        _, jd_ref = _netto_ueber_horizont(p, e, [], 12, 0, 0)
+        # Jahr 1 sollte KV-Erhöhung haben (120-Monate-Spread, 10 Jahre)
+        assert jd[1]["KV_PV"] > jd_ref[1]["KV_PV"], \
+            "bAV-Einmalauszahlung muss KV auch in Folgejahren erhöhen (120-Monate-Spread)"
+
+    def test_zwei_produkte_stacked_steuer_hoeher(self):
+        """Zwei Produkte (mono + einmal) erzeugen mehr Steuer als keins."""
+        p = self._p()
+        e = berechne_rente(p)
+        bav  = _bav_produkt(id="bav-1", max_einmalzahlung=0.0, max_monatsrente=300.0,
+                             fruehestes_startjahr=p.eintritt_jahr, spaetestes_startjahr=p.eintritt_jahr)
+        etf  = VorsorgeProdukt(
+            id="etf-1", typ="ETF", name="ETF", person="Person 1",
+            max_einmalzahlung=50_000.0, max_monatsrente=0.0, laufzeit_jahre=0,
+            fruehestes_startjahr=p.eintritt_jahr, spaetestes_startjahr=p.eintritt_jahr,
+            aufschub_rendite=0.0,
+        )
+        _, jd_beide = _netto_ueber_horizont(
+            p, e, [(bav, p.eintritt_jahr, 0.0), (etf, p.eintritt_jahr, 1.0)], 10, 0, 0)
+        _, jd_ohne  = _netto_ueber_horizont(p, e, [], 10, 0, 0)
+        steuer_beide = sum(r["Steuer"] for r in jd_beide)
+        steuer_ohne  = sum(r["Steuer"] for r in jd_ohne)
+        assert steuer_beide > steuer_ohne, \
+            "Zwei Produkte müssen insgesamt mehr Steuer erzeugen als keine"
+
+    def test_auszahlungsart_wechsel_aendert_kv_summe(self):
+        """Wechsel von einmal auf mono ändert KV_PV-Gesamtsumme."""
+        p = self._p()
+        e = berechne_rente(p)
+        prod = _bav_produkt(
+            id="bav-1",
+            max_einmalzahlung=60_000.0, max_monatsrente=400.0,
+            fruehestes_startjahr=p.eintritt_jahr, spaetestes_startjahr=p.eintritt_jahr,
+        )
+        _, jd_e = _netto_ueber_horizont(p, e, [(prod, p.eintritt_jahr, 1.0)], 10, 0, 0)
+        _, jd_m = _netto_ueber_horizont(p, e, [(prod, p.eintritt_jahr, 0.0)], 10, 0, 0)
+        kv_e = sum(r["KV_PV"] for r in jd_e)
+        kv_m = sum(r["KV_PV"] for r in jd_m)
+        assert kv_e != kv_m, "Wechsel Einmal↔Mono muss KV_PV-Summe ändern"
