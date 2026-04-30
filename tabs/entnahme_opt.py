@@ -565,8 +565,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _endjahr_hyp = int(hyp_d.get("endjahr", AKTUELLES_JAHR + 20))
             _markt_zins_pa = float(hyp_d.get("anschluss_zins_pa", 0.04))
             _anschluss_lz = int(hyp_d.get("anschluss_laufzeit", 10))
-            _hyp_ezl = get_hyp_schedule()
             _behandlung = str(hyp_d.get("behandlung", "keine"))
+            _hyp_ezl: list[dict] = list(hyp_d.get("sondertilgungen", []))
+            if _behandlung == "einmalzahlungen":
+                _hyp_ezl += list(hyp_d.get("anschluss_einmalzahlungen", []))
             _pool_tilgung = (_behandlung == "einmalzahlungen")
             _anschluss_spar = (_behandlung == "ratenkredit")
             _einmal_tilgung = (_behandlung == "einmalzahlungen")
