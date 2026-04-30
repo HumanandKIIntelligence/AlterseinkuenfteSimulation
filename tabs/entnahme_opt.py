@@ -1818,65 +1818,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             if _cap_parts:
                 st.caption(" · ".join(_cap_parts) + ".")
 
-            # ── Geplante Kapital-Entnahmen (direkt unter Chart) ───────────────
-            st.markdown("**💸 Geplante Kapital-Entnahmen**")
-            st.caption(
-                "Einmalige Entnahmen aus dem Kapital (z.B. Renovierung, Reise, Schenkung). "
-                "Jahr und Betrag eintragen – die Zeitleiste und der Jahresverlauf aktualisieren sich sofort."
-            )
-            _en_rows = [
-                {"Jahr": e["jahr"], "Betrag (€)": e["betrag"]}
-                for e in _eo_entnahmen_early
-            ]
-            _en_ed_df = (
-                pd.DataFrame(_en_rows)
-                if _en_rows
-                else pd.DataFrame({
-                    "Jahr": pd.Series([], dtype="int64"),
-                    "Betrag (€)": pd.Series([], dtype="float64"),
-                })
-            )
-            _en_ver = sum(int(e["jahr"]) * 100_000 + int(e["betrag"]) for e in _eo_entnahmen_early)
-            _edited_en = st.data_editor(
-                _en_ed_df,
-                num_rows="dynamic",
-                use_container_width=False,
-                hide_index=True,
-                column_config={
-                    "Jahr": st.column_config.NumberColumn(
-                        "Jahr",
-                        min_value=AKTUELLES_JAHR,
-                        max_value=AKTUELLES_JAHR + 60,
-                        format="%d",
-                        step=1,
-                        required=True,
-                        help="Kalenderjahr der Entnahme.",
-                    ),
-                    "Betrag (€)": st.column_config.NumberColumn(
-                        "Betrag (€)",
-                        min_value=0.0,
-                        max_value=5_000_000.0,
-                        format="%.0f",
-                        step=1_000.0,
-                        required=True,
-                        help="Entnahmebetrag in €.",
-                    ),
-                },
-                key=f"rc{_rc}_en_editor_{_en_ver}",
-            )
-            _new_en = sorted(
-                [
-                    {"jahr": int(r["Jahr"]), "betrag": float(r["Betrag (€)"])}
-                    for _, r in _edited_en.iterrows()
-                    if pd.notna(r.get("Jahr")) and pd.notna(r.get("Betrag (€)"))
-                    and float(r.get("Betrag (€)", 0)) > 0
-                ],
-                key=lambda e: e["jahr"],
-            )
-            if _new_en != list(_eo_entnahmen_early):
-                st.session_state["eo_entnahmen"] = _new_en
-                st.rerun()
-
         # ── Jahresdetails ─────────────────────────────────────────────────────
         st.subheader("Jahresdetails")
         _min_j_jd = int(df_jd.index.min())
