@@ -969,10 +969,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "_hat_spaet":  hat_spaet_p,
             })
 
-        # Default: früheste Einmal wenn verfügbar, sonst früheste Mono
+        # Default: früheste Mono wenn verfügbar, sonst früheste Einmal
         if not _curr_sels and _avail_map:
             _curr_sels = {
-                nm: ("fe" if "fe" in av else "fm" if "fm" in av else None)
+                nm: ("fm" if "fm" in av else "fe" if "fe" in av else None)
                 for nm, av in _avail_map.items()
             }
             st.session_state[_sels_key] = _curr_sels
@@ -980,76 +980,111 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _INFO_COLS = ["Typ", "Person", "Einmal (Total / Mon.)", "Monatlich (Total)",
                       "Kombiniert (Total)", "Einfach-Empfehlung ✅"]
 
-        def _make_cb_df(rows: list, cb_map: dict) -> pd.DataFrame:
-            result = []
-            for r in rows:
-                entry = {"Vertrag": r["Vertrag"]}
-                for c in _INFO_COLS:
-                    entry[c] = r[c]
-                sel  = _curr_sels.get(r["Vertrag"])
-                avail = _avail_map[r["Vertrag"]]
-                for mk, cc in cb_map.items():
-                    entry[cc] = (sel == mk and mk in avail)
-                result.append(entry)
-            return pd.DataFrame(result).set_index("Vertrag")
+        # Build unified table rows for one data_editor
+        _unified_rows = []
+        for r in _table_rows:
+            prod_name = r["Vertrag"]
+            sel       = _curr_sels.get(prod_name)
+            avail     = _avail_map[prod_name]
+            entry = {"Vertrag": prod_name}
+            for c in _INFO_COLS:
+                entry[c] = r[c]
+            entry["Auszahlung"]    = "Spätestens" if sel in ("sm", "se") else "Frühestens"
+            entry["Montl. Ja/Nein"] = bool(sel in ("fm", "sm") and ("fm" in avail or "sm" in avail))
+            entry["Einmal Ja/Nein"] = bool(sel in ("fe", "se") and ("fe" in avail or "se" in avail))
+            _unified_rows.append(entry)
 
-        def _render_editor(rows: list, cb_map: dict, key: str):
-            if not rows:
-                return None
-            df      = _make_cb_df(rows, cb_map)
-            non_cb  = [c for c in df.columns if c not in cb_map.values()]
-            col_cfg = {cc: st.column_config.CheckboxColumn(cc, width="small") for cc in cb_map.values()}
-            col_cfg.update({c: st.column_config.TextColumn(c) for c in _INFO_COLS if c in df.columns})
-            return st.data_editor(df, column_config=col_cfg, disabled=non_cb,
-                                  key=key, use_container_width=True)
+        _EDIT_COLS = ("Auszahlung", "Montl. Ja/Nein", "Einmal Ja/Nein")
+        _non_cb    = [c for c in (["Vertrag"] + _INFO_COLS) if True]  # all info cols disabled
 
-        # Two separate editors: one for mono-capable, one for einmal-capable products
-        _mono_rows = [r for r in _table_rows if r["_hat_mono"]]
-        _einz_rows = [r for r in _table_rows if r["_hat_einz"]]
-        _mono_cb   = {"fm": "🟢 Früh Mono."}
-        if any(r["_hat_spaet"] and r["_hat_mono"] for r in _table_rows):
-            _mono_cb["sm"] = "🔵 Spät Mono."
-        _einz_cb   = {"fe": "🟠 Früh Einmal"}
-        if any(r["_hat_spaet"] and r["_hat_einz"] for r in _table_rows):
-            _einz_cb["se"] = "🟡 Spät Einmal"
+        _col_cfg_uni: dict = {c: st.column_config.TextColumn(c) for c in _INFO_COLS}
+        _col_cfg_uni["Auszahlung"] = st.column_config.SelectboxColumn(
+            "Auszahlung", options=["Frühestens", "Spätestens"],
+            help="Frühest- oder spätestmöglicher Auszahlungszeitpunkt.",
+        )
+        _col_cfg_uni["Montl. Ja/Nein"] = st.column_config.CheckboxColumn(
+            "Montl. Ja/Nein",
+            help="Monatliche Rente auszahlen (nur für Verträge mit Monatsrenteoption).",
+        )
+        _col_cfg_uni["Einmal Ja/Nein"] = st.column_config.CheckboxColumn(
+            "Einmal Ja/Nein",
+            help="Einmalauszahlung wählen.",
+        )
 
-        _edited_mono = _edited_einz = None
-        if _mono_rows:
-            st.markdown("**Monatliche Auszahlung**")
-            _edited_mono = _render_editor(_mono_rows, _mono_cb, f"rc{_rc}_vp_edit_mono")
-        if _einz_rows:
-            st.markdown("**Einmalauszahlung**")
-            _edited_einz = _render_editor(_einz_rows, _einz_cb, f"rc{_rc}_vp_edit_einz")
+        _uni_df = pd.DataFrame(_unified_rows).set_index("Vertrag")
+        # Version tag to force re-render when state changes
+        _sels_tag = "_".join(
+            f"{k}{(v or 'n')[0]}" for k, v in sorted(_curr_sels.items())
+        ) or "0"
+        _edited_uni = st.data_editor(
+            _uni_df,
+            column_config=_col_cfg_uni,
+            disabled=_non_cb + list(_INFO_COLS),
+            key=f"rc{_rc}_vp_edit_uni_{_sels_tag}",
+            use_container_width=True,
+        )
 
-        st.caption("Checkbox wählt Strategie für das Diagramm (eine pro Vertrag). "
-                   "Standard: früheste Einmalauszahlung; bei reinen Rentenverträgen früheste Monatsrente.")
+        st.caption("Tabelle wählt Strategie für das Diagramm (eine Auszahlungsart pro Vertrag). "
+                   "Standard: früheste Monatsrente; bei reinen Einmalauszahlungen früheste Einmalauszahlung.")
 
-        # ── Enforcement: detect actual user change per editor, update state ───
+        # ── Enforcement: detect actual user change, update state ─────────────
         _new_sels: dict[str, str | None] = dict(_curr_sels)
 
-        def _process_editor(edited_df, cb_map: dict) -> None:
-            if edited_df is None:
-                return
-            for prod_name, _row in edited_df.iterrows():
-                avail   = _avail_map.get(prod_name, set())
-                checked = {mk for mk, cc in cb_map.items()
-                           if bool(_row.get(cc, False)) and mk in avail}
-                # What this editor was expected to show (from _curr_sels)
-                prev = _curr_sels.get(prod_name)
-                expected = {mk for mk in cb_map if prev == mk and mk in avail}
-                if checked == expected:
-                    continue  # no change in this editor for this product
-                prev_set = {prev} if prev else set()
-                newly    = checked - prev_set
-                if not checked:
-                    _new_sels[prod_name] = None
-                elif len(checked) == 1:
-                    _new_sels[prod_name] = next(iter(checked))
-                else:
-                    _new_sels[prod_name] = next(iter(newly)) if newly else next(iter(checked))
+        for prod_name, _row in _edited_uni.iterrows():
+            avail = _avail_map.get(prod_name, set())
+            timing_str = _row.get("Auszahlung", "Frühestens")
+            timing     = "spaet" if timing_str == "Spätestens" else "frueh"
+            new_montl  = bool(_row.get("Montl. Ja/Nein", False))
+            new_einmal = bool(_row.get("Einmal Ja/Nein", False))
 
-        _process_editor(_edited_mono, _mono_cb)
-        _process_editor(_edited_einz, _einz_cb)
+            # Derive what was expected from prev state
+            prev = _curr_sels.get(prod_name)
+            prev_timing = "spaet" if prev in ("sm", "se") else "frueh"
+            prev_montl  = prev in ("fm", "sm")
+            prev_einmal = prev in ("fe", "se")
+
+            timing_changed = (timing != prev_timing)
+            montl_changed  = (new_montl != prev_montl)
+            einmal_changed = (new_einmal != prev_einmal)
+
+            if not timing_changed and not montl_changed and not einmal_changed:
+                continue  # nothing changed for this product
+
+            # Determine mode: prefer newly-checked box; if only timing changed keep mode
+            if montl_changed and new_montl:
+                mode = "mono"
+            elif einmal_changed and new_einmal:
+                mode = "einmal"
+            elif montl_changed and not new_montl and not new_einmal:
+                # unchecked mono with nothing else → no selection
+                _new_sels[prod_name] = None
+                continue
+            elif einmal_changed and not new_einmal and not new_montl:
+                # unchecked einmal with nothing else → no selection
+                _new_sels[prod_name] = None
+                continue
+            elif prev in ("fm", "sm"):
+                mode = "mono"
+            elif prev in ("fe", "se"):
+                mode = "einmal"
+            elif new_montl:
+                mode = "mono"
+            elif new_einmal:
+                mode = "einmal"
+            else:
+                _new_sels[prod_name] = None
+                continue
+
+            # Combine timing + mode, clamped to avail
+            if mode == "mono":
+                candidate = "sm" if timing == "spaet" else "fm"
+                if candidate not in avail:
+                    candidate = next((k for k in ("fm", "sm") if k in avail), None)
+            else:
+                candidate = "se" if timing == "spaet" else "fe"
+                if candidate not in avail:
+                    candidate = next((k for k in ("fe", "se") if k in avail), None)
+            _new_sels[prod_name] = candidate
 
         if _new_sels != _curr_sels:
             st.session_state[_sels_key] = _new_sels

@@ -624,24 +624,31 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             and p.max_einmalzahlung > 0
             and p.spaetestes_startjahr > p.fruehestes_startjahr
         }
-        # Default: früheste Einmalauszahlung für alle Verträge (nur bei erster Initialisierung)
+        # Migration: old keys "frueh"/"spaet"/"mono" → new keys "fe"/"se"/"fm"
+        _SELS_MIGRATION = {"frueh": "fe", "spaet": "se", "mono": "fm"}
+        _sels = {k: _SELS_MIGRATION.get(v, v) for k, v in _sels.items()}
+
+        # Default: früheste Mono wenn verfügbar, sonst früheste Einmal
         if not _sels and _prod_name_map:
-            _sels = {name: "frueh" for name in _prod_name_map}
+            _sels = {
+                name: ("fm" if _prod_name_map[name].max_monatsrente > 0 else "fe")
+                for name in _prod_name_map
+            }
             st.session_state[_sels_key] = _sels
 
         _prod_sj_override: dict[str, int] = {}
         for _pn_sel, _sel_val in _sels.items():
-            if _sel_val in ("frueh", "spaet") and _pn_sel in _prod_name_map:
+            if _sel_val in ("fm", "fe", "sm", "se") and _pn_sel in _prod_name_map:
                 _p_sel = _prod_name_map[_pn_sel]
                 _prod_sj_override[_p_sel.id] = (
-                    _p_sel.fruehestes_startjahr if _sel_val == "frueh"
-                    else _p_sel.spaetestes_startjahr
+                    _p_sel.spaetestes_startjahr if _sel_val in ("sm", "se")
+                    else _p_sel.fruehestes_startjahr
                 )
-        # "Monatlich ✓"-Selektion → anteil=0.0 (monatliche Auszahlung statt Pool-Injektion)
+        # "fm"/"sm"-Selektion → anteil=0.0 (monatliche Auszahlung statt Pool-Injektion)
         _mono_prod_ids: set[str] = {
             _prod_name_map[_pn].id
             for _pn, _sv in _sels.items()
-            if _sv == "mono" and _pn in _prod_name_map
+            if _sv in ("fm", "sm") and _pn in _prod_name_map
         }
         _eff_entsch = [
             (prod, _prod_sj_override.get(prod.id, prod.fruehestes_startjahr),
@@ -659,7 +666,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         st.session_state["_sb_eo_jd"] = _eff_jd_raw
 
         # Referenz-Netto (alle früh) für Delta-Anzeige
-        _any_spaet = any(v == "spaet" for v in _sels.values())
+        _any_spaet = any(v in ("sm", "se") for v in _sels.values())
         _base_netto: float | None = None
         if _any_spaet:
             _base_netto, _ = _netto_ueber_horizont(
@@ -815,16 +822,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _hvp_rows.append(_hvp_row_entry)
 
                 if _hvp_rows:
-                    # Checkbox-Tabelle: Früh ✓ / Spät ✓ / Monatlich ✓ – gegenseitig exklusiv
+                    # Unified table: Auszahlung (Selectbox) + Montl. Ja/Nein + Einmal Ja/Nein
                     _hvp_ed_rows = []
                     for _hr in _hvp_rows:
-                        _hr_prod_obj = _prod_name_map.get(_hr["Produkt"])
-                        _hr_hat_mono = _hr_prod_obj is not None and _hr_prod_obj.max_monatsrente > 0
-                        _hr_sel = _sels.get(_hr["Produkt"])
+                        _hr_prod_name = _hr["Produkt"]
+                        _hr_prod_obj  = _prod_name_map.get(_hr_prod_name)
+                        _hr_hat_mono  = _hr_prod_obj is not None and _hr_prod_obj.max_monatsrente > 0
+                        _hr_sel       = _sels.get(_hr_prod_name)
                         _ed_row: dict = {
-                            "Früh ✓": _hr_sel == "frueh",
-                            "Spät ✓": _hr_sel == "spaet",
-                            "Monatlich ✓": (_hr_sel == "mono") if _hr_hat_mono else False,
+                            "Auszahlung":    "Spätestens" if _hr_sel in ("sm", "se") else "Frühestens",
+                            "Montl. Ja/Nein": bool(_hr_sel in ("fm", "sm") and _hr_hat_mono),
+                            "Einmal Ja/Nein": bool(_hr_sel in ("fe", "se")),
                             "Früh": _hr["Früh"],
                             "Spät": _hr["Spät"],
                             "Netto früh (€)": _hr["Netto früh (€)"],
@@ -845,21 +853,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         f"{i}{(v or 'n')[0]}"
                         for i, (_, v) in enumerate(sorted(_sels.items()))
                     ) or "0"
-                    _CB_COLS = ("Früh ✓", "Spät ✓", "Monatlich ✓")
-                    _non_cb = [c for c in _hvp_ed_df.columns if c not in _CB_COLS]
+                    _EDIT_COLS_HVP = ("Auszahlung", "Montl. Ja/Nein", "Einmal Ja/Nein")
+                    _non_cb = [c for c in _hvp_ed_df.columns if c not in _EDIT_COLS_HVP]
                     _col_cfg: dict = {
-                        "Früh ✓": st.column_config.CheckboxColumn(
-                            "Früh ✓",
-                            help="Frühestmögliche Einmalauszahlung in den Kapitalpool. "
-                                 "Jahresverlauf und Kapital-Zeitleiste werden sofort aktualisiert.",
+                        "Auszahlung": st.column_config.SelectboxColumn(
+                            "Auszahlung", options=["Frühestens", "Spätestens"],
+                            help="Frühest- oder spätestmöglicher Auszahlungszeitpunkt.",
                         ),
-                        "Spät ✓": st.column_config.CheckboxColumn(
-                            "Spät ✓",
-                            help="Spätestmögliche Einmalauszahlung in den Kapitalpool.",
+                        "Montl. Ja/Nein": st.column_config.CheckboxColumn(
+                            "Montl. Ja/Nein",
+                            help="Monatsrente auszahlen (nur für Verträge mit Monatsrenteoption). Bei Einmalauszahlung Häkchen entfernen.",
                         ),
-                        "Monatlich ✓": st.column_config.CheckboxColumn(
-                            "Monatlich ✓",
-                            help="Monatliche Auszahlung im Jahresverlauf anzeigen (nur bei Verträgen mit monatlicher Option).",
+                        "Einmal Ja/Nein": st.column_config.CheckboxColumn(
+                            "Einmal Ja/Nein",
+                            help="Einmalauszahlung in den Kapitalpool einzahlen.",
                         ),
                         "Früh": st.column_config.NumberColumn("Früh", format="%d",
                             help="Frühestmögliches Auszahlungsjahr des Produkts."),
@@ -889,27 +896,59 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         column_config=_col_cfg,
                     )
 
-                    # Gegenseitigen Ausschluss erzwingen (Früh/Spät/Monatlich) + state-Update
+                    # Enforcement: detect changes, apply mutual exclusion + state-Update
                     _new_sels: dict[str, str | None] = {}
                     for _ep_name, _ep_row in _edited_hvp.iterrows():
-                        _ep_name = str(_ep_name)
-                        _ef  = bool(_ep_row.get("Früh ✓",     False))
-                        _es  = bool(_ep_row.get("Spät ✓",     False))
-                        _em  = bool(_ep_row.get("Monatlich ✓", False))
-                        # "Monatlich" nur akzeptieren wenn Vertrag monatliche Auszahlung hat
-                        _hp_obj_m = _prod_name_map.get(_ep_name)
-                        if not (_hp_obj_m is not None and _hp_obj_m.max_monatsrente > 0):
-                            _em = False
+                        _ep_name      = str(_ep_name)
+                        _hp_obj_m     = _prod_name_map.get(_ep_name)
+                        _hp_hat_mono  = _hp_obj_m is not None and _hp_obj_m.max_monatsrente > 0
+
+                        timing_str  = _ep_row.get("Auszahlung", "Frühestens")
+                        timing      = "spaet" if timing_str == "Spätestens" else "frueh"
+                        new_montl   = bool(_ep_row.get("Montl. Ja/Nein", False)) and _hp_hat_mono
+                        new_einmal  = bool(_ep_row.get("Einmal Ja/Nein", False))
+
                         _prev = _sels.get(_ep_name)
-                        _candidates = [(k, v) for k, v in [("frueh", _ef), ("spaet", _es), ("mono", _em)] if v]
-                        if not _candidates:
+                        prev_timing = "spaet" if _prev in ("sm", "se") else "frueh"
+                        prev_montl  = _prev in ("fm", "sm")
+                        prev_einmal = _prev in ("fe", "se")
+
+                        timing_changed = (timing != prev_timing)
+                        montl_changed  = (new_montl != prev_montl)
+                        einmal_changed = (new_einmal != prev_einmal)
+
+                        if not timing_changed and not montl_changed and not einmal_changed:
+                            _new_sels[_ep_name] = _prev
+                            continue
+
+                        # Determine mode
+                        if montl_changed and new_montl:
+                            mode = "mono"
+                        elif einmal_changed and new_einmal:
+                            mode = "einmal"
+                        elif montl_changed and not new_montl and not new_einmal:
                             _new_sels[_ep_name] = None
-                        elif len(_candidates) == 1:
-                            _new_sels[_ep_name] = _candidates[0][0]
+                            continue
+                        elif einmal_changed and not new_einmal and not new_montl:
+                            _new_sels[_ep_name] = None
+                            continue
+                        elif _prev in ("fm", "sm"):
+                            mode = "mono"
+                        elif _prev in ("fe", "se"):
+                            mode = "einmal"
+                        elif new_montl:
+                            mode = "mono"
+                        elif new_einmal:
+                            mode = "einmal"
                         else:
-                            _prev_set = {_prev} if _prev else set()
-                            _newly = [k for k, _ in _candidates if k not in _prev_set]
-                            _new_sels[_ep_name] = _newly[0] if _newly else _candidates[-1][0]
+                            _new_sels[_ep_name] = None
+                            continue
+
+                        if mode == "mono":
+                            _new_sels[_ep_name] = "sm" if timing == "spaet" else "fm"
+                        else:
+                            _new_sels[_ep_name] = "se" if timing == "spaet" else "fe"
+
                     _old_sels_copy = dict(st.session_state[_sels_key])
                     st.session_state[_sels_key] = _new_sels
                     if _new_sels != _old_sels_copy:
