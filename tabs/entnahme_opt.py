@@ -991,7 +991,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _topup_rows_eo.append({
                         "Jahr": _tj,
                         "Entnahme aus Pool (€)": _manual_w_eo if _manual_w_eo > 0 else None,
-                        "Frei nach Mindest+Hyp. (€)": round(_base_netto_eo),
+                        "Frei nach Ausg.+Hyp. (€)": round(_base_netto_eo),
                         "Mindesthaushalt (€/Jahr)": _mindest_j_topup,
                         "Abweichung": _abw_str,
                         "Pool-Bestand (€)": round(_pool_bal_eo),
@@ -1004,7 +1004,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     use_container_width=True,
                     hide_index=True,
                     key=f"rc{_rc}_topup_editor_eo_{_tu_ver_eo}",
-                    disabled=["Jahr", "Frei nach Mindest+Hyp. (€)", "Mindesthaushalt (€/Jahr)", "Abweichung", "Pool-Bestand (€)"],
+                    disabled=["Jahr", "Frei nach Ausg.+Hyp. (€)", "Mindesthaushalt (€/Jahr)", "Abweichung", "Pool-Bestand (€)"],
                     column_config={
                         "Jahr": st.column_config.NumberColumn("Jahr", format="%d"),
                         "Entnahme aus Pool (€)": st.column_config.NumberColumn(
@@ -1012,13 +1012,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                             format="%.0f", step=1_000.0,
                             help="Gewünschte manuelle Entnahme aus dem Kapitalpool in diesem Jahr.",
                         ),
-                        "Frei nach Mindest+Hyp. (€)": st.column_config.NumberColumn(
-                            "Frei nach Mindest+Hyp. (€)", format="%.0f",
+                        "Frei nach Ausg.+Hyp. (€)": st.column_config.NumberColumn(
+                            "Frei nach Ausg.+Hyp. (€)", format="%.0f",
                             help="Netto (ohne Pool-Automatik) − Hypothekenrate − Mindesthaushalt. Entspricht der gelben Linie im Diagramm.",
                         ),
                         "Mindesthaushalt (€/Jahr)": st.column_config.NumberColumn("Mindesthaushalt (€/Jahr)", format="%.0f"),
                         "Abweichung": st.column_config.TextColumn("Abweichung",
-                            help="Frei nach Mindest+Hyp. + Pool-Entnahme. Positiv = Ziel erreicht; 🔴 = Unterdeckung."),
+                            help="Frei nach Ausg.+Hyp. + Pool-Entnahme. Positiv = Ziel erreicht; 🔴 = Unterdeckung."),
                         "Pool-Bestand (€)": st.column_config.NumberColumn("Pool-Bestand (€)", format="%.0f"),
                     },
                 )
@@ -1464,11 +1464,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 for yr in _yel_yrs
             ]
             fig_src.add_trace(go.Scatter(
-                name="Frei nach Mindest+Hyp.",
+                name="Frei nach Ausg.+Hyp.",
                 x=_yel_yrs, y=_yel_ys,
                 mode="lines+markers",
                 line=dict(color="#F9A825", width=2, dash="dash"),
-                hovertemplate="%{x}: %{y:,.0f} € frei nach Mindesthaushalt + Hyp.<extra>Frei nach Mindest+Hyp.</extra>",
+                hovertemplate="%{x}: %{y:,.0f} € frei nach Mindesthaushalt + Hyp.<extra>Frei nach Ausg.+Hyp.</extra>",
             ))
         if not _profil_eo.bereits_rentner:
             _vline_label_src = "P1 Renteneintritt" if _profil2_eo else "Renteneintritt"
