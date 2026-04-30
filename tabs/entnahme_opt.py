@@ -978,6 +978,69 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         st.divider()
 
+        # ── Steuer- und KV-Verlauf ────────────────────────────────────────────
+        st.subheader("Steuer- und KV-Verlauf")
+        fig_tax = go.Figure()
+        fig_tax.add_trace(go.Bar(
+            name="Progressivsteuer", x=df_jd.index, y=df_jd["Steuer_Progressiv"],
+            marker_color="#EF9A9A",
+            hovertemplate="%{x}: %{y:,.0f} €<extra>Progressivsteuer</extra>",
+        ))
+        if "Steuer_Abgeltung" in df_jd.columns:
+            fig_tax.add_trace(go.Bar(
+                name="Abgeltungsteuer", x=df_jd.index, y=df_jd["Steuer_Abgeltung"],
+                marker_color="#FFCDD2",
+                hovertemplate="%{x}: %{y:,.0f} €<extra>Abgeltungsteuer</extra>",
+            ))
+        _hat_p2_kv = "KV_P2" in df_jd.columns and df_jd["KV_P2"].sum() > 0
+        if _hat_p2_kv:
+            _kv_custom = [
+                f"P1: {_de(r['KV_P1'])} €<br>P2: {_de(r['KV_P2'])} €"
+                for _, r in df_jd.iterrows()
+            ]
+            fig_tax.add_trace(go.Bar(
+                name="KV/PV", x=df_jd.index, y=df_jd["KV_PV"],
+                marker_color="#FFF176",
+                customdata=_kv_custom,
+                hovertemplate="%{x}: %{y:,.0f} €<br><i>%{customdata}</i><extra>KV/PV</extra>",
+            ))
+        else:
+            fig_tax.add_trace(go.Bar(
+                name="KV/PV", x=df_jd.index, y=df_jd["KV_PV"],
+                marker_color="#FFF176",
+                hovertemplate="%{x}: %{y:,.0f} €<extra>KV/PV</extra>",
+            ))
+        fig_tax.add_trace(go.Scatter(
+            name="zvE", x=df_jd.index, y=df_jd["zvE"],
+            mode="lines", line=dict(color="#5C6BC0", width=2, dash="dot"),
+            yaxis="y2",
+            hovertemplate="%{x}: %{y:,.0f} € zvE<extra></extra>",
+        ))
+        if not _profil_eo.bereits_rentner:
+            _vline_label_tax = "P1 Renteneintritt" if _profil2_eo else "Renteneintritt"
+            fig_tax.add_vline(
+                x=_profil_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#5C6BC0",
+                annotation_text=_vline_label_tax, annotation_position="top right",
+            )
+        if _profil2_eo and not _profil2_eo.bereits_rentner:
+            fig_tax.add_vline(
+                x=_profil2_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#E91E63",
+                annotation_text="P2 Renteneintritt", annotation_position="top left",
+            )
+        fig_tax.update_layout(
+            barmode="stack", template="plotly_white", height=380,
+            xaxis=dict(title="Jahr", dtick=2),
+            yaxis=dict(title="€ / Jahr", tickformat=",.0f"),
+            yaxis2=dict(title="zvE (€)", tickformat=",.0f", overlaying="y",
+                        side="right", showgrid=False),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=10, r=10, t=50, b=10),
+            separators=",.",
+        )
+        st.plotly_chart(fig_tax, use_container_width=True)
+
+        st.divider()
+
         # ── Jahresverlauf nach Einkommensquelle ───────────────────────────────
         st.subheader("Jahresverlauf nach Einkommensquelle")
         _rl_col1, _rl_col2 = st.columns([2, 1])
@@ -1845,69 +1908,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     f"KV-Aufteilung: P1 {_de(_jrow['KV_P1'] / 12)} €/Mon. "
                     f"| P2 {_de(_jrow['KV_P2'] / 12)} €/Mon."
                 )
-
-        st.divider()
-
-        # ── Steuer- und KV-Verlauf ────────────────────────────────────────────
-        st.subheader("Steuer- und KV-Verlauf")
-        fig_tax = go.Figure()
-        fig_tax.add_trace(go.Bar(
-            name="Progressivsteuer", x=df_jd.index, y=df_jd["Steuer_Progressiv"],
-            marker_color="#EF9A9A",
-            hovertemplate="%{x}: %{y:,.0f} €<extra>Progressivsteuer</extra>",
-        ))
-        if "Steuer_Abgeltung" in df_jd.columns:
-            fig_tax.add_trace(go.Bar(
-                name="Abgeltungsteuer", x=df_jd.index, y=df_jd["Steuer_Abgeltung"],
-                marker_color="#FFCDD2",
-                hovertemplate="%{x}: %{y:,.0f} €<extra>Abgeltungsteuer</extra>",
-            ))
-        _hat_p2_kv = "KV_P2" in df_jd.columns and df_jd["KV_P2"].sum() > 0
-        if _hat_p2_kv:
-            _kv_custom = [
-                f"P1: {_de(r['KV_P1'])} €<br>P2: {_de(r['KV_P2'])} €"
-                for _, r in df_jd.iterrows()
-            ]
-            fig_tax.add_trace(go.Bar(
-                name="KV/PV", x=df_jd.index, y=df_jd["KV_PV"],
-                marker_color="#FFF176",
-                customdata=_kv_custom,
-                hovertemplate="%{x}: %{y:,.0f} €<br><i>%{customdata}</i><extra>KV/PV</extra>",
-            ))
-        else:
-            fig_tax.add_trace(go.Bar(
-                name="KV/PV", x=df_jd.index, y=df_jd["KV_PV"],
-                marker_color="#FFF176",
-                hovertemplate="%{x}: %{y:,.0f} €<extra>KV/PV</extra>",
-            ))
-        fig_tax.add_trace(go.Scatter(
-            name="zvE", x=df_jd.index, y=df_jd["zvE"],
-            mode="lines", line=dict(color="#5C6BC0", width=2, dash="dot"),
-            yaxis="y2",
-            hovertemplate="%{x}: %{y:,.0f} € zvE<extra></extra>",
-        ))
-        if not _profil_eo.bereits_rentner:
-            _vline_label_tax = "P1 Renteneintritt" if _profil2_eo else "Renteneintritt"
-            fig_tax.add_vline(
-                x=_profil_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#5C6BC0",
-                annotation_text=_vline_label_tax, annotation_position="top right",
-            )
-        if _profil2_eo and not _profil2_eo.bereits_rentner:
-            fig_tax.add_vline(
-                x=_profil2_eo.eintritt_jahr, line_width=2, line_dash="dash", line_color="#E91E63",
-                annotation_text="P2 Renteneintritt", annotation_position="top left",
-            )
-        fig_tax.update_layout(
-            barmode="stack", template="plotly_white", height=380,
-            xaxis=dict(title="Jahr", dtick=2),
-            yaxis=dict(title="€ / Jahr", tickformat=",.0f"),
-            yaxis2=dict(title="zvE (€)", tickformat=",.0f", overlaying="y",
-                        side="right", showgrid=False),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            margin=dict(l=10, r=10, t=50, b=10),
-            separators=",.",
-        )
-        st.plotly_chart(fig_tax, use_container_width=True)
 
         # ── Gesamtbelastung Steuer + KV über Planungshorizont ─────────────────
         st.subheader(f"Gesamtbelastung über {horizon} Rentenjahre")
