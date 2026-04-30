@@ -929,11 +929,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             for prod, startjahr, _ in opt.get("beste_entscheidungen", [])
         }
 
-        # Checkbox columns: col_name -> mode_key
-        _CC = {"fm": "🟢 Früh Mono.", "sm": "🔵 Spät Mono.",
-               "fe": "🟠 Früh Einmal", "se": "🟡 Spät Einmal"}
-        _CC_COLS = list(_CC.values())
-
         st.subheader("Einzelvergleich je Vertrag")
         _table_rows = []
         _avail_map: dict[str, set[str]] = {}
@@ -944,9 +939,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             hat_einz = p.max_einmalzahlung > 0 and not p.ist_nur_monatsrente
             hat_spaet_p = p.spaetestes_startjahr > p.fruehestes_startjahr
             avail: set[str] = set()
-            if hat_mono:   avail.add("fm")
+            if hat_mono:                 avail.add("fm")
             if hat_mono and hat_spaet_p: avail.add("sm")
-            if hat_einz:   avail.add("fe")
+            if hat_einz:                 avail.add("fe")
             if hat_einz and hat_spaet_p: avail.add("se")
             _avail_map[p.name] = avail
 
@@ -963,59 +958,100 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 zeitpunkt = f"ab {opt_j} (+{opt_j - p.fruehestes_startjahr} J. Aufschub)"
             empfehlung = f"{_LABELS[bestes]}, {zeitpunkt}"
 
-            sel = _curr_sels.get(p.name)
             _table_rows.append({
-                "Vertrag": p.name,
-                "Typ": pd_dict["typ_label"],
-                "Person": p.person,
+                "Vertrag":     p.name,
+                "Typ":         pd_dict["typ_label"],
+                "Person":      p.person,
                 "Einmal (Total / Mon.)": f"{_de(v['einmal']['total'])} € / {_de(v['einmal']['monatlich'])} €" if hat_einz else "–",
-                "Monatlich (Total)": f"{_de(v['monatlich']['total'])} €" if hat_mono else "–",
-                "Kombiniert (Total)": f"{_de(v['kombiniert']['total'])} €" if (hat_mono and hat_einz) else "–",
+                "Monatlich (Total)":     f"{_de(v['monatlich']['total'])} €" if hat_mono else "–",
+                "Kombiniert (Total)":    f"{_de(v['kombiniert']['total'])} €" if (hat_mono and hat_einz) else "–",
                 "Einfach-Empfehlung ✅": empfehlung,
-                "🟢 Früh Mono.":  sel == "fm" and "fm" in avail,
-                "🔵 Spät Mono.":  sel == "sm" and "sm" in avail,
-                "🟠 Früh Einmal": sel == "fe" and "fe" in avail,
-                "🟡 Spät Einmal": sel == "se" and "se" in avail,
+                "_hat_mono":   hat_mono,
+                "_hat_einz":   hat_einz,
+                "_hat_spaet":  hat_spaet_p,
             })
 
-        _df_edit = pd.DataFrame(_table_rows).set_index("Vertrag")
-        _non_cb = [c for c in _df_edit.columns if c not in _CC_COLS]
-
-        _edited = st.data_editor(
-            _df_edit,
-            column_config={
-                "🟢 Früh Mono.":  st.column_config.CheckboxColumn("🟢 Früh\nMono.",  width="small"),
-                "🔵 Spät Mono.":  st.column_config.CheckboxColumn("🔵 Spät\nMono.",  width="small"),
-                "🟠 Früh Einmal": st.column_config.CheckboxColumn("🟠 Früh\nEinmal", width="small"),
-                "🟡 Spät Einmal": st.column_config.CheckboxColumn("🟡 Spät\nEinmal", width="small"),
-            },
-            disabled=_non_cb,
-            key=f"rc{_rc}_vp_edit",
-            use_container_width=True,
-        )
-        st.caption(
-            "Checkbox wählt Strategie für Diagramm (nur eine pro Zeile). "
-            "Einfach-Empfehlung ohne Steuereffekte; Timing aus der Optimierung."
-        )
-
-        # Enforce radio-like behavior (one checkbox per row) + update session_state
-        _new_sels: dict[str, str | None] = {}
-        for prod_name, _row in _edited.iterrows():
-            prev_sel = _curr_sels.get(prod_name)
-            avail = _avail_map.get(prod_name, set())
-            # Only accept valid (available) selections
-            curr_checked = {
-                mk for mk, cc in _CC.items()
-                if bool(_row[cc]) and mk in avail
+        # Default: früheste Einmal wenn verfügbar, sonst früheste Mono
+        if not _curr_sels and _avail_map:
+            _curr_sels = {
+                nm: ("fe" if "fe" in av else "fm" if "fm" in av else None)
+                for nm, av in _avail_map.items()
             }
-            if len(curr_checked) == 0:
-                _new_sels[prod_name] = None
-            elif len(curr_checked) == 1:
-                _new_sels[prod_name] = next(iter(curr_checked))
-            else:
-                # Multiple: keep newly added
-                newly = curr_checked - ({prev_sel} if prev_sel else set())
-                _new_sels[prod_name] = next(iter(newly)) if newly else next(iter(curr_checked))
+            st.session_state[_sels_key] = _curr_sels
+
+        _INFO_COLS = ["Typ", "Person", "Einmal (Total / Mon.)", "Monatlich (Total)",
+                      "Kombiniert (Total)", "Einfach-Empfehlung ✅"]
+
+        def _make_cb_df(rows: list, cb_map: dict) -> pd.DataFrame:
+            result = []
+            for r in rows:
+                entry = {"Vertrag": r["Vertrag"]}
+                for c in _INFO_COLS:
+                    entry[c] = r[c]
+                sel  = _curr_sels.get(r["Vertrag"])
+                avail = _avail_map[r["Vertrag"]]
+                for mk, cc in cb_map.items():
+                    entry[cc] = (sel == mk and mk in avail)
+                result.append(entry)
+            return pd.DataFrame(result).set_index("Vertrag")
+
+        def _render_editor(rows: list, cb_map: dict, key: str):
+            if not rows:
+                return None
+            df      = _make_cb_df(rows, cb_map)
+            non_cb  = [c for c in df.columns if c not in cb_map.values()]
+            col_cfg = {cc: st.column_config.CheckboxColumn(cc, width="small") for cc in cb_map.values()}
+            col_cfg.update({c: st.column_config.TextColumn(c) for c in _INFO_COLS if c in df.columns})
+            return st.data_editor(df, column_config=col_cfg, disabled=non_cb,
+                                  key=key, use_container_width=True)
+
+        # Two separate editors: one for mono-capable, one for einmal-capable products
+        _mono_rows = [r for r in _table_rows if r["_hat_mono"]]
+        _einz_rows = [r for r in _table_rows if r["_hat_einz"]]
+        _mono_cb   = {"fm": "🟢 Früh Mono."}
+        if any(r["_hat_spaet"] and r["_hat_mono"] for r in _table_rows):
+            _mono_cb["sm"] = "🔵 Spät Mono."
+        _einz_cb   = {"fe": "🟠 Früh Einmal"}
+        if any(r["_hat_spaet"] and r["_hat_einz"] for r in _table_rows):
+            _einz_cb["se"] = "🟡 Spät Einmal"
+
+        _edited_mono = _edited_einz = None
+        if _mono_rows:
+            st.markdown("**Monatliche Auszahlung**")
+            _edited_mono = _render_editor(_mono_rows, _mono_cb, f"rc{_rc}_vp_edit_mono")
+        if _einz_rows:
+            st.markdown("**Einmalauszahlung**")
+            _edited_einz = _render_editor(_einz_rows, _einz_cb, f"rc{_rc}_vp_edit_einz")
+
+        st.caption("Checkbox wählt Strategie für das Diagramm (eine pro Vertrag). "
+                   "Standard: früheste Einmalauszahlung; bei reinen Rentenverträgen früheste Monatsrente.")
+
+        # ── Enforcement: detect actual user change per editor, update state ───
+        _new_sels: dict[str, str | None] = dict(_curr_sels)
+
+        def _process_editor(edited_df, cb_map: dict) -> None:
+            if edited_df is None:
+                return
+            for prod_name, _row in edited_df.iterrows():
+                avail   = _avail_map.get(prod_name, set())
+                checked = {mk for mk, cc in cb_map.items()
+                           if bool(_row.get(cc, False)) and mk in avail}
+                # What this editor was expected to show (from _curr_sels)
+                prev = _curr_sels.get(prod_name)
+                expected = {mk for mk in cb_map if prev == mk and mk in avail}
+                if checked == expected:
+                    continue  # no change in this editor for this product
+                prev_set = {prev} if prev else set()
+                newly    = checked - prev_set
+                if not checked:
+                    _new_sels[prod_name] = None
+                elif len(checked) == 1:
+                    _new_sels[prod_name] = next(iter(checked))
+                else:
+                    _new_sels[prod_name] = next(iter(newly)) if newly else next(iter(checked))
+
+        _process_editor(_edited_mono, _mono_cb)
+        _process_editor(_edited_einz, _einz_cb)
 
         if _new_sels != _curr_sels:
             st.session_state[_sels_key] = _new_sels
