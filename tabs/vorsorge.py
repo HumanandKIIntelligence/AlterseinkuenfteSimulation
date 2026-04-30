@@ -835,7 +835,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     help="Summe aller Steuern und KV/PV-Beiträge über den Planungshorizont "
                          "(durch Einmal- und Monatsauszahlungen der Vorsorgeprodukte).")
 
-        # Stacked bars: Netto + Steuer + KV/PV
+        # Stacked bars: Netto → ausgewählte Monatsverträge → Steuer → KV/PV
+        # (barmode=stack; Steuer/KV werden immer auf den Gesamtbetrag berechnet)
         _SEL_COLORS = ["#1565C0","#B71C1C","#6A1B9A","#004D40","#E65100",
                        "#880E4F","#006064","#1B5E20","#F57F17","#4E342E"]
         fig_opt = go.Figure()
@@ -844,18 +845,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             marker_color="#4CAF50", customdata=_hover_opt,
             hovertemplate="<b>%{x}</b>: %{y:,.0f} € Netto<br>%{customdata}<extra>Netto</extra>",
         ))
-        fig_opt.add_trace(go.Bar(
-            name="Steuer", x=_df_opt.index, y=_df_opt["Steuer"],
-            marker_color="#EF9A9A",
-            hovertemplate="<b>%{x}</b>: %{y:,.0f} € Steuer<extra>Steuer</extra>",
-        ))
-        fig_opt.add_trace(go.Bar(
-            name="KV/PV", x=_df_opt.index, y=_df_opt["KV_PV"],
-            marker_color="#FFF176",
-            hovertemplate="<b>%{x}</b>: %{y:,.0f} € KV/PV<extra>KV/PV</extra>",
-        ))
 
-        # Selected contract lines (from checkboxes in table below)
+        # Monatlich-Verträge als farbige Balkensegmente (stacked), Einmal als Sterne
         _sel_ci = 0
         for _sp in produkte_obj:
             _mode = _curr_sels.get(_sp.name)
@@ -873,16 +864,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 _lz_s = _sp.laufzeit_jahre if _sp.laufzeit_jahre > 0 else horizon
                 _ej_s = min(_sj_s + _lz_s - 1, _max_yr_opt)
                 _val_pa = _sp.max_monatsrente * _af_s * 12
-                _xs_s = [yr for yr in _opt_years if _sj_s <= yr <= _ej_s]
-                _ys_s = [_val_pa] * len(_xs_s)
-                fig_opt.add_trace(go.Scatter(
+                _ys_bar = [_val_pa if _sj_s <= yr <= _ej_s else 0 for yr in _opt_years]
+                fig_opt.add_trace(go.Bar(
                     name=f"{_sp.name} ({_lbl_s})",
-                    x=_xs_s, y=_ys_s, mode="lines+markers",
-                    line=dict(color=_sc, width=3),
-                    marker=dict(size=6, color=_sc),
-                    hovertemplate=(f"<b>%{{x}}</b>: {_de(_sp.max_monatsrente * _af_s)} €/Mon. "
-                                   f"= {_de(_val_pa)} €/Jahr<br>{_sp.name} – {_lbl_s}"
-                                   "<extra></extra>"),
+                    x=_opt_years, y=_ys_bar,
+                    marker_color=_sc,
+                    hovertemplate=(
+                        f"<b>%{{x}}</b>: %{{y:,.0f}} €/Jahr<br>"
+                        f"{_sp.name} – {_lbl_s}<br>"
+                        f"({_de(_sp.max_monatsrente * _af_s)} €/Mon.)"
+                        "<extra></extra>"
+                    ),
                 ))
             else:
                 _val_e = _sp.max_einmalzahlung * _af_s
@@ -893,6 +885,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     hovertemplate=(f"<b>{_sj_s}</b>: {_de(_val_e)} € Einmal<br>"
                                    f"{_sp.name} – {_lbl_s}<extra></extra>"),
                 ))
+
+        # Steuer und KV/PV oben auf dem kompletten Betrag
+        fig_opt.add_trace(go.Bar(
+            name="Steuer", x=_df_opt.index, y=_df_opt["Steuer"],
+            marker_color="#EF9A9A",
+            hovertemplate="<b>%{x}</b>: %{y:,.0f} € Steuer<extra>Steuer</extra>",
+        ))
+        fig_opt.add_trace(go.Bar(
+            name="KV/PV", x=_df_opt.index, y=_df_opt["KV_PV"],
+            marker_color="#FFF176",
+            hovertemplate="<b>%{x}</b>: %{y:,.0f} € KV/PV<extra>KV/PV</extra>",
+        ))
 
         fig_opt.add_hline(
             y=_df_opt["Netto"].mean(), line_dash="dot", line_color="#2E7D32", line_width=1.5,
@@ -914,8 +918,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         )
         st.plotly_chart(fig_opt, use_container_width=True)
         st.caption(
-            "Balken = optimale Strategie (Netto/Steuer/KV). "
-            "Farbige Linien/Sterne = ausgewählte Vertragsstrategie aus der Tabelle unten. "
+            "Balken = optimale Strategie (Netto/farbige Monatsverträge/Steuer/KV). "
+            "Farbige Segmente = ausgewählte Monatsrenten aus der Tabelle unten; "
+            "Sterne = Einmalauszahlungen. Steuer+KV immer auf Gesamtbetrag. "
             "Ø-Linie = Durchschnittsnetto."
         )
 
