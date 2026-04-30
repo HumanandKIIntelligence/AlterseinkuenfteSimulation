@@ -590,7 +590,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _use_spar_pool = (_pool_tilgung or _anschluss_spar or _raten_aus_kapital) and _spkap > 0
         if _use_spar_pool:
             _spar_prod = VorsorgeProdukt(
-                id="__sparkapital__", typ="ETF", name="Sparkapital", person="Person 1",
+                id="__sparkapital__", typ="ETF", name="Kapital bei Renteneintritt", person="Person 1",
                 max_einmalzahlung=_spkap_pool_wert, max_monatsrente=0.0, laufzeit_jahre=0,
                 fruehestes_startjahr=_spkap_pool_startjahr,
                 spaetestes_startjahr=_spkap_pool_startjahr,
@@ -600,8 +600,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             )
             _produkte_obj_run.insert(0, _spar_prod)
             _produkte_dicts_run.insert(0, {
-                "id": "__sparkapital__", "typ": "ETF", "typ_label": "Sparkapital",
-                "name": "Sparkapital", "person": "Person 1",
+                "id": "__sparkapital__", "typ": "ETF", "typ_label": "Kapital bei Renteneintritt",
+                "name": "Kapital bei Renteneintritt", "person": "Person 1",
                 "max_einmalzahlung": round(_spkap),
             })
         # ── Direkte Berechnung: alle Produkte Einmal ab frühestmöglich ──────────

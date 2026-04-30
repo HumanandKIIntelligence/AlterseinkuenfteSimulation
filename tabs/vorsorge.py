@@ -806,11 +806,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _vp_sels_is_old = bool(_curr_sels) and any(
             v in _OLD_SELS_VP for v in _curr_sels.values() if v is not None
         )
+        _prod_by_name_vp = {p.name: p for p in produkte_obj}
+
         if _vp_sels_is_old:
-            _prod_by_name_mig = {p.name: p for p in produkte_obj}
             _migrated: dict[str, str | None] = {}
             for _nm_m, _sv_m in _curr_sels.items():
-                _po_m = _prod_by_name_mig.get(_nm_m)
+                _po_m = _prod_by_name_vp.get(_nm_m)
                 if _po_m is None or _sv_m is None:
                     _migrated[_nm_m] = None
                     continue
@@ -818,6 +819,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 _old_year_m = _po_m.spaetestes_startjahr if _sv_m in ("sm", "se") else _po_m.fruehestes_startjahr
                 _migrated[_nm_m] = f"{_old_year_m}_{_old_mode_m}"
             _curr_sels = _migrated
+            st.session_state[_sels_key] = _curr_sels
+
+        # Defaults beim ersten Laden setzen (vor Chart-Rendering)
+        if not _curr_sels:
+            for _p_d in produkte_obj:
+                _dm_d = "mono" if _p_d.max_monatsrente > 0 else "einmal"
+                _curr_sels[_p_d.name] = f"{_p_d.fruehestes_startjahr}_{_dm_d}"
             st.session_state[_sels_key] = _curr_sels
 
         # ── Optimale Strategie: Netto & Steuer pro Jahr ───────────────────────
@@ -875,7 +883,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             hovertemplate="<b>%{x}</b>: %{y:,.0f} € Netto<br>%{customdata}<extra>Netto</extra>",
         ))
 
-        # Monatlich-Verträge als farbige Balkensegmente (stacked), Einmal als Sterne
+        # Alle Verträge als farbige Balkensegmente (monatlich = alle Jahre, Einmal = nur Auszahlungsjahr)
         _sel_ci = 0
         for _sp in produkte_obj:
             _sel_raw = _curr_sels.get(_sp.name)
@@ -900,26 +908,26 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 _ej_s = min(_sj_s + _lz_s - 1, _max_yr_opt)
                 _val_pa = _sp.max_monatsrente * _af_s * 12
                 _ys_bar = [_val_pa if _sj_s <= yr <= _ej_s else 0 for yr in _opt_years]
-                fig_opt.add_trace(go.Bar(
-                    name=f"{_sp.name} ({_lbl_s})",
-                    x=_opt_years, y=_ys_bar,
-                    marker_color=_sc,
-                    hovertemplate=(
-                        f"<b>%{{x}}</b>: %{{y:,.0f}} €/Jahr<br>"
-                        f"{_sp.name} – {_lbl_s}<br>"
-                        f"({_de(_sp.max_monatsrente * _af_s)} €/Mon.)"
-                        "<extra></extra>"
-                    ),
-                ))
+                _hover_tpl = (
+                    f"<b>%{{x}}</b>: %{{y:,.0f}} €/Jahr<br>"
+                    f"{_sp.name} – {_lbl_s}<br>"
+                    f"({_de(_sp.max_monatsrente * _af_s)} €/Mon., Laufzeit {_sj_s}–{_ej_s})"
+                    "<extra></extra>"
+                )
             else:
                 _val_e = _sp.max_einmalzahlung * _af_s
-                fig_opt.add_trace(go.Scatter(
-                    name=f"{_sp.name} ({_lbl_s})",
-                    x=[_sj_s], y=[_val_e], mode="markers",
-                    marker=dict(size=14, symbol="star", color=_sc),
-                    hovertemplate=(f"<b>{_sj_s}</b>: {_de(_val_e)} € Einmal<br>"
-                                   f"{_sp.name} – {_lbl_s}<extra></extra>"),
-                ))
+                _ys_bar = [_val_e if yr == _sj_s else 0 for yr in _opt_years]
+                _hover_tpl = (
+                    f"<b>%{{x}}</b>: %{{y:,.0f}} € Einmalauszahlung<br>"
+                    f"{_sp.name} – {_lbl_s}"
+                    "<extra></extra>"
+                )
+            fig_opt.add_trace(go.Bar(
+                name=f"{_sp.name} ({_lbl_s})",
+                x=_opt_years, y=_ys_bar,
+                marker_color=_sc,
+                hovertemplate=_hover_tpl,
+            ))
 
         # Steuer und KV/PV oben auf dem kompletten Betrag
         fig_opt.add_trace(go.Bar(
@@ -949,19 +957,19 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 font=dict(color="#5C6BC0", size=11),
             )
         fig_opt.update_layout(
-            barmode="stack", template="plotly_white", height=420,
+            barmode="stack", template="plotly_white", height=580,
             xaxis=dict(title="Jahr", dtick=2),
             yaxis=dict(title="€ / Jahr", tickformat=",.0f"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.15, xanchor="right", x=1),
+            legend=dict(orientation="h", yanchor="bottom", y=1.1, xanchor="right", x=1),
             margin=dict(l=10, r=10, t=200, b=10),
             separators=",.",
         )
         st.plotly_chart(fig_opt, use_container_width=True)
         st.caption(
-            "Balken = optimale Strategie (Netto/farbige Monatsverträge/Steuer/KV). "
-            "Farbige Segmente = ausgewählte Monatsrenten aus der Tabelle unten; "
-            "Sterne = Einmalauszahlungen. Steuer+KV immer auf Gesamtbetrag. "
-            "Ø-Linie = Durchschnittsnetto."
+            "Balken = optimale Strategie (Netto/farbige Vertragsanteile/Steuer/KV). "
+            "Monatliche Verträge = Segment über alle Auszahlungsjahre; "
+            "Einmalauszahlungen = Segment nur im Auszahlungsjahr. "
+            "Steuer+KV immer auf Gesamtbetrag. Ø-Linie = Durchschnittsnetto."
         )
 
         st.divider()
@@ -1015,7 +1023,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             })
 
         # Default: früheste Mono wenn verfügbar, sonst früheste Einmal; Jahr = fruehestes_startjahr
-        _prod_by_name_vp = {p.name: p for p in produkte_obj}
         if not _curr_sels and _avail_map:
             _curr_sels = {}
             for _nm_d, _av_d in _avail_map.items():
