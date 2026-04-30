@@ -71,6 +71,8 @@ docker exec altereinkuenfte-app pip install pytest -q
 | `TestPensionaerBerechneErweitert` | Beamtenpension in `berechne_rente()`: Fallback auf `aktuelles_brutto_monatlich`, § 14 BeamtVG wenn Bezüge angegeben, bereits-Pensionär nutzt Direkteingabe |
 | `TestGehaltPeriodenGRV` | `gehalt_perioden` → EP in `berechne_rente()`: ohne Perioden = punkte_pro_jahr, Perioden senken EP, Elternzeit, BBG-Kappung, Pensionäre unberührt |
 | `TestGehaltPeriodenSimulation` | `gehalt_perioden` → Src_Gehalt in `_netto_ueber_horizont()`: Periodengehalt in Arbeitsjahren, keine Wirkung nach Renteneintritt |
+| `TestVorsorgeChartSteuerKV` | vorsorge.py: _df_sel liefert Netto/Steuer/KV für gewählte Entscheidungen; mono-Produkt senkt Steuer; bAV-Freibetrag KVdR; Abgeltungsteuer ETF |
+| `TestEntnahmeOptChartSteuerKV` | entnahme_opt.py: Steuer/KV spiegeln user-Selektion; mono vs. einmal; bAV-KVdR-Freibetrag |
 
 ---
 
@@ -118,9 +120,9 @@ Profil-Tab (app.py) + Mieteinnahmen
 | `tabs/auszahlung.py` | `render_section()`: Kapital-Annuität vs. externe Rente, Break-Even, Laufzeitszenarien |
 | `tabs/steuern.py` | `render_section()`: Steuerberechnung inkl. Mieteinnahmen, Besteuerungsanteil-Chart, GKV/PKV |
 | `tabs/haushalt.py` | Paarvergleich, Splitting-Vorteil, Szenario-Tabelle (nur bei Partner) |
-| `tabs/vorsorge.py` | Vertragserfassung (bAV/Riester/Rürup/LV/ETF), Steueroptimierung |
+| `tabs/vorsorge.py` | Vertragserfassung (bAV/Riester/Rürup/LV/ETF), Steueroptimierung; Netto/Steuer/KV-Balken via `_df_sel` (user-Selektion); geteilter data_editor (mono+einmal vs. nur eine Option) |
 | `tabs/hypothek.py` | `render_section()`: Hypothek-Eingabe, Tilgungsplan, `get_ausgaben_plan()`, `_validate_hyp()` |
-| `tabs/entnahme_opt.py` | Steuer-Steckbrief, Auszahlungsoptimierung, Jahresverlauf, Pool-Verlauf, Kapitalverzehr-Expander |
+| `tabs/entnahme_opt.py` | Steuer-Steckbrief, Auszahlungsoptimierung, Jahresverlauf, Pool-Verlauf, Kapitalverzehr-Expander; Sparkapital nur in Kapital-Zeitleiste (kein synthetisches VorsorgeProdukt) |
 | `tabs/dokumentation.py` | Statische Erläuterungsseite |
 
 ### engine.py – wichtige Funktionen
@@ -406,6 +408,33 @@ Checkbox "Reale Werte (inflationsbereinigt)" + `number_input` "Inflation p.a. %"
 ## Zwei-Strategie-Vergleich (entnahme_opt.py)
 
 Expander "📊 Zwei-Strategie-Vergleich" nach dem Jahresverlauf-Chart. Selectbox für Vergleichsstrategie (Monatlich/Einmal × frühest/spätestmöglich). Führt `_netto_ueber_horizont()` direkt mit fixen Entscheidungen aus (ohne Brute-Force). Zeigt zwei Netto-Linien (Optimal grün / Vergleich blau gestrichelt) und Differenzsumme. Berücksichtigt real-Werte-Toggle.
+
+## Sparkapital in der Kapital-Zeitleiste (entnahme_opt.py)
+
+Das Sparkapital aus dem Profil (`profil.sparkapital`) wird **ausschließlich in der Kapital-Zeitleiste** dargestellt – es wird **nicht** als synthetisches `VorsorgeProdukt` (`_spar_prod` / `id="__sparkapital__"`) in `_netto_ueber_horizont` injiziert. Die Annuität (`ergebnis.kapital_monatlich`) ist bereits im `ergebnis`-Objekt enthalten und fließt über den normalen `berechne_rente()`-Pfad in das Nettoeinkommen ein.
+
+`_p1_kap()` in der Kapital-Zeitleiste zeigt post-Renteneintritt den annuitätsbasierten Kapitalverzehr:
+```python
+kapitalwachstum(_spkap, -ergebnis_eo.kapital_monatlich, _spkap_rendite, max(0, j - _spkap_eintritt_j))
+```
+
+## Steuer- und KV-Verlauf (entnahme_opt.py)
+
+Der erste Balken im Chart heißt **"ESt + Soli"** und verwendet `df_jd["Steuer"] - df_jd["Steuer_Abgeltung"]`, **nicht** `df_jd["Steuer_Progressiv"]`. Grund: `Steuer_Progressiv` enthält nur die reine §32a-ESt ohne Solidaritätszuschlag; `Steuer - Abgeltung` = ESt + Soli + KiSt und stimmt mit den anderen Charts (`Steuer`-Spalte) überein. Der Abgeltungsteuer-Balken erscheint nur wenn `df_jd["Steuer_Abgeltung"].sum() > 0`.
+
+## Abweichungs-Ampeln im Entnahmen-Expander (entnahme_opt.py)
+
+Die "Abweichung"-Spalte in der Entnahmen-Empfehlungs-Tabelle zeigt:
+- 🔴 wenn `_abw_val < _mindest_j_topup` (verfügbares Einkommen unter Mindesthaushalt)
+- 🟢 wenn `_abw_val >= _mindest_j_topup` (Mindesthaushalt erreicht oder überschritten)
+
+`_abw_val = round(_base_netto_eo + _manual_w_eo)` wobei `_base_netto_eo = Netto - auto_annuity - hyp_rate - Mindesthaushalt`.
+
+## vorsorge.py – Netto/Steuer/KV aus Nutzer-Selektion
+
+Netto/Steuer/KV-Balken im "Optimale Strategie"-Chart verwenden `_df_sel` (Ergebnis eines eigenen `_netto_ueber_horizont`-Aufrufs mit den aktuellen `_curr_sels`-Entscheidungen des Nutzers), nicht `_df_opt` des Optimierers. So spiegeln alle drei Balken die tatsächlich gewählte Auszahlungsart wider.
+
+`_entsch_anteil(prod)` in `entnahme_opt.py` bestimmt den `anteil` (0.0 = mono, 1.0 = einmal) für Produkte ohne Tabelleneintrag: mono wenn `max_monatsrente > 0`, einmal sonst.
 
 ## Widget-Key-Namensraum
 

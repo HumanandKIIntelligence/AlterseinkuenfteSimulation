@@ -77,7 +77,7 @@ docker compose logs -f
 docker exec altereinkuenfte-app python -m pytest tests/ -v
 ```
 
-Alle Berechnungslogiken in `engine.py` sind durch Unit-Tests abgedeckt (336 Tests).
+Alle Berechnungslogiken in `engine.py` sind durch Unit-Tests abgedeckt (304 Tests).
 
 ## Projektstruktur
 

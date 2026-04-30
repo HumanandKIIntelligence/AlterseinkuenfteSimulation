@@ -175,6 +175,10 @@ Checkbox „Als Kapitalanlage reinvestieren": Die Einmalauszahlung wird nicht di
 
 **Rendite-Priorität:** Produktspezifische Rendite → Profilweite Pool-Rendite → allgemeine Profil-Rendite.
 
+### Steuer/KV aus Nutzer-Selektion
+
+Die Balken "Netto", "Steuer" und "KV/PV" im Optimale-Strategie-Chart spiegeln die tatsächlich gewählte Auszahlungsart jedes Produkts wider (monatliche Rente vs. Einmalauszahlung). Die Auswahl erfolgt über die interaktive Tabelle im gleichen Abschnitt.
+
 ### Strategievergleich
 
 5-Säulen-Balkendiagramm: Frühest monatlich, Frühest einmal, Spätestens monatlich, Spätestens einmal, Optimal.
@@ -196,6 +200,27 @@ Suche über alle Kombinationen aus:
 Ziel: Maximierung des durchschnittlichen monatlichen Nettoeinkommens über den Planungshorizont.
 
 **Referenzstrategien** für Vergleich: alle Produkte frühestmöglich monatlich, frühestmöglich einmal, spätestmöglich monatlich, spätestmöglich einmal. Die optimale Strategie ist stets ≥ jeder Referenzstrategie.
+
+### Steuer- und KV-Verlauf
+
+Gestapeltes Balkendiagramm mit drei Komponenten:
+- **ESt + Soli** (pink): Einkommensteuer §32a EStG + Solidaritätszuschlag §51a EStG + ggf. Kirchensteuer — entspricht der `Steuer`-Spalte abzüglich Abgeltungsteuer
+- **Abgeltungsteuer** (hellrot): Nur sichtbar wenn Kapitalerträge abgeltungsteuerpflichtig sind
+- **KV/PV** (gelb): Kranken- und Pflegeversicherungsbeiträge
+
+Der Hover zeigt je Balken den Jahresbetrag. Der zvE-Verlauf wird als gestrichelte Linie auf der rechten Achse eingeblendet.
+
+### Kapital-Zeitleiste
+
+Zeigt das Sparkapital (aus dem Profil) als sich über die Zeit entwickelnde Linie. Vor Renteneintritt: Wachstum mit Sparrate. Ab Renteneintritt: annuitätsbasierter Kapitalverzehr (monatliche Entnahme = `kapital_monatlich` aus `berechne_rente()`). Zusätzlich: Kapitalanlage-Pools einzelner Vorsorgeprodukte (als_kapitalanlage=True) als separate Linien.
+
+### Empfehlungen Kapital-Entnahmen
+
+Tabelle mit Jahreszeilen: Frei verfügbares Einkommen, Mindesthaushalt, Abweichung. Manuelle Pool-Entnahmen können direkt eingetragen werden.
+
+**Ampeln in der Abweichungs-Spalte:**
+- 🟢 Mindesthaushalt erreicht oder überschritten
+- 🔴 Einkommen unter Mindesthaushalt (auch nach Pool-Entnahme)
 
 ### Jahresverlauf
 
