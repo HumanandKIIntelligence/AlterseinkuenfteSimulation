@@ -1656,11 +1656,27 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                                                j - AKTUELLES_JAHR)
                     return kapitalwachstum(_spkap, 0.0, _spkap_rendite, max(0, j - _spkap_eintritt_j))
 
+                # Reconstruct product-pool trajectory independently:
+                # • grows by rendite • injected via Kap_Injektion • auto-annuity subtracted
+                # • manual withdrawals subtracted • hypothek (Sonderausgabe) NOT subtracted
+                _all_pids_kap = _p1_pool_pids + _p2_pool_pids
+                _rpool_bal = 0.0
+                _rpool_series: dict[int, float] = {}
+                for _j in sorted(_all_yrs_kap):
+                    _rpool_bal *= (1.0 + _spkap_rendite)
+                    _inj_j = float(df_jd.at[_j, "Kap_Injektion"]) if "Kap_Injektion" in df_jd.columns and _j in df_jd.index else 0.0
+                    _rpool_bal += _inj_j
+                    _ann_j = sum(
+                        float(df_jd.at[_j, f"Src_Kap_{_pid}"])
+                        for _pid in _all_pids_kap
+                        if f"Src_Kap_{_pid}" in df_jd.columns and _j in df_jd.index
+                    )
+                    _rpool_bal = max(0.0, _rpool_bal - _ann_j - _manual_withdrawals.get(_j, 0.0))
+                    _rpool_series[_j] = _rpool_bal
+                _rpool_pd = pd.Series(_rpool_series).reindex(_all_yrs_kap, fill_value=0.0)
+
                 _df_kap = pd.Series([_p1_kap(j) for j in _all_yrs_kap], index=_all_yrs_kap)
-                for _pid in _p1_pool_pids:
-                    _c = f"Kap_Pool_{_pid}"
-                    if _c in df_jd.columns:
-                        _df_kap = _df_kap + df_jd[_c].reindex(_all_yrs_kap, fill_value=0)
+                _df_kap = _df_kap + _rpool_pd
 
                 if _hat_partner_kap:
                     def _p2_kap(j: int) -> float:
@@ -1674,10 +1690,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         return kapitalwachstum(_spkap2, 0.0, _spkap2_rendite,
                                                max(0, j - _spkap2_eintritt_j))
                     _p2_series = pd.Series([_p2_kap(j) for j in _all_yrs_kap], index=_all_yrs_kap)
-                    for _pid in _p2_pool_pids:
-                        _c = f"Kap_Pool_{_pid}"
-                        if _c in df_jd.columns:
-                            _p2_series = _p2_series + df_jd[_c].reindex(_all_yrs_kap, fill_value=0)
+                    # P2 product pools already included in _rpool_pd
                     _df_kap = _df_kap + _p2_series
                     _p1_post_series_gesamt = _df_kap
                     _p2_post_series_gesamt = pd.Series(0.0, index=_all_yrs_kap)

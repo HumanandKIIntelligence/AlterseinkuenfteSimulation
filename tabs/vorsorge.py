@@ -827,15 +827,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _total_kv      = _df_opt["KV_PV"].sum()
         _total_netto   = _df_opt["Netto"].sum()
         _overhead_pct  = (_total_steuer + _total_kv) / max(1, _total_steuer + _total_kv + _total_netto) * 100
-        _vorteil_mono  = opt["bestes_netto"] - opt["netto_alle_monatlich"]
-
         _km1, _km2, _km3, _km4 = st.columns(4)
         _km1.metric("Ø Netto/Mon. (optimal)", f"{_de(_avg_netto_mon)} €")
         _km2.metric(f"Steuer gesamt ({horizon} J.)", f"{_de(_total_steuer)} €")
         _km3.metric("Steuer+KV-Anteil am Brutto", f"{_overhead_pct:.1f} %")
-        _s_v = "+" if _vorteil_mono >= 0 else ""
-        _km4.metric("Vorteil vs. alles Monatlich früh", f"{_s_v}{_de(_vorteil_mono)} €",
-                    delta_color="normal")
+        _km4.metric(f"Steuer+KV gesamt ({horizon} J.)", f"{_de(_total_steuer + _total_kv)} €",
+                    help="Summe aller Steuern und KV/PV-Beiträge über den Planungshorizont "
+                         "(durch Einmal- und Monatsauszahlungen der Vorsorgeprodukte).")
 
         # Stacked bars: Netto + Steuer + KV/PV
         _SEL_COLORS = ["#1565C0","#B71C1C","#6A1B9A","#004D40","#E65100",
