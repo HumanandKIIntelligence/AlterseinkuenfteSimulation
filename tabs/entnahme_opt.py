@@ -891,6 +891,91 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     if _new_sels != _old_sels_copy:
                         st.rerun()
 
+        # ── Frühe Definitionen für Empfehlung-von-Entnahmen-Block ────────────
+        df_jd = pd.DataFrame(_eff_jd_raw).set_index("Jahr")
+        _has_pool_data = (
+            "Kap_Injektion" in df_jd.columns and df_jd["Kap_Injektion"].sum() > 0
+        )
+        _mindest_mono = st.session_state.get("mindest_haushalt_mono", 0)
+        _mindest_j_topup = _mindest_mono * 12
+        _manual_w_key = "pool_topup_withdrawals"
+        _manual_withdrawals: dict[int, float] = dict(st.session_state.get(_manual_w_key, {}))
+
+        # ── Empfehlungen von Entnahmen direkt nach Empfehlungen zur Auszahlung ─
+        with st.expander("💰 Empfehlungen von Entnahmen aus dem Kapitalpool zur Aufstockung des Nettogehaltes", expanded=(_mindest_j_topup > 0 and _has_pool_data)):
+            if _mindest_mono == 0:
+                st.info("Bitte Mindesthaushaltsbetrag im Tab 👥 Haushalt → Mindesthaushaltsbetrag festlegen.")
+            elif not _has_pool_data:
+                st.info("Kein Kapitalpool aktiv. Aktiviere 'In Kapitalpool einzahlen' für mindestens ein Vorsorgeprodukt im Tab 🏦 Vorsorge-Bausteine.")
+            else:
+                st.caption(
+                    f"Mindesthaushaltsbetrag: **{_de(_mindest_mono)} €/Mon.** = **{_de(_mindest_j_topup)} €/Jahr**. "
+                    "Trage gewünschte Entnahmen aus dem Kapitalpool ein. "
+                    "Positive Abweichung (grün) = Ziel erreicht, negative (rot) = Nachsteuerung nötig."
+                )
+                _pool_rendite = getattr(_profil_eo, "kap_pool_rendite_pa", -1.0)
+                if _pool_rendite < 0:
+                    _pool_rendite = getattr(_profil_eo, "rendite_pa", 0.03)
+                _topup_rows_eo = []
+                _pool_bal_eo = 0.0
+                for _tj in sorted(df_jd.index):
+                    _inj_eo = float(df_jd.loc[_tj, "Kap_Injektion"]) if "Kap_Injektion" in df_jd.columns else 0.0
+                    _pool_bal_eo = (_pool_bal_eo * (1 + _pool_rendite)) + _inj_eo
+                    _netto_j_eo = float(df_jd.loc[_tj, "Netto"]) if "Netto" in df_jd.columns else 0.0
+                    _auto_annuity_eo = float(df_jd.loc[_tj, "Src_Kapitalverzehr"]) if "Src_Kapitalverzehr" in df_jd.columns else 0.0
+                    _hyp_rate_eo = _ausgaben_plan.get(_tj, 0.0)
+                    _base_netto_eo = _netto_j_eo - _auto_annuity_eo - _hyp_rate_eo - _mindest_j_topup
+                    _manual_w_eo = _manual_withdrawals.get(_tj, 0.0)
+                    _pool_bal_eo = max(0.0, _pool_bal_eo - _manual_w_eo)
+                    _topup_rows_eo.append({
+                        "Jahr": _tj,
+                        "Entnahme aus Pool (€)": _manual_w_eo if _manual_w_eo > 0 else None,
+                        "Frei nach Mindest+Hyp. (€)": round(_base_netto_eo),
+                        "Mindesthaushalt (€/Jahr)": _mindest_j_topup,
+                        "Abweichung (€)": round(_base_netto_eo + _manual_w_eo),
+                        "Pool-Bestand (€)": round(_pool_bal_eo),
+                    })
+                _topup_df_eo = pd.DataFrame(_topup_rows_eo)
+
+                def _color_abw_eo(val):
+                    if pd.isna(val):
+                        return ""
+                    return f"font-weight: bold; {'color: green' if val >= 0 else 'color: red'}"
+
+                _tu_ver_eo = sum(int(j) * 1000 + int(_manual_withdrawals.get(j, 0)) for j in sorted(df_jd.index))
+                _edited_tu_eo = st.data_editor(
+                    _topup_df_eo,
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"rc{_rc}_topup_editor_eo_{_tu_ver_eo}",
+                    disabled=["Jahr", "Frei nach Mindest+Hyp. (€)", "Mindesthaushalt (€/Jahr)", "Abweichung (€)", "Pool-Bestand (€)"],
+                    column_config={
+                        "Jahr": st.column_config.NumberColumn("Jahr", format="%d"),
+                        "Entnahme aus Pool (€)": st.column_config.NumberColumn(
+                            "Entnahme aus Pool (€)", min_value=0.0, max_value=5_000_000.0,
+                            format="%.0f", step=1_000.0,
+                            help="Gewünschte manuelle Entnahme aus dem Kapitalpool in diesem Jahr.",
+                        ),
+                        "Frei nach Mindest+Hyp. (€)": st.column_config.NumberColumn(
+                            "Frei nach Mindest+Hyp. (€)", format="%.0f",
+                            help="Netto (ohne Pool-Automatik) − Hypothekenrate − Mindesthaushalt. Entspricht der gelben Linie im Diagramm.",
+                        ),
+                        "Mindesthaushalt (€/Jahr)": st.column_config.NumberColumn("Mindesthaushalt (€/Jahr)", format="%.0f"),
+                        "Abweichung (€)": st.column_config.NumberColumn("Abweichung (€)", format="%.0f",
+                            help="Frei nach Mindest+Hyp. + Pool-Entnahme. Positiv = Ziel erreicht."),
+                        "Pool-Bestand (€)": st.column_config.NumberColumn("Pool-Bestand (€)", format="%.0f"),
+                    },
+                )
+                _new_mw_eo: dict[int, float] = {}
+                for _, _tu_row_eo in _edited_tu_eo.iterrows():
+                    _j_tu_eo = int(_tu_row_eo["Jahr"])
+                    _w_tu_eo = _tu_row_eo.get("Entnahme aus Pool (€)")
+                    if pd.notna(_w_tu_eo) and float(_w_tu_eo) > 0:
+                        _new_mw_eo[_j_tu_eo] = float(_w_tu_eo)
+                if _new_mw_eo != _manual_withdrawals:
+                    st.session_state[_manual_w_key] = _new_mw_eo
+                    st.rerun()
+
         st.divider()
 
         # ── Jahresverlauf nach Einkommensquelle ───────────────────────────────
@@ -909,7 +994,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 disabled=not _real_toggle,
                 help="Jährliche Inflationsrate für Kaufkraftkorrektur.",
             ) if _real_toggle else 2.0
-        df_jd = pd.DataFrame(_eff_jd_raw).set_index("Jahr")
         if _any_spaet:
             _ov_desc = " · ".join(
                 f"**{pn.rsplit('(', 1)[0].strip()}** spät"
@@ -1072,9 +1156,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             # Für y2-Skalenberechnung: Maximum aus Einzahlung und manuelle Entnahmen
             _pf_abs = {j: max(_pf_inj[j], _pf_vzr_manual.get(j, 0.0)) for j in _pf_all_yrs}
 
+            # Pool-Einzahlung nur anzeigen wenn Früh/Spät-Checkbox aktiv
+            _any_sels = any(v is not None for v in _sels.values())
             # Jahre mit Einzahlung: Balken links (x - 0.2), teal
             _pf_inj_yrs = [j for j in _pf_all_yrs if _pf_inj[j] > 0]
-            if _pf_inj_yrs:
+            if _pf_inj_yrs and _any_sels:
                 def _pf_inj_hover(j):
                     parts = [f"Pool-Einzahlung: {_de(_pf_inj[j])} €"]
                     ki_det = "<br>".join(_einmal_info_kapital.get(j, []))
@@ -1185,6 +1271,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     line=dict(color="#FF6F00", width=2, dash="dot"),
                     hovertemplate="%{x}: %{y:,.0f} € nach Anschlusskredit<extra></extra>",
                 ))
+        # Gelbe Linie: frei verfügbares Einkommen nach Mindesthaushalt + Hypothek
+        if _mindest_j_line > 0:
+            _yel_yrs = list(df_jd.index)
+            _yel_ys = [
+                df_jd.loc[yr, "Netto"] - _ausgaben_plan.get(yr, 0.0) - _mindest_j_line
+                for yr in _yel_yrs
+            ]
+            fig_src.add_trace(go.Scatter(
+                name="Frei nach Mindest+Hyp.",
+                x=_yel_yrs, y=_yel_ys,
+                mode="lines+markers",
+                line=dict(color="#F9A825", width=2, dash="dash"),
+                hovertemplate="%{x}: %{y:,.0f} € frei nach Mindesthaushalt + Hyp.<extra>Frei nach Mindest+Hyp.</extra>",
+            ))
         if not _profil_eo.bereits_rentner:
             _vline_label_src = "P1 Renteneintritt" if _profil2_eo else "Renteneintritt"
             fig_src.add_vline(
@@ -1315,87 +1415,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     "**Tipp:** Wie hoch die jährliche Pool-Entnahme ist, hängt vom Planungshorizont "
                     "(Slider oben) und der Pool-Rendite im Tab ⚙️ Profil → Erweiterte Einstellungen ab."
                 )
-
-        # ── Mindesthaushaltsbetrag und Pool-Aufstockungsempfehlungen ────────
-        _mindest_j_topup = _mindest_mono * 12
-
-        with st.expander("💰 Empfehlungen von Entnahmen aus dem Kapitalpool zur Aufstockung des Nettogehaltes", expanded=(_mindest_j_topup > 0 and _has_pool_data)):
-            if _mindest_mono == 0:
-                st.info("Bitte Mindesthaushaltsbetrag im Tab 👥 Haushalt → Mindesthaushaltsbetrag festlegen.")
-            elif not _has_pool_data:
-                st.info("Kein Kapitalpool aktiv. Aktiviere 'In Kapitalpool einzahlen' für mindestens ein Vorsorgeprodukt im Tab 🏦 Vorsorge-Bausteine.")
-            else:
-                st.caption(
-                    f"Mindesthaushaltsbetrag: **{_de(_mindest_mono)} €/Mon.** = **{_de(_mindest_j_topup)} €/Jahr**. "
-                    "Trage gewünschte Entnahmen aus dem Kapitalpool ein. "
-                    "Positive Abweichung (grün) = Ziel erreicht, negative (rot) = Nachsteuerung nötig."
-                )
-
-                # Pool-Bestand berechnen (Kap_Injektion kumuliert, minus manuelle Entnahmen)
-                _pool_rendite = getattr(_profil_eo, "kap_pool_rendite_pa", -1.0)
-                if _pool_rendite < 0:
-                    _pool_rendite = getattr(_profil_eo, "rendite_pa", 0.03)
-
-                _topup_rows = []
-                _pool_bal = 0.0
-                for _tj in sorted(df_jd.index):
-                    _inj = float(df_jd.loc[_tj, "Kap_Injektion"]) if "Kap_Injektion" in df_jd.columns else 0.0
-                    _pool_bal = (_pool_bal * (1 + _pool_rendite)) + _inj
-                    _netto_j = float(df_jd.loc[_tj, "Netto"]) if "Netto" in df_jd.columns else 0.0
-                    _auto_annuity = float(df_jd.loc[_tj, "Src_Kapitalverzehr"]) if "Src_Kapitalverzehr" in df_jd.columns else 0.0
-                    _base_netto_j = _netto_j - _auto_annuity  # Netto ohne Pool-Automatik
-                    _manual_w_tu = _manual_withdrawals.get(_tj, 0.0)
-                    _pool_bal = max(0.0, _pool_bal - _manual_w_tu)
-                    _abw = _base_netto_j + _manual_w_tu - _mindest_j_topup
-                    _topup_rows.append({
-                        "Jahr": _tj,
-                        "Entnahme aus Pool (€)": _manual_w_tu if _manual_w_tu > 0 else None,
-                        "Netto ohne Pool (€)": round(_base_netto_j),
-                        "Mindesthaushaltsgeld (€)": _mindest_j_topup,
-                        "Abweichung (€)": round(_abw),
-                        "Pool-Bestand (€)": round(_pool_bal),
-                    })
-
-                _topup_df = pd.DataFrame(_topup_rows)
-
-                def _color_abw(val):
-                    if pd.isna(val):
-                        return ""
-                    color = "color: green" if val >= 0 else "color: red"
-                    return f"font-weight: bold; {color}"
-
-                _tu_ver = sum(int(j) * 1000 + int(_manual_withdrawals.get(j, 0)) for j in sorted(df_jd.index))
-                _edited_tu = st.data_editor(
-                    _topup_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    key=f"rc{_rc}_topup_editor_{_tu_ver}",
-                    disabled=["Jahr", "Netto ohne Pool (€)", "Mindesthaushaltsgeld (€)", "Abweichung (€)", "Pool-Bestand (€)"],
-                    column_config={
-                        "Jahr": st.column_config.NumberColumn("Jahr", format="%d"),
-                        "Entnahme aus Pool (€)": st.column_config.NumberColumn(
-                            "Entnahme aus Pool (€)",
-                            min_value=0.0, max_value=5_000_000.0,
-                            format="%.0f", step=1_000.0,
-                            help="Gewünschte manuelle Entnahme aus dem Kapitalpool in diesem Jahr.",
-                        ),
-                        "Netto ohne Pool (€)": st.column_config.NumberColumn("Netto ohne Pool (€)", format="%.0f"),
-                        "Mindesthaushaltsgeld (€)": st.column_config.NumberColumn("Mindesthaushalt (€/Jahr)", format="%.0f"),
-                        "Abweichung (€)": st.column_config.NumberColumn("Abweichung (€)", format="%.0f"),
-                        "Pool-Bestand (€)": st.column_config.NumberColumn("Pool-Bestand (€)", format="%.0f"),
-                    },
-                )
-
-                # Neue manuelle Entnahmen aus Editor übernehmen
-                _new_mw: dict[int, float] = {}
-                for _, _tu_row in _edited_tu.iterrows():
-                    _j_tu = int(_tu_row["Jahr"])
-                    _w_tu = _tu_row.get("Entnahme aus Pool (€)")
-                    if pd.notna(_w_tu) and float(_w_tu) > 0:
-                        _new_mw[_j_tu] = float(_w_tu)
-                if _new_mw != _manual_withdrawals:
-                    st.session_state[_manual_w_key] = _new_mw
-                    st.rerun()
 
         # ── Hypothek-Tilgung: Status-Meldungen ───────────────────────────────
         if _hat_sonder and _rs > 0:
