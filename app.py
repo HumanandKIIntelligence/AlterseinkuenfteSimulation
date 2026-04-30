@@ -739,6 +739,8 @@ def _apply_loaded_session(data: dict) -> None:
         st.session_state["pool_topup_withdrawals"] = {
             int(k): float(v) for k, v in data["pool_topup_withdrawals"].items()
         }
+    if data.get("vp_sels"):
+        st.session_state[f"rc{_rc_cur}_vp_sels"] = data["vp_sels"]
 
 
 def _sidebar_save(profil1: Profil, profil2, veranlagung: str,
@@ -758,6 +760,7 @@ def _sidebar_save(profil1: Profil, profil2, veranlagung: str,
                 hyp_daten=st.session_state.get("hyp_daten"),
                 eo_hvp_sels=st.session_state.get(f"rc{_RC}_hvp_sels", {}),
                 pool_topup_withdrawals=st.session_state.get("pool_topup_withdrawals", {}),
+                vp_sels=st.session_state.get(f"rc{_RC}_vp_sels", {}),
             )
             st.sidebar.success(f"Gespeichert: {pfad}")
 

@@ -788,8 +788,37 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         # ── Session state for per-contract strategy selection ─────────────────
         _sels_key = f"rc{_rc}_vp_sels"
-        # dict: product_name -> "fm"|"sm"|"fe"|"se"|None
+        # dict: product_name -> "YYYY_mono"|"YYYY_einmal"|None
         _curr_sels: dict[str, str | None] = dict(st.session_state.get(_sels_key, {}))
+
+        _OLD_SELS_VP = {"fm", "sm", "fe", "se"}
+
+        def _parse_sel_vp(val) -> tuple[int | None, str]:
+            if val is None:
+                return None, "einmal"
+            try:
+                _parts = str(val).rsplit("_", 1)
+                return int(_parts[0]), _parts[1] if len(_parts) > 1 else "einmal"
+            except (ValueError, IndexError):
+                return None, "einmal"
+
+        # Migrate old format to "YYYY_mono"/"YYYY_einmal"
+        _vp_sels_is_old = bool(_curr_sels) and any(
+            v in _OLD_SELS_VP for v in _curr_sels.values() if v is not None
+        )
+        if _vp_sels_is_old:
+            _prod_by_name_mig = {p.name: p for p in produkte_obj}
+            _migrated: dict[str, str | None] = {}
+            for _nm_m, _sv_m in _curr_sels.items():
+                _po_m = _prod_by_name_mig.get(_nm_m)
+                if _po_m is None or _sv_m is None:
+                    _migrated[_nm_m] = None
+                    continue
+                _old_mode_m = "mono" if _sv_m in ("fm", "sm") else "einmal"
+                _old_year_m = _po_m.spaetestes_startjahr if _sv_m in ("sm", "se") else _po_m.fruehestes_startjahr
+                _migrated[_nm_m] = f"{_old_year_m}_{_old_mode_m}"
+            _curr_sels = _migrated
+            st.session_state[_sels_key] = _curr_sels
 
         # ── Optimale Strategie: Netto & Steuer pro Jahr ───────────────────────
         st.subheader("Optimale Strategie – Netto und Steuerbelastung pro Jahr")
@@ -849,18 +878,24 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         # Monatlich-Verträge als farbige Balkensegmente (stacked), Einmal als Sterne
         _sel_ci = 0
         for _sp in produkte_obj:
-            _mode = _curr_sels.get(_sp.name)
-            if not _mode:
+            _sel_raw = _curr_sels.get(_sp.name)
+            if not _sel_raw:
+                continue
+            _sj_s, _mode_s = _parse_sel_vp(_sel_raw)
+            if _sj_s is None:
                 continue
             _sc = _SEL_COLORS[_sel_ci % len(_SEL_COLORS)]
             _sel_ci += 1
-            _use_spaet = _mode in ("sm", "se")
-            _sj_s = _sp.spaetestes_startjahr if _use_spaet else _sp.fruehestes_startjahr
-            _d_s  = _sj_s - _sp.fruehestes_startjahr
+            _d_s  = max(0, _sj_s - _sp.fruehestes_startjahr)
             _af_s = (1 + _sp.aufschub_rendite) ** _d_s
-            _lbl_s = {"fm": "frühest monatlich", "sm": "spätest monatlich",
-                      "fe": "frühest Einmal", "se": "spätest Einmal"}[_mode]
-            if _mode in ("fm", "sm"):
+            if _sj_s <= _sp.fruehestes_startjahr:
+                _timing_lbl = "frühest"
+            elif _sj_s >= _sp.spaetestes_startjahr:
+                _timing_lbl = "spätest"
+            else:
+                _timing_lbl = f"ab {_sj_s}"
+            _lbl_s = f"{_timing_lbl} {'monatlich' if _mode_s == 'mono' else 'Einmal'}"
+            if _mode_s == "mono":
                 _lz_s = _sp.laufzeit_jahre if _sp.laufzeit_jahre > 0 else horizon
                 _ej_s = min(_sj_s + _lz_s - 1, _max_yr_opt)
                 _val_pa = _sp.max_monatsrente * _af_s * 12
@@ -906,14 +941,19 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         if not profil.bereits_rentner:
             fig_opt.add_vline(
                 x=profil.eintritt_jahr, line_width=2, line_dash="dash", line_color="#5C6BC0",
-                annotation_text="Renteneintritt", annotation_position="top right",
+            )
+            fig_opt.add_annotation(
+                x=profil.eintritt_jahr, y=1.04, yref="paper",
+                text="Renteneintritt", showarrow=False,
+                xanchor="left", yanchor="bottom",
+                font=dict(color="#5C6BC0", size=11),
             )
         fig_opt.update_layout(
             barmode="stack", template="plotly_white", height=420,
             xaxis=dict(title="Jahr", dtick=2),
             yaxis=dict(title="€ / Jahr", tickformat=",.0f"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            margin=dict(l=10, r=10, t=40, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.15, xanchor="right", x=1),
+            margin=dict(l=10, r=10, t=200, b=10),
             separators=",.",
         )
         st.plotly_chart(fig_opt, use_container_width=True)
@@ -974,57 +1014,66 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "_hat_spaet":  hat_spaet_p,
             })
 
-        # Default: früheste Mono wenn verfügbar, sonst früheste Einmal
+        # Default: früheste Mono wenn verfügbar, sonst früheste Einmal; Jahr = fruehestes_startjahr
+        _prod_by_name_vp = {p.name: p for p in produkte_obj}
         if not _curr_sels and _avail_map:
-            _curr_sels = {
-                nm: ("fm" if "fm" in av else "fe" if "fe" in av else None)
-                for nm, av in _avail_map.items()
-            }
+            _curr_sels = {}
+            for _nm_d, _av_d in _avail_map.items():
+                _po_d = _prod_by_name_vp.get(_nm_d)
+                if _po_d is None:
+                    continue
+                _dm_d = "mono" if "fm" in _av_d else "einmal" if "fe" in _av_d else None
+                if _dm_d:
+                    _curr_sels[_nm_d] = f"{_po_d.fruehestes_startjahr}_{_dm_d}"
             st.session_state[_sels_key] = _curr_sels
 
         _INFO_COLS = ["Typ", "Person", "Einmal (Total / Mon.)", "Monatlich (Total)",
                       "Kombiniert (Total)", "Einfach-Empfehlung ✅"]
 
-        # Build unified table rows for one data_editor
+        # Build unified table rows
         _unified_rows = []
         for r in _table_rows:
             prod_name = r["Vertrag"]
             sel       = _curr_sels.get(prod_name)
-            avail     = _avail_map[prod_name]
+            _po_r     = _prod_by_name_vp.get(prod_name)
+            _sel_yr, _sel_mode = _parse_sel_vp(sel)
+            _yr_val = _sel_yr if _sel_yr is not None else (
+                _po_r.fruehestes_startjahr if _po_r else 0)
+            _hat_mono_r = r["_hat_mono"]
             entry = {"Vertrag": prod_name}
             for c in _INFO_COLS:
                 entry[c] = r[c]
-            entry["Auszahlung"]    = "Spätestens" if sel in ("sm", "se") else "Frühestens"
-            entry["Montl. Ja/Nein"] = bool(sel in ("fm", "sm") and ("fm" in avail or "sm" in avail))
-            entry["Einmal Ja/Nein"] = bool(sel in ("fe", "se") and ("fe" in avail or "se" in avail))
+            entry["Früh"]             = _po_r.fruehestes_startjahr if _po_r else 0
+            entry["Spät"]             = _po_r.spaetestes_startjahr if _po_r else 0
+            entry["Auszahlungsjahr"]  = int(_yr_val)
+            entry["Montl. Auszahlung"] = bool(_sel_mode == "mono" and _hat_mono_r)
             _unified_rows.append(entry)
 
-        _EDIT_COLS = ("Auszahlung", "Montl. Ja/Nein", "Einmal Ja/Nein")
-        _non_cb    = [c for c in (["Vertrag"] + _INFO_COLS) if True]  # all info cols disabled
+        _EDIT_COLS_VP = ("Auszahlungsjahr", "Montl. Auszahlung")
+        _non_cb_vp    = ["Vertrag"] + _INFO_COLS + ["Früh", "Spät"]
 
         _col_cfg_uni: dict = {c: st.column_config.TextColumn(c) for c in _INFO_COLS}
-        _col_cfg_uni["Auszahlung"] = st.column_config.SelectboxColumn(
-            "Auszahlung", options=["Frühestens", "Spätestens"],
-            help="Frühest- oder spätestmöglicher Auszahlungszeitpunkt.",
+        _col_cfg_uni["Früh"] = st.column_config.NumberColumn(
+            "Früh", format="%d", help="Frühestmögliches Auszahlungsjahr.")
+        _col_cfg_uni["Spät"] = st.column_config.NumberColumn(
+            "Spät", format="%d", help="Spätestmögliches Auszahlungsjahr.")
+        _col_cfg_uni["Auszahlungsjahr"] = st.column_config.NumberColumn(
+            "Auszahlungsjahr", min_value=2020, max_value=2099, step=1, format="%d",
+            help="Auszahlungsjahr – muss zwischen Früh und Spät liegen.",
         )
-        _col_cfg_uni["Montl. Ja/Nein"] = st.column_config.CheckboxColumn(
-            "Montl. Ja/Nein",
+        _col_cfg_uni["Montl. Auszahlung"] = st.column_config.CheckboxColumn(
+            "Montl. Auszahlung",
             help="Monatliche Rente auszahlen (nur für Verträge mit Monatsrenteoption).",
-        )
-        _col_cfg_uni["Einmal Ja/Nein"] = st.column_config.CheckboxColumn(
-            "Einmal Ja/Nein",
-            help="Einmalauszahlung wählen.",
         )
 
         _uni_df = pd.DataFrame(_unified_rows).set_index("Vertrag")
-        # Version tag to force re-render when state changes
         _sels_tag = "_".join(
-            f"{k}{(v or 'n')[0]}" for k, v in sorted(_curr_sels.items())
+            f"{i}{str(v or 'n')[:4]}" for i, (_, v) in enumerate(sorted(_curr_sels.items()))
         ) or "0"
         _edited_uni = st.data_editor(
             _uni_df,
             column_config=_col_cfg_uni,
-            disabled=_non_cb + list(_INFO_COLS),
+            disabled=_non_cb_vp,
             key=f"rc{_rc}_vp_edit_uni_{_sels_tag}",
             use_container_width=True,
         )
@@ -1032,64 +1081,39 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         st.caption("Tabelle wählt Strategie für das Diagramm (eine Auszahlungsart pro Vertrag). "
                    "Standard: früheste Monatsrente; bei reinen Einmalauszahlungen früheste Einmalauszahlung.")
 
-        # ── Enforcement: detect actual user change, update state ─────────────
-        _new_sels: dict[str, str | None] = dict(_curr_sels)
+        # ── Enforcement: validate + update state ────────────────────────────
+        _new_sels: dict[str, str | None] = {}
 
         for prod_name, _row in _edited_uni.iterrows():
-            avail = _avail_map.get(prod_name, set())
-            timing_str = _row.get("Auszahlung", "Frühestens")
-            timing     = "spaet" if timing_str == "Spätestens" else "frueh"
-            new_montl  = bool(_row.get("Montl. Ja/Nein", False))
-            new_einmal = bool(_row.get("Einmal Ja/Nein", False))
-
-            # Derive what was expected from prev state
-            prev = _curr_sels.get(prod_name)
-            prev_timing = "spaet" if prev in ("sm", "se") else "frueh"
-            prev_montl  = prev in ("fm", "sm")
-            prev_einmal = prev in ("fe", "se")
-
-            timing_changed = (timing != prev_timing)
-            montl_changed  = (new_montl != prev_montl)
-            einmal_changed = (new_einmal != prev_einmal)
-
-            if not timing_changed and not montl_changed and not einmal_changed:
-                continue  # nothing changed for this product
-
-            # Determine mode: prefer newly-checked box; if only timing changed keep mode
-            if montl_changed and new_montl:
-                mode = "mono"
-            elif einmal_changed and new_einmal:
-                mode = "einmal"
-            elif montl_changed and not new_montl and not new_einmal:
-                # unchecked mono with nothing else → no selection
-                _new_sels[prod_name] = None
+            prod_name = str(prod_name)
+            _po_e = _prod_by_name_vp.get(prod_name)
+            if _po_e is None:
+                _new_sels[prod_name] = _curr_sels.get(prod_name)
                 continue
-            elif einmal_changed and not new_einmal and not new_montl:
-                # unchecked einmal with nothing else → no selection
-                _new_sels[prod_name] = None
-                continue
-            elif prev in ("fm", "sm"):
-                mode = "mono"
-            elif prev in ("fe", "se"):
-                mode = "einmal"
-            elif new_montl:
-                mode = "mono"
-            elif new_einmal:
-                mode = "einmal"
-            else:
-                _new_sels[prod_name] = None
-                continue
+            _hat_mono_e  = _po_e.max_monatsrente > 0
+            _hp_frueh_e  = _po_e.fruehestes_startjahr
+            _hp_spaet_e  = _po_e.spaetestes_startjahr
 
-            # Combine timing + mode, clamped to avail
-            if mode == "mono":
-                candidate = "sm" if timing == "spaet" else "fm"
-                if candidate not in avail:
-                    candidate = next((k for k in ("fm", "sm") if k in avail), None)
-            else:
-                candidate = "se" if timing == "spaet" else "fe"
-                if candidate not in avail:
-                    candidate = next((k for k in ("fe", "se") if k in avail), None)
-            _new_sels[prod_name] = candidate
+            _raw_yr  = _row.get("Auszahlungsjahr")
+            new_year = int(_raw_yr) if _raw_yr is not None else _hp_frueh_e
+            new_montl = bool(_row.get("Montl. Auszahlung", False))
+
+            if new_year < _hp_frueh_e or new_year > _hp_spaet_e:
+                st.warning(
+                    f"Auszahlungsjahr {new_year} für «{prod_name}» liegt außerhalb "
+                    f"[{_hp_frueh_e}, {_hp_spaet_e}] – auf {_hp_frueh_e} gesetzt."
+                )
+                new_year = max(_hp_frueh_e, min(_hp_spaet_e, new_year))
+
+            if new_montl and not _hat_mono_e:
+                st.error(
+                    f"«{prod_name}» unterstützt keine Monatsrente – "
+                    "Montl. Auszahlung wurde deaktiviert."
+                )
+                new_montl = False
+
+            mode = "mono" if new_montl else "einmal"
+            _new_sels[prod_name] = f"{new_year}_{mode}"
 
         if _new_sels != _curr_sels:
             st.session_state[_sels_key] = _new_sels
