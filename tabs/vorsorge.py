@@ -787,38 +787,47 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         # Jahresverlauf: vier Szenarien als gruppierte Balken
         st.subheader("Jahresverlauf der vier Auszahlungsszenarien")
-        _hat_monatlich = any(p.max_monatsrente > 0 and not p.ist_lebensversicherung for p in produkte_obj)
-        _hat_einmal    = any(p.max_einmalzahlung > 0 for p in produkte_obj)
-        _hat_spaet     = any(p.spaetestes_startjahr > p.fruehestes_startjahr for p in produkte_obj)
+        _hat_monatlich = any(
+            p.max_monatsrente > 0 and not p.ist_lebensversicherung and p.typ != "ETF"
+            for p in produkte_obj
+        )
+        _hat_einmal = any(
+            p.max_einmalzahlung > 0 and not p.ist_nur_monatsrente
+            for p in produkte_obj
+        )
+        _hat_spaet = any(p.spaetestes_startjahr > p.fruehestes_startjahr for p in produkte_obj)
 
-        def _prod_lines(is_einmal: bool, use_spaet: bool) -> list[tuple[str, int, str]]:
-            """(name, startjahr, hover_line) per qualifying product."""
+        def _prod_lines(is_einmal: bool, use_spaet: bool, max_year: int) -> list[tuple]:
+            """(name, startjahr, endjahr, hover_line) per qualifying product."""
             result = []
             for p in produkte_obj:
                 if is_einmal:
-                    if p.max_einmalzahlung <= 0:
+                    if p.max_einmalzahlung <= 0 or p.ist_nur_monatsrente:
                         continue
                     sj = p.spaetestes_startjahr if use_spaet else p.fruehestes_startjahr
+                    ej = sj  # einmal: nur im Auszahlungsjahr
                     val = p.max_einmalzahlung * (1 + p.aufschub_rendite) ** (sj - p.fruehestes_startjahr)
-                    result.append((p.name, sj, f"  {p.name}: {_de(val)} € Einmal"))
+                    line = f"  {p.name}: {_de(val)} € Einmal"
                 else:
-                    if p.max_monatsrente <= 0 or p.ist_lebensversicherung:
+                    if p.ist_lebensversicherung or p.typ == "ETF" or p.max_monatsrente <= 0:
                         continue
                     sj = p.spaetestes_startjahr if use_spaet else p.fruehestes_startjahr
+                    ej = (sj + p.laufzeit_jahre - 1) if p.laufzeit_jahre > 0 else max_year
                     val = p.max_monatsrente * (1 + p.aufschub_rendite) ** (sj - p.fruehestes_startjahr)
-                    result.append((p.name, sj, f"  {p.name}: {_de(val)} €/Mon."))
+                    lz_txt = f", {p.laufzeit_jahre} J." if p.laufzeit_jahre > 0 else ", lebenslang"
+                    line = f"  {p.name}: {_de(val)} €/Mon.{lz_txt}"
+                result.append((p.name, sj, ej, line))
             return result
 
         def _hover_per_year(years: list[int], prod_lines: list[tuple], is_einmal: bool) -> list[str]:
             texts = []
             for yr in years:
-                if is_einmal:
-                    active = [desc for _, sj, desc in prod_lines if sj == yr]
-                    label = "Auszahlung in diesem Jahr:" if active else "–"
+                active = [desc for _, sj, ej, desc in prod_lines if sj <= yr <= ej]
+                if active:
+                    label = "Auszahlung in diesem Jahr:" if is_einmal else "Laufende Verträge:"
+                    texts.append(f"<b>{label}</b><br>" + "<br>".join(active))
                 else:
-                    active = [desc for _, sj, desc in prod_lines if sj <= yr]
-                    label = "Laufende Verträge:" if active else "–"
-                texts.append(f"<b>{label}</b><br>" + "<br>".join(active) if active else "–")
+                    texts.append("–")
             return texts
 
         # (label, jd_key, color, show, is_einmal, use_spaet)
@@ -836,8 +845,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             if not _jd_raw:
                 continue
             _df_jv = pd.DataFrame(_jd_raw).set_index("Jahr")
-            _plines = _prod_lines(_is_einmal_jv, _use_spaet_jv)
-            _htexts = _hover_per_year(list(_df_jv.index), _plines, _is_einmal_jv)
+            _years_jv = list(_df_jv.index)
+            _plines = _prod_lines(_is_einmal_jv, _use_spaet_jv, max(_years_jv))
+            _htexts = _hover_per_year(_years_jv, _plines, _is_einmal_jv)
             fig_jv.add_trace(go.Bar(
                 name=_label_jv,
                 x=_df_jv.index,
