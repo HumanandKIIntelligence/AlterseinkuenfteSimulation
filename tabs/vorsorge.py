@@ -523,6 +523,7 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
 def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
            mieteinnahmen: float = 0.0, mietsteigerung: float = 0.0,
            ergebnis2=None, veranlagung: str = "Getrennt") -> None:
+    _rc = st.session_state.get("_rc", 0)
     _init_state()
     st.session_state.vp_produkte = [_migriere(p) for p in st.session_state.vp_produkte]
 
