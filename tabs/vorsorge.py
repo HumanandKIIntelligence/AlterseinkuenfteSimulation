@@ -774,21 +774,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         st.divider()
 
         # ── Steueroptimierung ─────────────────────────────────────────────────
-        st.subheader("🔍 Steueroptimierung – beste Kombination")
-        if mieteinnahmen > 0:
-            _mst = f"{mietsteigerung:.1%}".replace(".", ",")
-            miete_hinweis = (
-                f" Mieteinnahmen ({_de(mieteinnahmen)} €/Mon., +{_mst} p.a.) "
-                "erhöhen die Steuerprogression und beeinflussen die optimale Auszahlungsstrategie."
-            )
-        else:
-            miete_hinweis = ""
-        st.caption(
-            "Das System berechnet alle Kombinationen aus Startjahr und Auszahlungsart "
-            "für jeden Vertrag und sucht die Kombination mit dem höchsten Netto-Gesamteinkommen "
-            f"über {horizon} Jahre (Steuer + KV berücksichtigt, Jahr für Jahr).{miete_hinweis}"
-        )
-
         produkte_obj = [_aus_dict(p) for p in produkte_dicts]
         with st.spinner("Optimierung läuft …"):
             opt = _run_optimierung("vp", profil, ergebnis, produkte_obj, produkte_dicts,
@@ -800,165 +785,92 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             st.info("Keine Produkte für Optimierung vorhanden.")
             return
 
-        # Kennzahlen
-        oc1, oc2, oc3, oc4 = st.columns(4)
-        oc1.metric(
-            "Netto optimal (gesamt)", f"{_de(opt['bestes_netto'])} €",
-            help=f"Summe aller Netto-Jahreseinkommen über {horizon} Jahre.",
-        )
-        gewinn_vs_mono = opt["bestes_netto"] - opt["netto_alle_monatlich"]
-        _s1 = "+" if gewinn_vs_mono >= 0 else ""
-        oc2.metric(
-            "Vorteil vs. alles monatlich",
-            f"{_s1}{_de(gewinn_vs_mono)} €",
-            delta_color="normal",
-        )
-        gewinn_vs_einmal = opt["bestes_netto"] - opt["netto_alle_einmal"]
-        _s2 = "+" if gewinn_vs_einmal >= 0 else ""
-        oc3.metric(
-            "Vorteil vs. alles Einmal",
-            f"{_s2}{_de(gewinn_vs_einmal)} €",
-            delta_color="normal",
-        )
-        oc4.metric("Kombinationen geprüft", f"{_de(opt['anzahl_kombinationen'])}")
-
-        # Beste Kombination anzeigen
-        st.success("**Optimale Strategie:**")
-        for prod, startjahr, anteil in opt["beste_entscheidungen"]:
-            einmal_wert = prod.max_einmalzahlung * (1 + prod.aufschub_rendite) ** max(
-                0, startjahr - prod.fruehestes_startjahr
-            )
-            mono_wert = prod.max_monatsrente * (1 + prod.aufschub_rendite) ** max(
-                0, startjahr - prod.fruehestes_startjahr
-            )
-            if anteil == 1.0:
-                modus_txt = f"Einmalauszahlung **{_de(einmal_wert)} €**"
-            elif anteil == 0.0:
-                modus_txt = f"Monatliche Rente **{_de(mono_wert)} €/Mon.**"
-            else:
-                modus_txt = (
-                    f"Kombiniert: **{_de(einmal_wert * anteil)} €** Einmal + "
-                    f"**{_de(mono_wert * (1 - anteil))} €/Mon.**"
-                )
-            aufschub_jahre = startjahr - prod.fruehestes_startjahr
-            aufschub_note = f" (+{aufschub_jahre} J. Aufschub)" if aufschub_jahre > 0 else ""
-            st.markdown(f"- **{prod.name}**: {modus_txt} ab **{startjahr}**{aufschub_note}")
-
-        st.divider()
-
-        # Top-10-Vergleich
-        st.subheader("Top-10 Kombinationen")
-        df_top = pd.DataFrame(opt["top10"]).set_index("Kombination")
-        st.dataframe(df_top, use_container_width=True)
-
-        st.divider()
-
-        # Balkenvergleich: optimal vs. alle Referenzstrategien (5 Säulen)
-        st.subheader("Strategievergleich: Gesamtnetto über Laufzeit")
-        _vgl_labels = [
-            "Optimal",
-            "Alles Monatlich\n(frühest möglich)",
-            "Alles Einmal\n(frühest möglich)",
-            "Alles Monatlich\n(spätestmöglich)",
-            "Alles Einmal\n(spätestmöglich)",
+        # Jahresverlauf: vier Szenarien als gruppierte Balken
+        st.subheader("Jahresverlauf der vier Auszahlungsszenarien")
+        _hat_monatlich = any(p.max_monatsrente > 0 for p in produkte_obj)
+        _hat_einmal    = any(p.max_einmalzahlung > 0 for p in produkte_obj)
+        _hat_spaet     = any(p.spaetestes_startjahr > p.fruehestes_startjahr for p in produkte_obj)
+        _jv_strategies = [
+            ("Früheste Monatlich", "jahresdaten_mono",         "#4CAF50", _hat_monatlich),
+            ("Späteste Monatlich", "jahresdaten_mono_spaet",   "#64B5F6", _hat_monatlich and _hat_spaet),
+            ("Früheste Einmal",    "jahresdaten_einmal",       "#FF9800", _hat_einmal),
+            ("Späteste Einmal",    "jahresdaten_einmal_spaet", "#FFB74D", _hat_einmal and _hat_spaet),
         ]
-        _vgl_vals = [
-            opt["bestes_netto"],
-            opt["netto_alle_monatlich"],
-            opt["netto_alle_einmal"],
-            opt.get("netto_alle_monatlich_spaet", opt["netto_alle_monatlich"]),
-            opt.get("netto_alle_einmal_spaet", opt["netto_alle_einmal"]),
-        ]
-        _vgl_farben = ["#4CAF50", "#2196F3", "#FF9800", "#64B5F6", "#FFB74D"]
-        fig_vgl = go.Figure(go.Bar(
-            x=_vgl_labels,
-            y=_vgl_vals,
-            marker_color=_vgl_farben,
-            text=[f"{_de(v)} €" for v in _vgl_vals],
-            textposition="outside",
-        ))
-        fig_vgl.update_layout(
-            template="plotly_white", height=380,
-            yaxis=dict(title=f"Gesamt-Netto über {horizon} Jahre (€)", tickformat=",.0f"),
-            margin=dict(l=10, r=10, t=30, b=10),
-            separators=",.",
-        )
-        st.plotly_chart(fig_vgl, use_container_width=True)
-
-        st.divider()
-
-        # Jahresverlauf für optimale Strategie
-        st.subheader("Jahresverlauf der optimalen Strategie")
-        df_jd = pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
-
-        # Metrik-Split Arbeitsphase / Rentenphase
-        netto_arbeit = df_jd.loc[df_jd.get("Src_Gehalt", pd.Series(0, index=df_jd.index)) > 0, "Netto"].sum() if "Src_Gehalt" in df_jd.columns else 0
-        netto_rente  = df_jd.loc[df_jd.get("Src_Gehalt", pd.Series(0, index=df_jd.index)) == 0, "Netto"].sum() if "Src_Gehalt" in df_jd.columns else df_jd["Netto"].sum()
-        if netto_arbeit > 0:
-            ms1, ms2 = st.columns(2)
-            ms1.metric("Netto Arbeitsphase (gesamt)", f"{_de(netto_arbeit)} €")
-            ms2.metric("Netto Rentenphase (gesamt)",  f"{_de(netto_rente)} €")
-
         fig_jv = go.Figure()
-        fig_jv.add_trace(go.Bar(
-            name="Netto (€)", x=df_jd.index, y=df_jd["Netto"],
-            marker_color="#4CAF50",
-            hovertemplate="%{x}: %{y:,.0f} €<extra>Netto</extra>",
-        ))
-        fig_jv.add_trace(go.Bar(
-            name="Steuer (€)", x=df_jd.index, y=df_jd["Steuer"],
-            marker_color="#EF9A9A",
-            hovertemplate="%{x}: %{y:,.0f} €<extra>Steuer</extra>",
-        ))
-        fig_jv.add_trace(go.Bar(
-            name="KV/PV (€)", x=df_jd.index, y=df_jd["KV_PV"],
-            marker_color="#FFF176",
-            hovertemplate="%{x}: %{y:,.0f} €<extra>KV/PV</extra>",
-        ))
+        for _label_jv, _key_jv, _color_jv, _show_jv in _jv_strategies:
+            if not _show_jv:
+                continue
+            _jd_raw = opt.get(_key_jv, [])
+            if _jd_raw:
+                _df_jv = pd.DataFrame(_jd_raw).set_index("Jahr")
+                fig_jv.add_trace(go.Bar(
+                    name=_label_jv,
+                    x=_df_jv.index,
+                    y=_df_jv["Netto"],
+                    marker_color=_color_jv,
+                    hovertemplate=f"%{{x}}: %{{y:,.0f}} € Netto<extra>{_label_jv}</extra>",
+                ))
         if not profil.bereits_rentner:
             fig_jv.add_vline(
                 x=profil.eintritt_jahr, line_width=2, line_dash="dash", line_color="#5C6BC0",
                 annotation_text="Renteneintritt", annotation_position="top right",
             )
         fig_jv.update_layout(
-            barmode="stack", template="plotly_white", height=380,
+            barmode="group", template="plotly_white", height=420,
             xaxis=dict(title="Jahr", dtick=2),
-            yaxis=dict(title="€ / Jahr", tickformat=",.0f"),
+            yaxis=dict(title="Netto (€ / Jahr)", tickformat=",.0f"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=10, r=10, t=40, b=10),
             separators=",.",
         )
         st.plotly_chart(fig_jv, use_container_width=True)
 
-        with st.expander("Rohdaten – Jahresverlauf"):
-            st.dataframe(df_jd, use_container_width=True)
-
         st.divider()
 
         # ── Einzelvergleich je Produkt ────────────────────────────────────────
-        st.subheader("Einzelvergleich je Vertrag (am frühesten Startdatum)")
+        def _zeitpunkt_emp(p: VorsorgeProdukt, bestes: str) -> str:
+            delay = p.spaetestes_startjahr - p.fruehestes_startjahr
+            if delay <= 0:
+                return "frühestmöglich"
+            aufschub = (1 + p.aufschub_rendite) ** delay
+            H_s = max(1, horizon - delay)
+            if bestes == "monatlich":
+                t_frueh = p.max_monatsrente * 12 * horizon
+                t_spaet = p.max_monatsrente * aufschub * 12 * H_s
+            else:
+                K_s = p.max_einmalzahlung * aufschub
+                t_frueh = _annuitaet(p.max_einmalzahlung, rendite, horizon) * 12 * horizon
+                t_spaet = _annuitaet(K_s, rendite, H_s) * 12 * H_s
+            return "spätestmöglich" if t_spaet > t_frueh else "frühestmöglich"
+
+        st.subheader("Einzelvergleich je Vertrag")
         rows = []
         for pd_dict in produkte_dicts:
             p = _aus_dict(pd_dict)
-            v = vergleiche_produkt(p, rendite, horizon)
             ist_lv = p.ist_lebensversicherung
+            hat_mono = p.max_monatsrente > 0 and not ist_lv
+            hat_einz = p.max_einmalzahlung > 0
+            hat_spaet_p = p.spaetestes_startjahr > p.fruehestes_startjahr
+            v = vergleiche_produkt(p, rendite, horizon)
             bestes = v["bestes"]
+            zeitpunkt = _zeitpunkt_emp(p, bestes)
+            empfehlung = f"{_LABELS[bestes]}, {zeitpunkt}"
             rows.append({
                 "Vertrag": p.name,
                 "Typ": pd_dict["typ_label"],
                 "Person": p.person,
-                "Einmal (Total / Mon.)": f"{_de(v['einmal']['total'])} € / {_de(v['einmal']['monatlich'])} €",
-                "Monatlich (Total)": "–" if ist_lv else f"{_de(v['monatlich']['total'])} €",
-                "Kombiniert (Total)": "–" if ist_lv else f"{_de(v['kombiniert']['total'])} €",
-                "Einfach-Empfehlung ✅": _LABELS[bestes],
+                "Einmal (Total / Mon.)": f"{_de(v['einmal']['total'])} € / {_de(v['einmal']['monatlich'])} €" if hat_einz else "–",
+                "Monatlich (Total)": f"{_de(v['monatlich']['total'])} €" if hat_mono else "–",
+                "Kombiniert (Total)": f"{_de(v['kombiniert']['total'])} €" if (hat_mono and hat_einz) else "–",
+                "Einfach-Empfehlung ✅": empfehlung,
             })
         st.dataframe(
             pd.DataFrame(rows).set_index("Vertrag"),
             use_container_width=True,
         )
         st.caption(
-            "Die Einfach-Empfehlung vergleicht nur Gesamteinnahmen ohne Steuereffekte. "
-            "Die Steueroptimierung oben liefert das präzisere Ergebnis."
+            "Einfach-Empfehlung vergleicht Gesamteinnahmen ohne Steuereffekte (frühest vs. spätestmöglich). "
+            "Timing-Empfehlung basiert auf Aufschubverzinsung vs. verbleibender Laufzeit."
         )
 
         st.caption(

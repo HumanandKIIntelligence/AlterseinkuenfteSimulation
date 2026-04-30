@@ -1519,60 +1519,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     "(Slider oben) und der Pool-Rendite im Tab ⚙️ Profil → Erweiterte Einstellungen ab."
                 )
 
-        # ── Hypothek-Tilgung: Status-Meldungen ───────────────────────────────
-        if _hat_sonder and _rs > 0:
-            _hat_pool_data = "Kap_Pool" in df_jd.columns and df_jd["Kap_Pool"].sum() > 0
-            if _pool_tilgung and _hat_pool_data:
-                st.success(
-                    f"✅ Restschuld **{_de(_rs)} €** durch Kapital gedeckt "
-                    f"(kein Netto-Abzug im Jahr {_hyp_info['endjahr']})."
-                )
-            elif _einmal_tilgung:
-                st.info(
-                    f"ℹ️ Restschuld **{_de(_rs)} €** wird im Jahr **{_hyp_info['endjahr']}** "
-                    "direkt aus dem verfügbaren Netto getilgt (kein Kapital-Pool aktiv)."
-                )
-            else:
-                # Ratenkredit: nur Anschlussfinanzierungsraten (nach endjahr) aufsummieren
-                _sa_raten = sum(
-                    v for k, v in _ausgaben_plan.items() if k > _hyp_info['endjahr']
-                )
-                st.info(
-                    f"ℹ️ Anschlussfinanzierung: Gesamtbelastung **{_de(_sa_raten)} €** "
-                    f"über {_anschluss_lz} Jahre ab {_hyp_info['endjahr'] + 1} "
-                    f"(Nominalzins {_markt_zins_pa*100:.2f} %)."
-                )
-
-        # Kapital-Fehlbetrag Warnung (Pool konfiguriert aber unzureichend)
-        if "Kap_Fehlbetrag" in df_jd.columns and df_jd["Kap_Fehlbetrag"].sum() > 0:
-            _fb_j = df_jd[df_jd["Kap_Fehlbetrag"] > 0]
-            _fb_total = _fb_j["Kap_Fehlbetrag"].sum()
-            st.warning(
-                f"⚠️ Kapital-Fehlbetrag: Kapital reicht in {len(_fb_j)} Jahr(en) nicht "
-                f"für alle geplanten Zahlungen (Fehlbetrag gesamt: **{_de(_fb_total)} €**). "
-                "Kapital oder Strategie anpassen."
-            )
-
-
-        # ── Tilgungsplan (aufklappbar) ────────────────────────────────────────
-        if _hyp_info:
-            with st.expander("📋 Tilgungsplan anzeigen", expanded=False):
-                _sched = get_hyp_schedule()
-                if _sched:
-                    _df_tp = pd.DataFrame(_sched)
-                    _df_tp_fmt = pd.DataFrame({
-                        "Jahr": _df_tp["Jahr"].astype(str),
-                        "Restschuld Anfang (€)": _df_tp["Restschuld_Anfang"].map(_de),
-                        "Zinsen (€)": _df_tp["Zinsen"].map(_de),
-                        "Tilgung (€)": _df_tp["Tilgung"].map(_de),
-                        "Sondertilgung (€)": _df_tp["Sondertilgung"].map(_de),
-                        "Jahresausgabe (€)": _df_tp["Jahresausgabe"].map(_de),
-                        "Restschuld Ende (€)": _df_tp["Restschuld_Ende"].map(_de),
-                    })
-                    st.dataframe(_df_tp_fmt.set_index("Jahr"), use_container_width=True)
-                else:
-                    st.caption("Keine Hypothek konfiguriert.")
-
         # ── Kapital-Zeitleiste ─────────────────────────────────────────────────
         # P2 Kapital-Werte
         _spkap2_orig     = 0.0
@@ -1879,6 +1825,59 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 _cap_parts.append(f"{len(_p2_pool_pids)} Vorsorge-Pool(s) in P2 Kapital enthalten")
             if _cap_parts:
                 st.caption(" · ".join(_cap_parts) + ".")
+
+        # ── Hypothek-Tilgung: Status-Meldungen ───────────────────────────────
+        if _hat_sonder and _rs > 0:
+            _hat_pool_data = "Kap_Pool" in df_jd.columns and df_jd["Kap_Pool"].sum() > 0
+            if _pool_tilgung and _hat_pool_data:
+                st.success(
+                    f"✅ Restschuld **{_de(_rs)} €** durch Kapital gedeckt "
+                    f"(kein Netto-Abzug im Jahr {_hyp_info['endjahr']})."
+                )
+            elif _einmal_tilgung:
+                st.info(
+                    f"ℹ️ Restschuld **{_de(_rs)} €** wird im Jahr **{_hyp_info['endjahr']}** "
+                    "direkt aus dem verfügbaren Netto getilgt (kein Kapital-Pool aktiv)."
+                )
+            else:
+                # Ratenkredit: nur Anschlussfinanzierungsraten (nach endjahr) aufsummieren
+                _sa_raten = sum(
+                    v for k, v in _ausgaben_plan.items() if k > _hyp_info['endjahr']
+                )
+                st.info(
+                    f"ℹ️ Anschlussfinanzierung: Gesamtbelastung **{_de(_sa_raten)} €** "
+                    f"über {_anschluss_lz} Jahre ab {_hyp_info['endjahr'] + 1} "
+                    f"(Nominalzins {_markt_zins_pa*100:.2f} %)."
+                )
+
+        # Kapital-Fehlbetrag Warnung (Pool konfiguriert aber unzureichend)
+        if "Kap_Fehlbetrag" in df_jd.columns and df_jd["Kap_Fehlbetrag"].sum() > 0:
+            _fb_j = df_jd[df_jd["Kap_Fehlbetrag"] > 0]
+            _fb_total = _fb_j["Kap_Fehlbetrag"].sum()
+            st.warning(
+                f"⚠️ Kapital-Fehlbetrag: Kapital reicht in {len(_fb_j)} Jahr(en) nicht "
+                f"für alle geplanten Zahlungen (Fehlbetrag gesamt: **{_de(_fb_total)} €**). "
+                "Kapital oder Strategie anpassen."
+            )
+
+        # ── Tilgungsplan (aufklappbar) ────────────────────────────────────────
+        if _hyp_info:
+            with st.expander("📋 Tilgungsplan anzeigen", expanded=False):
+                _sched = get_hyp_schedule()
+                if _sched:
+                    _df_tp = pd.DataFrame(_sched)
+                    _df_tp_fmt = pd.DataFrame({
+                        "Jahr": _df_tp["Jahr"].astype(str),
+                        "Restschuld Anfang (€)": _df_tp["Restschuld_Anfang"].map(_de),
+                        "Zinsen (€)": _df_tp["Zinsen"].map(_de),
+                        "Tilgung (€)": _df_tp["Tilgung"].map(_de),
+                        "Sondertilgung (€)": _df_tp["Sondertilgung"].map(_de),
+                        "Jahresausgabe (€)": _df_tp["Jahresausgabe"].map(_de),
+                        "Restschuld Ende (€)": _df_tp["Restschuld_Ende"].map(_de),
+                    })
+                    st.dataframe(_df_tp_fmt.set_index("Jahr"), use_container_width=True)
+                else:
+                    st.caption("Keine Hypothek konfiguriert.")
 
         # ── Jahresdetails ─────────────────────────────────────────────────────
         st.subheader("Jahresdetails")
