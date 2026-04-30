@@ -787,29 +787,68 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         # Jahresverlauf: vier Szenarien als gruppierte Balken
         st.subheader("Jahresverlauf der vier Auszahlungsszenarien")
-        _hat_monatlich = any(p.max_monatsrente > 0 for p in produkte_obj)
+        _hat_monatlich = any(p.max_monatsrente > 0 and not p.ist_lebensversicherung for p in produkte_obj)
         _hat_einmal    = any(p.max_einmalzahlung > 0 for p in produkte_obj)
         _hat_spaet     = any(p.spaetestes_startjahr > p.fruehestes_startjahr for p in produkte_obj)
+
+        def _prod_lines(is_einmal: bool, use_spaet: bool) -> list[tuple[str, int, str]]:
+            """(name, startjahr, hover_line) per qualifying product."""
+            result = []
+            for p in produkte_obj:
+                if is_einmal:
+                    if p.max_einmalzahlung <= 0:
+                        continue
+                    sj = p.spaetestes_startjahr if use_spaet else p.fruehestes_startjahr
+                    val = p.max_einmalzahlung * (1 + p.aufschub_rendite) ** (sj - p.fruehestes_startjahr)
+                    result.append((p.name, sj, f"  {p.name}: {_de(val)} € Einmal"))
+                else:
+                    if p.max_monatsrente <= 0 or p.ist_lebensversicherung:
+                        continue
+                    sj = p.spaetestes_startjahr if use_spaet else p.fruehestes_startjahr
+                    val = p.max_monatsrente * (1 + p.aufschub_rendite) ** (sj - p.fruehestes_startjahr)
+                    result.append((p.name, sj, f"  {p.name}: {_de(val)} €/Mon."))
+            return result
+
+        def _hover_per_year(years: list[int], prod_lines: list[tuple], is_einmal: bool) -> list[str]:
+            texts = []
+            for yr in years:
+                if is_einmal:
+                    active = [desc for _, sj, desc in prod_lines if sj == yr]
+                    label = "Auszahlung in diesem Jahr:" if active else "–"
+                else:
+                    active = [desc for _, sj, desc in prod_lines if sj <= yr]
+                    label = "Laufende Verträge:" if active else "–"
+                texts.append(f"<b>{label}</b><br>" + "<br>".join(active) if active else "–")
+            return texts
+
+        # (label, jd_key, color, show, is_einmal, use_spaet)
         _jv_strategies = [
-            ("Früheste Monatlich", "jahresdaten_mono",         "#4CAF50", _hat_monatlich),
-            ("Späteste Monatlich", "jahresdaten_mono_spaet",   "#64B5F6", _hat_monatlich and _hat_spaet),
-            ("Früheste Einmal",    "jahresdaten_einmal",       "#FF9800", _hat_einmal),
-            ("Späteste Einmal",    "jahresdaten_einmal_spaet", "#FFB74D", _hat_einmal and _hat_spaet),
+            ("Früheste Monatlich", "jahresdaten_mono",         "#4CAF50", _hat_monatlich,                False, False),
+            ("Späteste Monatlich", "jahresdaten_mono_spaet",   "#64B5F6", _hat_monatlich and _hat_spaet, False, True),
+            ("Früheste Einmal",    "jahresdaten_einmal",       "#FF9800", _hat_einmal,                   True,  False),
+            ("Späteste Einmal",    "jahresdaten_einmal_spaet", "#FFB74D", _hat_einmal and _hat_spaet,    True,  True),
         ]
         fig_jv = go.Figure()
-        for _label_jv, _key_jv, _color_jv, _show_jv in _jv_strategies:
+        for _label_jv, _key_jv, _color_jv, _show_jv, _is_einmal_jv, _use_spaet_jv in _jv_strategies:
             if not _show_jv:
                 continue
             _jd_raw = opt.get(_key_jv, [])
-            if _jd_raw:
-                _df_jv = pd.DataFrame(_jd_raw).set_index("Jahr")
-                fig_jv.add_trace(go.Bar(
-                    name=_label_jv,
-                    x=_df_jv.index,
-                    y=_df_jv["Netto"],
-                    marker_color=_color_jv,
-                    hovertemplate=f"%{{x}}: %{{y:,.0f}} € Netto<extra>{_label_jv}</extra>",
-                ))
+            if not _jd_raw:
+                continue
+            _df_jv = pd.DataFrame(_jd_raw).set_index("Jahr")
+            _plines = _prod_lines(_is_einmal_jv, _use_spaet_jv)
+            _htexts = _hover_per_year(list(_df_jv.index), _plines, _is_einmal_jv)
+            fig_jv.add_trace(go.Bar(
+                name=_label_jv,
+                x=_df_jv.index,
+                y=_df_jv["Netto"],
+                marker_color=_color_jv,
+                customdata=_htexts,
+                hovertemplate=(
+                    f"<b>%{{x}}</b>: %{{y:,.0f}} € Netto<br>%{{customdata}}"
+                    f"<extra>{_label_jv}</extra>"
+                ),
+            ))
         if not profil.bereits_rentner:
             fig_jv.add_vline(
                 x=profil.eintritt_jahr, line_width=2, line_dash="dash", line_color="#5C6BC0",
@@ -844,7 +883,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             v = vergleiche_produkt(p, rendite, horizon)
             bestes = v["bestes"]
             opt_j = _opt_timing.get(p.name, p.fruehestes_startjahr)
-            if opt_j <= p.fruehestes_startjahr:
+            if p.fruehestes_startjahr == p.spaetestes_startjahr:
+                zeitpunkt = f"fixes Jahr ({p.fruehestes_startjahr})"
+            elif opt_j <= p.fruehestes_startjahr:
                 zeitpunkt = "frühestmöglich"
             elif opt_j >= p.spaetestes_startjahr:
                 zeitpunkt = "spätestmöglich"
