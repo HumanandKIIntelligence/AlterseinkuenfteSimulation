@@ -883,8 +883,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             hovertemplate="<b>%{x}</b>: %{y:,.0f} € Netto<br>%{customdata}<extra>Netto</extra>",
         ))
 
-        # Alle Verträge als farbige Balkensegmente (monatlich = alle Jahre, Einmal = nur Auszahlungsjahr)
-        _sel_ci = 0
+        # Alle Verträge als EIN kombinierter Balkensegment mit Hover-Breakdown
+        _vp_yr_vals: dict[int, float] = {yr: 0.0 for yr in _opt_years}
+        _vp_yr_lines: dict[int, list[str]] = {yr: [] for yr in _opt_years}
+
         for _sp in produkte_obj:
             _sel_raw = _curr_sels.get(_sp.name)
             if not _sel_raw:
@@ -892,8 +894,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _sj_s, _mode_s = _parse_sel_vp(_sel_raw)
             if _sj_s is None:
                 continue
-            _sc = _SEL_COLORS[_sel_ci % len(_SEL_COLORS)]
-            _sel_ci += 1
             _d_s  = max(0, _sj_s - _sp.fruehestes_startjahr)
             _af_s = (1 + _sp.aufschub_rendite) ** _d_s
             if _sj_s <= _sp.fruehestes_startjahr:
@@ -902,31 +902,38 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 _timing_lbl = "spätest"
             else:
                 _timing_lbl = f"ab {_sj_s}"
-            _lbl_s = f"{_timing_lbl} {'monatlich' if _mode_s == 'mono' else 'Einmal'}"
             if _mode_s == "mono":
                 _lz_s = _sp.laufzeit_jahre if _sp.laufzeit_jahre > 0 else horizon
                 _ej_s = min(_sj_s + _lz_s - 1, _max_yr_opt)
                 _val_pa = _sp.max_monatsrente * _af_s * 12
-                _ys_bar = [_val_pa if _sj_s <= yr <= _ej_s else 0 for yr in _opt_years]
-                _hover_tpl = (
-                    f"<b>%{{x}}</b>: %{{y:,.0f}} €/Jahr<br>"
-                    f"{_sp.name} – {_lbl_s}<br>"
-                    f"({_de(_sp.max_monatsrente * _af_s)} €/Mon., Laufzeit {_sj_s}–{_ej_s})"
-                    "<extra></extra>"
-                )
+                for _yr in _opt_years:
+                    if _sj_s <= _yr <= _ej_s:
+                        _vp_yr_vals[_yr] += _val_pa
+                        _vp_yr_lines[_yr].append(
+                            f"  {_sp.name}: {_de(_val_pa)} €/Jahr "
+                            f"({_de(_sp.max_monatsrente * _af_s)} €/Mon., {_timing_lbl})"
+                        )
             else:
                 _val_e = _sp.max_einmalzahlung * _af_s
-                _ys_bar = [_val_e if yr == _sj_s else 0 for yr in _opt_years]
-                _hover_tpl = (
-                    f"<b>%{{x}}</b>: %{{y:,.0f}} € Einmalauszahlung<br>"
-                    f"{_sp.name} – {_lbl_s}"
-                    "<extra></extra>"
-                )
+                if _sj_s in _vp_yr_vals:
+                    _vp_yr_vals[_sj_s] += _val_e
+                    _vp_yr_lines[_sj_s].append(
+                        f"  {_sp.name}: {_de(_val_e)} € Einmal ({_timing_lbl})"
+                    )
+
+        _vp_combined_y = [_vp_yr_vals[yr] for yr in _opt_years]
+        _vp_combined_hover = [
+            "<b>Vorsorgeprodukte:</b><br>" + "<br>".join(_vp_yr_lines[yr])
+            if _vp_yr_lines[yr] else "–"
+            for yr in _opt_years
+        ]
+        if any(v > 0 for v in _vp_combined_y):
             fig_opt.add_trace(go.Bar(
-                name=f"{_sp.name} ({_lbl_s})",
-                x=_opt_years, y=_ys_bar,
-                marker_color=_sc,
-                hovertemplate=_hover_tpl,
+                name="Vorsorgeprodukte",
+                x=_opt_years, y=_vp_combined_y,
+                marker_color="#7B1FA2",
+                customdata=_vp_combined_hover,
+                hovertemplate="<b>%{x}</b>: %{y:,.0f} €<br>%{customdata}<extra>Vorsorgeprodukte</extra>",
             ))
 
         # Steuer und KV/PV oben auf dem kompletten Betrag
