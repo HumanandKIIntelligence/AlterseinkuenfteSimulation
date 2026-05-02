@@ -1020,7 +1020,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             for prod, startjahr, _ in opt.get("beste_entscheidungen", [])
         }
 
-        st.subheader("Einzelvergleich je Vertrag")
+        st.subheader("Einzelvergleich bei flexiblen Verträgen")
         _table_rows = []
         _avail_map: dict[str, set[str]] = {}      # keyed by name (legacy compat)
         _avail_id_map: dict[str, set[str]] = {}   # keyed by id
