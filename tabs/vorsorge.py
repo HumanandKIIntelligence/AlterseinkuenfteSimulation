@@ -1056,7 +1056,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "Typ":         pd_dict["typ_label"],
                 "Person":      p.person,
                 "Einmal (Total / Mon.)": f"{_de(v['einmal']['total'])} € / {_de(v['einmal']['monatlich'])} €" if hat_einz else "–",
-                "Monatlich (Total)":     f"{_de(v['monatlich']['total'])} €" if hat_mono else "–",
+                "Monatlich (Total / Mon.)":     f"{_de(v['monatlich']['total'])} € / {_de(v['monatlich']['monatlich'])} €" if hat_mono else "–",
                 "Kombiniert (Total)":    f"{_de(v['kombiniert']['total'])} €" if (hat_mono and hat_einz) else "–",
                 "Einfach-Empfehlung ✅": empfehlung,
                 "_hat_mono":   hat_mono,
@@ -1090,7 +1090,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             if _sels_updated:
                 st.session_state[_sels_key] = _curr_sels
 
-        _INFO_COLS = ["Typ", "Person", "Einmal (Total / Mon.)", "Monatlich (Total)",
+        _INFO_COLS = ["Typ", "Person", "Einmal (Total / Mon.)", "Monatlich (Total / Mon.)",
                       "Kombiniert (Total)", "Einfach-Empfehlung ✅"]
 
         # Build unified table rows; split by whether product supports BOTH mono+einmal
@@ -1136,11 +1136,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "als Vergleichsgröße zur Monatsrente."
             ),
         )
-        _col_cfg_base["Monatlich (Total)"] = st.column_config.TextColumn(
-            "Monatlich (Total)",
+        _col_cfg_base["Monatlich (Total / Mon.)"] = st.column_config.TextColumn(
+            "Monatlich (Total / Mon.)",
             help=(
-                "Monatliche Rente: Summe aller monatlichen Rentenzahlungen über den "
-                "gewählten Horizont. Nur bei Verträgen mit Monatsrenten-Option verfügbar."
+                "Monatliche Rente: **Total** = Summe aller monatlichen Rentenzahlungen "
+                "über den gewählten Horizont. **Mon.** = die monatliche Rentenhöhe. "
+                "Nur bei Verträgen mit Monatsrenten-Option verfügbar."
             ),
         )
         _col_cfg_base["Kombiniert (Total)"] = st.column_config.TextColumn(
