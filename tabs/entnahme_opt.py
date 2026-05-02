@@ -1805,6 +1805,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                                 f"<br>Restschuld: {_de(_s['Restschuld_Anfang'])} → {_de(_s['Restschuld_Ende'])} €"
                             )
                     if _s["Restschuld_Ende"] <= 0:
+                        # Endpunkt bei 0 eintragen, damit Linie bis zum Endejahr gezeichnet wird
+                        _rs_x.append(_s["Jahr"])
+                        _rs_y.append(0.0)
                         break
                 if _rs_x:
                     fig_spar.add_trace(go.Scatter(
