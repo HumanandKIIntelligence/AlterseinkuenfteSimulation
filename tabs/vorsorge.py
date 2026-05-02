@@ -1055,7 +1055,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "Vertrag":     p.name,
                 "Typ":         pd_dict["typ_label"],
                 "Person":      p.person,
-                "Einmal (Total / Mon.)": f"{_de(v['einmal']['total'])} € / {_de(v['einmal']['monatlich'])} €" if hat_einz else "–",
+                "Einmal (Total / Mon.)": f"{_de(p.max_einmalzahlung)} € / {_de(p.max_einmalzahlung / (horizon * 12) if horizon > 0 else 0)} €" if hat_einz else "–",
                 "Monatlich (Total / Mon.)":     f"{_de(v['monatlich']['total'])} € / {_de(v['monatlich']['monatlich'])} €" if hat_mono else "–",
                 "Kombiniert (Total / Mon.)":    f"{_de(v['kombiniert']['total'])} € / {_de(v['kombiniert']['monatlich'])} €" if (hat_mono and hat_einz) else "–",
                 "Einfach-Empfehlung ✅": empfehlung,
@@ -1130,10 +1130,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _col_cfg_base["Einmal (Total / Mon.)"] = st.column_config.TextColumn(
             "Einmal (Total / Mon.)",
             help=(
-                "Einmalauszahlung: **Total** = Gesamtbetrag aller Zahlungen über den "
-                "gewählten Horizont (Einmalzahlung + aufgelaufene Rendite). "
-                "**Mon.** = monatlicher Durchschnittswert (Total ÷ Horizont in Monaten) "
-                "als Vergleichsgröße zur Monatsrente."
+                "Einmalauszahlung: **Total** = Vertraglicher Einmalauszahlungsbetrag "
+                "(max_einmalzahlung laut Vertrag). "
+                "**Mon.** = Durchschnitt pro Monat über den gewählten Horizont "
+                "(Total ÷ Horizont in Monaten) als Vergleichsgröße zur Monatsrente."
             ),
         )
         _col_cfg_base["Monatlich (Total / Mon.)"] = st.column_config.TextColumn(
