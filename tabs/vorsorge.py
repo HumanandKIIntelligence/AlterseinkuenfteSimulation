@@ -1057,7 +1057,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "Person":      p.person,
                 "Einmal (Total / Mon.)": f"{_de(v['einmal']['total'])} € / {_de(v['einmal']['monatlich'])} €" if hat_einz else "–",
                 "Monatlich (Total / Mon.)":     f"{_de(v['monatlich']['total'])} € / {_de(v['monatlich']['monatlich'])} €" if hat_mono else "–",
-                "Kombiniert (Total)":    f"{_de(v['kombiniert']['total'])} €" if (hat_mono and hat_einz) else "–",
+                "Kombiniert (Total / Mon.)":    f"{_de(v['kombiniert']['total'])} € / {_de(v['kombiniert']['monatlich'])} €" if (hat_mono and hat_einz) else "–",
                 "Einfach-Empfehlung ✅": empfehlung,
                 "_hat_mono":   hat_mono,
                 "_hat_einz":   hat_einz,
@@ -1091,7 +1091,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 st.session_state[_sels_key] = _curr_sels
 
         _INFO_COLS = ["Typ", "Person", "Einmal (Total / Mon.)", "Monatlich (Total / Mon.)",
-                      "Kombiniert (Total)", "Einfach-Empfehlung ✅"]
+                      "Kombiniert (Total / Mon.)", "Einfach-Empfehlung ✅"]
 
         # Build unified table rows; split by whether product supports BOTH mono+einmal
         _prod_by_id_vp = {p.id: p for p in produkte_obj}
@@ -1144,12 +1144,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "Nur bei Verträgen mit Monatsrenten-Option verfügbar."
             ),
         )
-        _col_cfg_base["Kombiniert (Total)"] = st.column_config.TextColumn(
-            "Kombiniert (Total)",
+        _col_cfg_base["Kombiniert (Total / Mon.)"] = st.column_config.TextColumn(
+            "Kombiniert (Total / Mon.)",
             help=(
-                "Kombination: maximaler Gesamtbetrag, wenn ein optimaler Teil als "
-                "Einmalauszahlung und der Rest als laufende Monatsrente bezogen wird. "
-                "Nur bei Verträgen mit beiden Auszahlungsarten verfügbar."
+                "Kombination: **Total** = maximaler Gesamtbetrag bei optimalem Mix aus "
+                "Einmalauszahlung und laufender Monatsrente. **Mon.** = resultierender "
+                "monatlicher Durchschnittswert. Nur bei Verträgen mit beiden Auszahlungsarten."
             ),
         )
         _col_cfg_base["Früh"] = st.column_config.NumberColumn("Früh", format="%d",
