@@ -591,16 +591,19 @@ def render(
                     f"Laufende Beiträge: {_vb_detail}.<br>"
                     f"Reduzieren das verfügbare Netto während der Beitragsphase."
                 )
-            for _fa in _aktive_fix:
-                _short = _fa["name"] if len(_fa["name"]) <= 16 else _fa["name"][:14] + "…"
-                _wf_x.append(f"− {_short}")
+            if _fix_m_wf > 0:
+                _fix_detail = "; ".join(
+                    f"{fa['name']}: {_de(fa['betrag_monatlich'])} €" for fa in _aktive_fix
+                )
+                _wf_x.append("− Fixe Ausgaben")
                 _wf_meas.append("relative")
-                _wf_y.append(-_fa["betrag_monatlich"])
-                _wf_t.append(f"−{_de(_fa['betrag_monatlich'])} €")
+                _wf_y.append(-_fix_m_wf)
+                _wf_t.append(f"−{_de(_fix_m_wf)} €")
                 _wf_h.append(
-                    f"<b>{_fa['name']}</b><br>"
-                    f"−{_de(_fa['betrag_monatlich'])} €/Mon.<br>"
-                    f"Fixausgabe {_fa['startjahr']}–{_fa['endjahr']}."
+                    f"<b>Fixe monatliche Ausgaben</b><br>"
+                    f"−{_de(_fix_m_wf)} €/Mon.<br>"
+                    f"Summe aktiver Fixausgaben {betrachtungsjahr}.<br>"
+                    + (f"{_fix_detail}." if _fix_detail else "")
                 )
             _hyp_schedule_wf = get_hyp_schedule()
             _hyp_row_wf = next((r for r in _hyp_schedule_wf if r["Jahr"] == betrachtungsjahr), None)
@@ -676,6 +679,12 @@ def render(
                 yaxis=dict(title="€ / Monat", ticksuffix=" €"),
                 margin=dict(l=10, r=10, t=10, b=10),
                 separators=",.",
+            )
+            _mindest_m_wf = float(st.session_state.get("mindest_haushalt_mono", 2_000))
+            fig_wf_hh.add_hline(
+                y=_mindest_m_wf, line_dash="dot", line_color="orange", line_width=2,
+                annotation_text=f"Mindest {_de(_mindest_m_wf)} €",
+                annotation_position="top right",
             )
             st.plotly_chart(fig_wf_hh, use_container_width=True)
             # Infobox für bAV / Riester

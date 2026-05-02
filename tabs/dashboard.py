@@ -646,8 +646,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         st.divider()
 
-        # ── Wasserfall Brutto → Netto ─────────────────────────────────────────
-        st.subheader(f"Brutto → Netto {_sel_j_dash} (monatlich)")
+        # ── Wasserfall Brutto → Verfügbar ────────────────────────────────────
+        st.subheader(f"Brutto → Verfügbar {_sel_j_dash} (monatlich)")
         _ba_pct = f"{ergebnis.besteuerungsanteil:.0%}".replace(".", ",")
         _eff_pct = f"{ergebnis.effektiver_steuersatz:.1%}".replace(".", ",")
         _kv_satz = f"{profil.pkv_beitrag:.0f} € (Fixbetrag PKV)" if profil.krankenversicherung == "PKV" else "GKV-Beitrag (AN-Anteil)"
@@ -719,11 +719,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Voll steuerpflichtig, keine KV-Pflicht."
                 + (" (50 % Anteil bei Paar)" if hat_partner else "")
             )
-        _wf_x_e += ["− Einkommensteuer", "− KV", "− PV", _netto_lbl_e]
-        _wf_m_e += ["relative", "relative", "relative", "total"]
-        _wf_y_e += [-_d_steuer, -gkv_mono, -pv_mono, _d_netto]
-        _wf_t_e += [f"−{_de(_d_steuer)} €", f"−{_de(gkv_mono)} €",
-                    f"−{_de(pv_mono)} €", f"{_de(_d_netto)} €"]
+        _wf_x_e += ["− Einkommensteuer", "− KV", "− PV"]
+        _wf_m_e += ["relative", "relative", "relative"]
+        _wf_y_e += [-_d_steuer, -gkv_mono, -pv_mono]
+        _wf_t_e += [f"−{_de(_d_steuer)} €", f"−{_de(gkv_mono)} €", f"−{_de(pv_mono)} €"]
         _wf_h_e += [
             f"<b>Einkommensteuer + Solidaritätszuschlag</b><br>"
             f"−{_de(_d_steuer)} €/Mon.<br>"
@@ -737,10 +736,47 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             f"−{_de(pv_mono)} €/Mon.<br>"
             f"§ 55 SGB XI; Kinderstaffelung § 55 Abs. 3a SGB XI.<br>"
             f"Kinderlosenzuschlag: +0,6 % (trägt Versicherter allein).",
-            f"<b>{_netto_lbl_e} (verfügbar)</b><br>"
-            f"{_de(_d_netto)} €/Mon.<br>"
-            f"Nach Steuer und KV/PV-Abzügen.",
         ]
+        # Lebenshaltungskosten und fixe Ausgaben
+        _lhk_key_d = "p2_lhk" if wahl == "Person 2" else "p1_lhk"
+        _d_lhk = float(st.session_state.get(f"rc{_rc}_{_lhk_key_d}", 0.0))
+        _d_fix_aktiv = [
+            fa for fa in st.session_state.get("hh_fixausgaben", [])
+            if fa["startjahr"] <= _sel_j_dash <= fa["endjahr"]
+        ]
+        _d_fix_m = sum(fa["betrag_monatlich"] for fa in _d_fix_aktiv)
+        if _d_lhk > 0:
+            _wf_x_e.append("− Lebenshalt.")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(-_d_lhk)
+            _wf_t_e.append(f"−{_de(_d_lhk)} €")
+            _wf_h_e.append(
+                f"<b>Lebenshaltungskosten</b><br>"
+                f"−{_de(_d_lhk)} €/Mon.<br>"
+                f"Monatliche Fixkosten (Miete, Lebensmittel …).<br>"
+                f"Konfiguration im Tab Haushalt."
+            )
+        if _d_fix_m > 0:
+            _wf_x_e.append("− Fixe Ausgaben")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(-_d_fix_m)
+            _wf_t_e.append(f"−{_de(_d_fix_m)} €")
+            _wf_h_e.append(
+                f"<b>Fixe monatliche Ausgaben</b><br>"
+                f"−{_de(_d_fix_m)} €/Mon.<br>"
+                f"Summe aktiver Fixausgaben {_sel_j_dash}.<br>"
+                f"Konfiguration im Tab Haushalt."
+            )
+        _d_verfuegbar = _d_netto - _d_lhk - _d_fix_m
+        _wf_x_e.append("Verfügbar")
+        _wf_m_e.append("total")
+        _wf_y_e.append(_d_verfuegbar)
+        _wf_t_e.append(f"{_de(_d_verfuegbar)} €")
+        _wf_h_e.append(
+            f"<b>Verfügbares Einkommen</b><br>"
+            f"{_de(_d_verfuegbar)} €/Mon.<br>"
+            f"Nach Steuer, KV/PV, Lebenshaltungskosten und Fixausgaben."
+        )
         fig_wf = go.Figure(go.Waterfall(
             orientation="v",
             measure=_wf_m_e,
@@ -755,9 +791,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             decreasing=dict(marker=dict(color="#F44336")),
             totals=dict(marker=dict(color="#2196F3")),
         ))
+        _mindest_mono_d = float(st.session_state.get("mindest_haushalt_mono", 2_000))
+        fig_wf.add_hline(
+            y=_mindest_mono_d, line_dash="dot", line_color="orange", line_width=2,
+            annotation_text=f"Mindest {_de(_mindest_mono_d)} €",
+            annotation_position="top right",
+        )
         fig_wf.update_layout(
             template="plotly_white",
-            height=360,
+            height=380,
             yaxis=dict(title="€ / Monat", ticksuffix=" €"),
             margin=dict(l=10, r=10, t=10, b=10),
             separators=",.",
