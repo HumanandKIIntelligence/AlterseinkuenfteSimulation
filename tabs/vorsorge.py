@@ -1116,6 +1116,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             entry["Früh"]            = _po_r.fruehestes_startjahr
             entry["Spät"]            = _po_r.spaetestes_startjahr
             entry["Auszahlungsjahr"] = int(_yr_val)
+            entry["_has_yr_choice"]  = _hat_spaet_r2
             if _hat_mono_r and _hat_einz_r:
                 entry["Montl. Auszahlung"] = bool(_sel_mode == "mono")
                 _rows_both.append(entry)
@@ -1158,7 +1159,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             "Auszahlungsjahr", min_value=2020, max_value=2099, step=1, format="%d",
             help="Auszahlungsjahr – muss zwischen Früh und Spät liegen.",
         )
-        _disabled_base = ["Vertrag"] + _INFO_COLS + ["Früh", "Spät"]
+        _disabled_base     = ["Vertrag"] + _INFO_COLS + ["Früh", "Spät"]
+        _disabled_fixed_yr = _disabled_base + ["Auszahlungsjahr"]
 
         _col_cfg_both = dict(_col_cfg_base)
         _col_cfg_both["Montl. Auszahlung"] = st.column_config.CheckboxColumn(
@@ -1166,19 +1168,34 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             help="Monatliche Rente (☑) oder Einmalauszahlung (☐).",
         )
 
-        _edited_both   = None
-        _edited_single = None
+        # _rows_both aufteilen: wählbares vs. fixes Auszahlungsjahr
+        _rows_both_yr    = [r for r in _rows_both if r.get("_has_yr_choice", True)]
+        _rows_both_no_yr = [r for r in _rows_both if not r.get("_has_yr_choice", True)]
 
-        if _rows_both:
-            _df_both = pd.DataFrame(_rows_both).set_index("_prod_id")
+        _edited_both       = None
+        _edited_both_no_yr = None
+        _edited_single     = None
+
+        if _rows_both_yr:
+            _df_both = pd.DataFrame(_rows_both_yr).set_index("_prod_id")
             _df_both.index.name = None
             _edited_both = st.data_editor(
                 _df_both, column_config=_col_cfg_both, disabled=_disabled_base,
                 key=f"rc{_rc}_vp_edit_both_{_sels_tag}", use_container_width=True,
                 hide_index=True,
             )
+        if _rows_both_no_yr:
+            if _rows_both_yr:
+                st.caption("Verträge mit Einmal- & Monatsrenten-Option, fixes Auszahlungsjahr (Früh = Spät):")
+            _df_both_no_yr = pd.DataFrame(_rows_both_no_yr).set_index("_prod_id")
+            _df_both_no_yr.index.name = None
+            _edited_both_no_yr = st.data_editor(
+                _df_both_no_yr, column_config=_col_cfg_both, disabled=_disabled_fixed_yr,
+                key=f"rc{_rc}_vp_edit_both_nyr_{_sels_tag}", use_container_width=True,
+                hide_index=True,
+            )
         if _rows_single:
-            if _rows_both:
+            if _rows_both_yr or _rows_both_no_yr:
                 st.caption("Verträge mit fester Auszahlungsart (kein Monatliche/Einmal-Wechsel):")
             _df_single = pd.DataFrame(_rows_single).set_index("_prod_id")
             _df_single.index.name = None
@@ -1220,6 +1237,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         _new_sels: dict[str, str | None] = {}
         _process_vp_editor(_edited_both, has_checkbox=True)
+        _process_vp_editor(_edited_both_no_yr, has_checkbox=True)
         _process_vp_editor(_edited_single, has_checkbox=False)
         # Produkte ohne Auswahlmöglichkeit (fixes Jahr + feste Auszahlungsart) beibehalten
         for _pid_fix, _sv_fix in _curr_sels.items():
