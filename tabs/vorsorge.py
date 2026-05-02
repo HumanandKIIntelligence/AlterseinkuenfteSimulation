@@ -1126,6 +1126,30 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             f"{i}{str(v or 'n')[:4]}" for i, (_, v) in enumerate(sorted(_curr_sels.items()))
         ) or "0"
         _col_cfg_base: dict = {c: st.column_config.TextColumn(c) for c in _INFO_COLS}
+        _col_cfg_base["Einmal (Total / Mon.)"] = st.column_config.TextColumn(
+            "Einmal (Total / Mon.)",
+            help=(
+                "Einmalauszahlung: **Total** = Gesamtbetrag aller Zahlungen über den "
+                "gewählten Horizont (Einmalzahlung + aufgelaufene Rendite). "
+                "**Mon.** = monatlicher Durchschnittswert (Total ÷ Horizont in Monaten) "
+                "als Vergleichsgröße zur Monatsrente."
+            ),
+        )
+        _col_cfg_base["Monatlich (Total)"] = st.column_config.TextColumn(
+            "Monatlich (Total)",
+            help=(
+                "Monatliche Rente: Summe aller monatlichen Rentenzahlungen über den "
+                "gewählten Horizont. Nur bei Verträgen mit Monatsrenten-Option verfügbar."
+            ),
+        )
+        _col_cfg_base["Kombiniert (Total)"] = st.column_config.TextColumn(
+            "Kombiniert (Total)",
+            help=(
+                "Kombination: maximaler Gesamtbetrag, wenn ein optimaler Teil als "
+                "Einmalauszahlung und der Rest als laufende Monatsrente bezogen wird. "
+                "Nur bei Verträgen mit beiden Auszahlungsarten verfügbar."
+            ),
+        )
         _col_cfg_base["Früh"] = st.column_config.NumberColumn("Früh", format="%d",
             help="Frühestmögliches Auszahlungsjahr.")
         _col_cfg_base["Spät"] = st.column_config.NumberColumn("Spät", format="%d",
