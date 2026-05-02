@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import uuid
 import pandas as pd
 import plotly.graph_objects as go
@@ -1052,7 +1053,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             empfehlung = f"{_LABELS[bestes]}, {zeitpunkt}"
 
             # Kombiniert: realer Vertragswert (kein Annuitäten-Aufblähen)
-            # Wenn Monatlich > kombinierter Rochwert, ist Monatlich das Optimum
+            # Wenn Monatlich > kombinierter Rohwert, ist Monatlich das Optimum
             if hat_mono and hat_einz:
                 _bx     = v['kombiniert']['anteil']
                 _eff_lz = min(p.laufzeit_jahre if p.laufzeit_jahre > 0 else horizon, horizon)
@@ -1068,6 +1069,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             else:
                 _komb_fmt = "–"
 
+            # Break-even: ab welchem Jahr übersteigt die Monatssumme die Einmalzahlung?
+            # Startet vom gewählten Auszahlungsjahr: K / (M × 12) Jahre ab _yr_val
+            if hat_mono and hat_einz and p.max_monatsrente > 0:
+                _be_years = p.max_einmalzahlung / (p.max_monatsrente * 12)
+                _be_year  = int(_yr_val) + math.ceil(_be_years)
+                _be_str   = str(_be_year)
+            else:
+                _be_str = "–"
+
             _table_rows.append({
                 "Vertrag":     p.name,
                 "Typ":         pd_dict["typ_label"],
@@ -1075,6 +1085,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "Einmal (Total / Mon.)": f"{_de(p.max_einmalzahlung)} € / {_de(p.max_einmalzahlung / (horizon * 12) if horizon > 0 else 0)} €" if hat_einz else "–",
                 "Monatlich (Total / Mon.)":     f"{_de(v['monatlich']['total'])} € / {_de(v['monatlich']['monatlich'])} €" if hat_mono else "–",
                 "Kombiniert (Total / Mon.)":    _komb_fmt,
+                "Monatl. > Einmal ab": _be_str,
                 "Einfach-Empfehlung ✅": empfehlung,
                 "_hat_mono":   hat_mono,
                 "_hat_einz":   hat_einz,
@@ -1108,7 +1119,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 st.session_state[_sels_key] = _curr_sels
 
         _INFO_COLS = ["Typ", "Person", "Einmal (Total / Mon.)", "Monatlich (Total / Mon.)",
-                      "Kombiniert (Total / Mon.)", "Einfach-Empfehlung ✅"]
+                      "Kombiniert (Total / Mon.)", "Monatl. > Einmal ab", "Einfach-Empfehlung ✅"]
 
         # Build unified table rows; split by whether product supports BOTH mono+einmal
         _prod_by_id_vp = {p.id: p for p in produkte_obj}
@@ -1167,6 +1178,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "Kombination: **Total** = maximaler Gesamtbetrag bei optimalem Mix aus "
                 "Einmalauszahlung und laufender Monatsrente. **Mon.** = resultierender "
                 "monatlicher Durchschnittswert. Nur bei Verträgen mit beiden Auszahlungsarten."
+            ),
+        )
+        _col_cfg_base["Monatl. > Einmal ab"] = st.column_config.TextColumn(
+            "Monatl. > Einmal ab",
+            help=(
+                "Ab welchem Kalenderjahr übersteigen die kumulierten Monatszahlungen "
+                "die Einmalauszahlung? Berechnung: Startjahr + ⌈Einmalbetrag ÷ (Monatsrente × 12)⌉. "
+                "Nur bei Verträgen mit beiden Auszahlungsarten."
             ),
         )
         _col_cfg_base["Früh"] = st.column_config.NumberColumn("Früh", format="%d",
