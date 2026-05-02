@@ -1162,6 +1162,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         )
         _disabled_base     = ["Vertrag"] + _INFO_COLS + ["Früh", "Spät"]
         _disabled_fixed_yr = _disabled_base + ["Auszahlungsjahr"]
+        _col_cfg_base["_has_yr_choice"] = None  # interne Spalte ausblenden
 
         _col_cfg_both = dict(_col_cfg_base)
         _col_cfg_both["Montl. Auszahlung"] = st.column_config.CheckboxColumn(
