@@ -1051,13 +1051,23 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 zeitpunkt = f"ab {opt_j} (+{opt_j - p.fruehestes_startjahr} J. Aufschub)"
             empfehlung = f"{_LABELS[bestes]}, {zeitpunkt}"
 
+            # Kombiniert: realer Vertragswert (kein Annuitäten-Aufblähen)
+            if hat_mono and hat_einz:
+                _bx   = v['kombiniert']['anteil']
+                _eff_lz = min(p.laufzeit_jahre if p.laufzeit_jahre > 0 else horizon, horizon)
+                _t_komb = p.max_einmalzahlung * _bx + p.max_monatsrente * (1 - _bx) * 12 * _eff_lz
+                _m_komb = _t_komb / (horizon * 12) if horizon > 0 else 0.0
+                _komb_fmt = f"{_de(_t_komb)} € / {_de(_m_komb)} €"
+            else:
+                _komb_fmt = "–"
+
             _table_rows.append({
                 "Vertrag":     p.name,
                 "Typ":         pd_dict["typ_label"],
                 "Person":      p.person,
                 "Einmal (Total / Mon.)": f"{_de(p.max_einmalzahlung)} € / {_de(p.max_einmalzahlung / (horizon * 12) if horizon > 0 else 0)} €" if hat_einz else "–",
                 "Monatlich (Total / Mon.)":     f"{_de(v['monatlich']['total'])} € / {_de(v['monatlich']['monatlich'])} €" if hat_mono else "–",
-                "Kombiniert (Total / Mon.)":    f"{_de(v['kombiniert']['total'])} € / {_de(v['kombiniert']['monatlich'])} €" if (hat_mono and hat_einz) else "–",
+                "Kombiniert (Total / Mon.)":    _komb_fmt,
                 "Einfach-Empfehlung ✅": empfehlung,
                 "_hat_mono":   hat_mono,
                 "_hat_einz":   hat_einz,
