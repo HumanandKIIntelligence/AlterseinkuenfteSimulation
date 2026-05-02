@@ -1052,11 +1052,18 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             empfehlung = f"{_LABELS[bestes]}, {zeitpunkt}"
 
             # Kombiniert: realer Vertragswert (kein Annuitäten-Aufblähen)
+            # Wenn Monatlich > kombinierter Rochwert, ist Monatlich das Optimum
             if hat_mono and hat_einz:
-                _bx   = v['kombiniert']['anteil']
+                _bx     = v['kombiniert']['anteil']
                 _eff_lz = min(p.laufzeit_jahre if p.laufzeit_jahre > 0 else horizon, horizon)
-                _t_komb = p.max_einmalzahlung * _bx + p.max_monatsrente * (1 - _bx) * 12 * _eff_lz
-                _m_komb = _t_komb / (horizon * 12) if horizon > 0 else 0.0
+                _t_komb_raw = p.max_einmalzahlung * _bx + p.max_monatsrente * (1 - _bx) * 12 * _eff_lz
+                _t_mono_raw = v['monatlich']['total']   # M × 12 × eff_lz
+                if _t_mono_raw >= _t_komb_raw:
+                    _t_komb = _t_mono_raw
+                    _m_komb = v['monatlich']['monatlich']
+                else:
+                    _t_komb = _t_komb_raw
+                    _m_komb = _t_komb_raw / (horizon * 12) if horizon > 0 else 0.0
                 _komb_fmt = f"{_de(_t_komb)} € / {_de(_m_komb)} €"
             else:
                 _komb_fmt = "–"
