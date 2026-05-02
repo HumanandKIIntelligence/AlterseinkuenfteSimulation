@@ -1069,15 +1069,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             else:
                 _komb_fmt = "–"
 
-            # Break-even: ab welchem Jahr übersteigt die Monatssumme die Einmalzahlung?
-            # Startet vom gewählten Auszahlungsjahr: K / (M × 12) Jahre ab _yr_val
-            if hat_mono and hat_einz and p.max_monatsrente > 0:
-                _be_years = p.max_einmalzahlung / (p.max_monatsrente * 12)
-                _be_year  = int(_yr_val) + math.ceil(_be_years)
-                _be_str   = str(_be_year)
-            else:
-                _be_str = "–"
-
             _table_rows.append({
                 "Vertrag":     p.name,
                 "Typ":         pd_dict["typ_label"],
@@ -1085,7 +1076,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 "Einmal (Total / Mon.)": f"{_de(p.max_einmalzahlung)} € / {_de(p.max_einmalzahlung / (horizon * 12) if horizon > 0 else 0)} €" if hat_einz else "–",
                 "Monatlich (Total / Mon.)":     f"{_de(v['monatlich']['total'])} € / {_de(v['monatlich']['monatlich'])} €" if hat_mono else "–",
                 "Kombiniert (Total / Mon.)":    _komb_fmt,
-                "Monatl. > Einmal ab": _be_str,
+                "Monatl. > Einmal ab": "–",          # wird in zweiter Schleife gesetzt
+                "_be_years": (p.max_einmalzahlung / (p.max_monatsrente * 12)
+                              if hat_mono and hat_einz and p.max_monatsrente > 0 else None),
                 "Einfach-Empfehlung ✅": empfehlung,
                 "_hat_mono":   hat_mono,
                 "_hat_einz":   hat_einz,
@@ -1145,6 +1138,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             entry["Spät"]            = _po_r.spaetestes_startjahr
             entry["Auszahlungsjahr"] = int(_yr_val)
             entry["_has_yr_choice"]  = _hat_spaet_r2
+            # Break-even jetzt berechnen, da _yr_val bekannt ist
+            _be_years_r = r.get("_be_years")
+            if _be_years_r is not None:
+                entry["Monatl. > Einmal ab"] = str(int(_yr_val) + math.ceil(_be_years_r))
             if _hat_mono_r and _hat_einz_r:
                 entry["Montl. Auszahlung"] = bool(_sel_mode == "mono")
                 _rows_both.append(entry)
@@ -1198,7 +1195,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         )
         _disabled_base     = ["Vertrag"] + _INFO_COLS + ["Früh", "Spät"]
         _disabled_fixed_yr = _disabled_base + ["Auszahlungsjahr"]
-        _col_cfg_base["_has_yr_choice"] = None  # interne Spalte ausblenden
+        _col_cfg_base["_has_yr_choice"] = None  # interne Spalten ausblenden
+        _col_cfg_base["_be_years"]      = None
 
         _col_cfg_both = dict(_col_cfg_base)
         _col_cfg_both["Montl. Auszahlung"] = st.column_config.CheckboxColumn(
