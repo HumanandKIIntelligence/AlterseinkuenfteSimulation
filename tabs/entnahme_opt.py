@@ -2003,6 +2003,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 else:
                     st.caption("Keine Hypothek konfiguriert.")
 
+        # ── Kapitalverzehr-Kalkulator ──────────────────────────────────────────
+        with st.expander("💰 Kapitalverzehr-Kalkulator", expanded=False):
+            auszahlung.render_section(_profil_eo, _ergebnis_eo)
+
         # ── Jahresdetails ─────────────────────────────────────────────────────
         st.subheader("Jahresdetails")
         _min_j_jd = int(df_jd.index.min())
@@ -2081,8 +2085,3 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             "sind nicht modelliert. Steuerberatung empfohlen."
         )
 
-        st.divider()
-
-        # ── O3c: Kapitalverzehr-Kalkulator ────────────────────────────────────
-        with st.expander("💰 Kapitalverzehr-Kalkulator", expanded=False):
-            auszahlung.render_section(_profil_eo, _ergebnis_eo)
