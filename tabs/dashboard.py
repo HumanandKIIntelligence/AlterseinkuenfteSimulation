@@ -12,6 +12,19 @@ from engine import (
 from tabs import steuern
 
 
+def _eink_label(profil: "Profil", sel_jahr: int) -> str:
+    """Einkommens-Label abhängig vom Zustand der Person im gewählten Jahr."""
+    in_rente = profil.bereits_rentner or sel_jahr >= profil.eintritt_jahr
+    if not in_rente:
+        return "Brutto"
+    return "Pension" if profil.ist_pensionaer else "Rente"
+
+
+def _netto_label(eink_lbl: str) -> str:
+    """Netto-Label für das Ende des Wasserfalls."""
+    return {"Rente": "Nettorente", "Pension": "Nettopension"}.get(eink_lbl, "Nettoeinkommen")
+
+
 def _de(v: float, dec: int = 0) -> str:
     """Zahl im deutschen Format: 1.234,56"""
     s = f"{v:,.{dec}f}"
@@ -307,7 +320,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             _ba1_pct = f"{ergebnis.besteuerungsanteil:.0%}".replace(".", ",")
             _ba2_pct = f"{ergebnis2.besteuerungsanteil:.0%}".replace(".", ",")
             _ver_label = "Zusammenveranlagung (Splitting)" if veranlagung == "Zusammen" else "Getrenntveranlagung"
-            _wf_x = ["P1 Rente/Pension", "P2 Rente/Pension"]
+            _lbl_p1 = _eink_label(profil,  _sel_j_dash)
+            _lbl_p2 = _eink_label(profil2, _sel_j_dash)
+            _wf_x = [f"P1 {_lbl_p1}", f"P2 {_lbl_p2}"]
             _wf_m = ["absolute", "relative"]
             _wf_y = [_p1_b_y, _p2_b_y]
             _wf_t = [
@@ -315,11 +330,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"+{_de(_p2_b_y)} €",
             ]
             _wf_h = [
-                f"<b>P1 Rente/Pension (brutto)</b><br>"
+                f"<b>P1 {_lbl_p1} (brutto)</b><br>"
                 f"{_de(_p1_b_y)} €/Mon.<br>"
                 f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
                 f"Besteuerungsanteil: {_ba1_pct} (Renteneintritt {profil.eintritt_jahr})",
-                f"<b>P2 Rente/Pension (brutto)</b><br>"
+                f"<b>P2 {_lbl_p2} (brutto)</b><br>"
                 f"+{_de(_p2_b_y)} €/Mon.<br>"
                 f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
                 f"Besteuerungsanteil: {_ba2_pct} (Renteneintritt {profil2.eintritt_jahr})",
@@ -530,8 +545,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         _d_zvE    = _row_dash["zvE"]         if _row_dash else ergebnis.zvE_jahres
         _d_bav    = _row_dash.get("Src_bAV_P1", 0) / 12 if _row_dash else 0.0
         _d_riester= _row_dash.get("Src_Riester_P1", 0) / 12 if _row_dash else 0.0
-        # Basis = Rente/Pension ohne bAV/Riester/Mieteinnahmen
-        _d_basis  = _d_brutto - _d_bav - _d_riester
+        _d_duv    = _row_dash.get("Src_DUV_P1", 0) / 12 if _row_dash else 0.0
+        _d_buv    = _row_dash.get("Src_BUV_P1", 0) / 12 if _row_dash else 0.0
+        # Basis = Rente/Pension ohne bAV/Riester/DUV/BUV/Mieteinnahmen
+        _d_basis  = _d_brutto - _d_bav - _d_riester - _d_duv - _d_buv
 
         abschlag_info = (
             f"  |  **Rentenabschlag:** {ergebnis.rentenabschlag:.1%}".replace(".", ",") +
@@ -634,12 +651,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         _ba_pct = f"{ergebnis.besteuerungsanteil:.0%}".replace(".", ",")
         _eff_pct = f"{ergebnis.effektiver_steuersatz:.1%}".replace(".", ",")
         _kv_satz = f"{profil.pkv_beitrag:.0f} € (Fixbetrag PKV)" if profil.krankenversicherung == "PKV" else "GKV-Beitrag (AN-Anteil)"
-        _wf_x_e = ["Rente/Pension"]
+        _lbl_e      = _eink_label(profil, _sel_j_dash)
+        _netto_lbl_e = _netto_label(_lbl_e)
+        _wf_x_e = [_lbl_e]
         _wf_m_e = ["absolute"]
         _wf_y_e = [_d_basis]
         _wf_t_e = [f"{_de(_d_basis)} €"]
         _wf_h_e = [
-            f"<b>Gesetzliche Rente / Pension</b><br>"
+            f"<b>{_lbl_e} (brutto)</b><br>"
             f"{_de(_d_basis)} €/Mon.<br>"
             f"Bruttorente inkl. Zusatzrente vor Steuer und KV.<br>"
             f"Besteuerungsanteil: {_ba_pct} (§ 22 EStG, Renteneintritt {profil.eintritt_jahr})"
@@ -666,6 +685,28 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
                 f"Nicht KV-pflichtig (private Rentenleistung)."
             )
+        if _d_duv > 0:
+            _wf_x_e.append("+ DUV")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(_d_duv)
+            _wf_t_e.append(f"+{_de(_d_duv)} €")
+            _wf_h_e.append(
+                f"<b>Dienstunfähigkeitsversicherung (DUV)</b><br>"
+                f"+{_de(_d_duv)} €/Mon.<br>"
+                f"Ertragsanteil § 22 Nr. 1 S. 3a bb EStG.<br>"
+                f"Nicht KV-pflichtig (private Versicherungsleistung)."
+            )
+        if _d_buv > 0:
+            _wf_x_e.append("+ BUV")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(_d_buv)
+            _wf_t_e.append(f"+{_de(_d_buv)} €")
+            _wf_h_e.append(
+                f"<b>Berufsunfähigkeitsversicherung (BUV)</b><br>"
+                f"+{_de(_d_buv)} €/Mon.<br>"
+                f"Ertragsanteil § 22 Nr. 1 S. 3a bb EStG.<br>"
+                f"Nicht KV-pflichtig (private Versicherungsleistung)."
+            )
         if _d_miete > 0:
             _wf_x_e.append("+ Mieteinnahmen")
             _wf_m_e.append("relative")
@@ -678,7 +719,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Voll steuerpflichtig, keine KV-Pflicht."
                 + (" (50 % Anteil bei Paar)" if hat_partner else "")
             )
-        _wf_x_e += ["− Einkommensteuer", "− KV", "− PV", "Nettorente"]
+        _wf_x_e += ["− Einkommensteuer", "− KV", "− PV", _netto_lbl_e]
         _wf_m_e += ["relative", "relative", "relative", "total"]
         _wf_y_e += [-_d_steuer, -gkv_mono, -pv_mono, _d_netto]
         _wf_t_e += [f"−{_de(_d_steuer)} €", f"−{_de(gkv_mono)} €",
@@ -696,7 +737,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             f"−{_de(pv_mono)} €/Mon.<br>"
             f"§ 55 SGB XI; Kinderstaffelung § 55 Abs. 3a SGB XI.<br>"
             f"Kinderlosenzuschlag: +0,6 % (trägt Versicherter allein).",
-            f"<b>Nettorente (verfügbar)</b><br>"
+            f"<b>{_netto_lbl_e} (verfügbar)</b><br>"
             f"{_de(_d_netto)} €/Mon.<br>"
             f"Nach Steuer und KV/PV-Abzügen.",
         ]
@@ -738,7 +779,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             labels = []
             values = []
             if _pie_basis > 0:
-                labels.append("Gesetzl. Rente/Pension")
+                labels.append(f"Gesetzl. {_lbl_e}")
                 values.append(_pie_basis)
             if _pie_bav > 0:
                 labels.append("bAV")
@@ -750,7 +791,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 labels.append("Mieteinnahmen")
                 values.append(_pie_miete)
             if not labels:
-                labels = ["Gesetzl. Rente/Pension", "Zusatzrente"]
+                labels = [f"Gesetzl. {_lbl_e}", "Zusatzrente"]
                 values = [ergebnis.brutto_gesetzlich, profil.zusatz_monatlich]
             if any(v > 0 for v in values):
                 fig_pie = go.Figure(go.Pie(

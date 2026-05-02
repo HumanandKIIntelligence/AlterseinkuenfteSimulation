@@ -1459,6 +1459,8 @@ def _netto_ueber_horizont(
             "Kap_Injektion":      round(kap_net_inj_j),
             "LHK":                round(lhk_j),
             "Vorsorge_Beitraege": round(vorsorge_beitraege_j),
+            "Src_DUV_P1":       round(duv_j),
+            "Src_BUV_P1":       round(buv_j),
             "Src_Miete":        round(miet_j),
             "zvE":              round(zvE_display),
             "Steuer_Progressiv": round(steuer_progr),

@@ -75,7 +75,7 @@ def get_hyp_schedule() -> list[dict]:
     sondertilgungen = {int(s["jahr"]): float(s["betrag"]) for s in sondertilgungen_raw}
 
     schedule = []
-    for jahr in range(startjahr, endjahr + 1):
+    for jahr in range(startjahr, endjahr):
         if restschuld <= 0.0:
             break
         restschuld_anfang = restschuld
@@ -472,6 +472,68 @@ def render(T: dict, _rc: int) -> None:
                 f"**{_de(restschuld_end)} €**. Siehe Abschnitt Restschuld-Behandlung unten."
             )
 
+        # ── Parameter bearbeiten ───────────────────────────────────────────────
+        with st.expander("⚙️ Hypothekdaten bearbeiten"):
+            with st.form(f"rc{_rc}_hyp_edit_form"):
+                ea, eb = st.columns(2)
+                with ea:
+                    e_startjahr = st.number_input(
+                        "Startjahr", AKTUELLES_JAHR - 30, AKTUELLES_JAHR + 30,
+                        value=int(d.get("startjahr", AKTUELLES_JAHR)), step=1,
+                        key=f"rc{_rc}_hyp_e_startjahr",
+                    )
+                    e_betrag = st.number_input(
+                        "Darlehensbetrag (€)", 0.0, 10_000_000.0,
+                        value=float(d.get("betrag", 300_000.0)),
+                        step=5_000.0, key=f"rc{_rc}_hyp_e_betrag",
+                    )
+                    e_zins = st.number_input(
+                        "Nominalzins p.a. (%)", 0.0, 20.0,
+                        value=float(d.get("zins_pa", 0.035)) * 100,
+                        step=0.05, format="%.2f", key=f"rc{_rc}_hyp_e_zins",
+                    )
+                with eb:
+                    e_endjahr = st.number_input(
+                        "Endjahr", AKTUELLES_JAHR, AKTUELLES_JAHR + 50,
+                        value=int(d.get("endjahr", AKTUELLES_JAHR + 20)), step=1,
+                        key=f"rc{_rc}_hyp_e_endjahr",
+                    )
+                    e_rate = st.number_input(
+                        "Jährl. Annuitätsrate (€/Jahr)", 0.0, 1_000_000.0,
+                        value=float(d.get("jaehrl_rate", 15_000.0)),
+                        step=500.0, key=f"rc{_rc}_hyp_e_rate",
+                    )
+                e_raten_in_sim = st.checkbox(
+                    "Laufende Raten in Entnahme-Simulation berücksichtigen",
+                    value=bool(d.get("raten_in_simulation", False)),
+                    key=f"rc{_rc}_hyp_e_raten_in_sim",
+                    help="Wenn aktiviert, werden die jährlichen Hypothekraten als Ausgaben "
+                         "in der Entnahme-Optimierung abgezogen.",
+                )
+                e_submitted = st.form_submit_button("💾 Änderungen speichern",
+                                                    use_container_width=True)
+                if e_submitted:
+                    _errs = _validate_hyp(int(e_startjahr), int(e_endjahr),
+                                          float(e_betrag), float(e_rate))
+                    if _errs:
+                        for _e in _errs:
+                            st.error(_e)
+                    else:
+                        st.session_state["hyp_daten"].update({
+                            "startjahr": int(e_startjahr),
+                            "endjahr": int(e_endjahr),
+                            "betrag": float(e_betrag),
+                            "jaehrl_rate": float(e_rate),
+                            "zins_pa": float(e_zins) / 100.0,
+                            "raten_in_simulation": bool(e_raten_in_sim),
+                        })
+                        st.rerun()
+
+        if st.button("🗑 Hypothek löschen", key=f"rc{_rc}_hyp_del",
+                     type="secondary"):
+            st.session_state["hyp_daten"] = _default_hyp_daten()
+            st.rerun()
+
         st.divider()
 
         # ── Restschuld-Verlauf ─────────────────────────────────────────────────
@@ -537,26 +599,29 @@ def render(T: dict, _rc: int) -> None:
 
         def _st_row(lst: list, idx: int, key_pfx: str, session_key: str,
                     max_j: int = AKTUELLES_JAHR + 50) -> None:
-            """Rendert eine editierbare Zeile mit Ändern + 🗑 Button."""
-            _r1, _r2, _r3, _r4 = st.columns([2, 3, 1, 1])
+            """Rendert eine editierbare Zeile – Werte werden sofort beim Ändern gespeichert."""
+            _j_key = f"{key_pfx}_j_{idx}"
+            _b_key = f"{key_pfx}_b_{idx}"
+
+            def _save_row():
+                nj = int(st.session_state.get(_j_key, lst[idx]["jahr"]))
+                nb = float(st.session_state.get(_b_key, lst[idx]["betrag"]))
+                lst[idx] = {"jahr": nj, "betrag": nb}
+                lst.sort(key=lambda e: e["jahr"])
+                st.session_state["hyp_daten"][session_key] = list(lst)
+
+            _r1, _r2, _r3 = st.columns([2, 3, 1])
             with _r1:
-                _nj = _r1.number_input("Jahr", AKTUELLES_JAHR - 30, max_j,
-                    value=int(lst[idx]["jahr"]), step=1, key=f"{key_pfx}_j_{idx}")
+                _r1.number_input("Jahr", AKTUELLES_JAHR - 30, max_j,
+                    value=int(lst[idx]["jahr"]), step=1, key=_j_key, on_change=_save_row)
             with _r2:
-                _nb = _r2.number_input("Betrag (€)", 0.0, 10_000_000.0,
-                    value=float(lst[idx]["betrag"]), step=1_000.0, key=f"{key_pfx}_b_{idx}")
+                _r2.number_input("Betrag (€)", 0.0, 10_000_000.0,
+                    value=float(lst[idx]["betrag"]), step=1_000.0, key=_b_key, on_change=_save_row)
             with _r3:
                 _r3.write(""); _r3.write("")
-                if _r3.button("Ändern", key=f"{key_pfx}_chg_{idx}", help="Änderung speichern"):
-                    lst[idx] = {"jahr": int(_nj), "betrag": float(_nb)}
-                    lst.sort(key=lambda e: e["jahr"])
-                    st.session_state["hyp_daten"][session_key] = lst
-                    st.rerun()
-            with _r4:
-                _r4.write(""); _r4.write("")
-                if _r4.button("🗑", key=f"{key_pfx}_del_{idx}", help="Entfernen"):
+                if _r3.button("🗑", key=f"{key_pfx}_del_{idx}", help="Entfernen"):
                     lst.pop(idx)
-                    st.session_state["hyp_daten"][session_key] = lst
+                    st.session_state["hyp_daten"][session_key] = list(lst)
                     st.rerun()
 
         for i in range(len(sondertilgungen)):
@@ -606,66 +671,3 @@ def render(T: dict, _rc: int) -> None:
         # ── Restschuld-Behandlung (nur wenn Restschuld > 0) ───────────────────
         if restschuld_end > 0.0:
             _restschuld_vergleich_ui(restschuld_end, endjahr, d, _rc)
-            st.divider()
-
-        # ── Parameter bearbeiten ───────────────────────────────────────────────
-        with st.expander("⚙️ Hypothekdaten bearbeiten"):
-            with st.form(f"rc{_rc}_hyp_edit_form"):
-                ea, eb = st.columns(2)
-                with ea:
-                    e_startjahr = st.number_input(
-                        "Startjahr", AKTUELLES_JAHR - 30, AKTUELLES_JAHR + 30,
-                        value=int(d.get("startjahr", AKTUELLES_JAHR)), step=1,
-                        key=f"rc{_rc}_hyp_e_startjahr",
-                    )
-                    e_betrag = st.number_input(
-                        "Darlehensbetrag (€)", 0.0, 10_000_000.0,
-                        value=float(d.get("betrag", 300_000.0)),
-                        step=5_000.0, key=f"rc{_rc}_hyp_e_betrag",
-                    )
-                    e_zins = st.number_input(
-                        "Nominalzins p.a. (%)", 0.0, 20.0,
-                        value=float(d.get("zins_pa", 0.035)) * 100,
-                        step=0.05, format="%.2f", key=f"rc{_rc}_hyp_e_zins",
-                    )
-                with eb:
-                    e_endjahr = st.number_input(
-                        "Endjahr", AKTUELLES_JAHR, AKTUELLES_JAHR + 50,
-                        value=int(d.get("endjahr", AKTUELLES_JAHR + 20)), step=1,
-                        key=f"rc{_rc}_hyp_e_endjahr",
-                    )
-                    e_rate = st.number_input(
-                        "Jährl. Annuitätsrate (€/Jahr)", 0.0, 1_000_000.0,
-                        value=float(d.get("jaehrl_rate", 15_000.0)),
-                        step=500.0, key=f"rc{_rc}_hyp_e_rate",
-                    )
-                e_raten_in_sim = st.checkbox(
-                    "Laufende Raten in Entnahme-Simulation berücksichtigen",
-                    value=bool(d.get("raten_in_simulation", False)),
-                    key=f"rc{_rc}_hyp_e_raten_in_sim",
-                    help="Wenn aktiviert, werden die jährlichen Hypothekraten als Ausgaben "
-                         "in der Entnahme-Optimierung abgezogen.",
-                )
-                e_submitted = st.form_submit_button("💾 Änderungen speichern",
-                                                    use_container_width=True)
-                if e_submitted:
-                    _errs = _validate_hyp(int(e_startjahr), int(e_endjahr),
-                                          float(e_betrag), float(e_rate))
-                    if _errs:
-                        for _e in _errs:
-                            st.error(_e)
-                    else:
-                        st.session_state["hyp_daten"].update({
-                            "startjahr": int(e_startjahr),
-                            "endjahr": int(e_endjahr),
-                            "betrag": float(e_betrag),
-                            "jaehrl_rate": float(e_rate),
-                            "zins_pa": float(e_zins) / 100.0,
-                            "raten_in_simulation": bool(e_raten_in_sim),
-                        })
-                        st.rerun()
-
-        if st.button("🗑 Hypothek löschen", key=f"rc{_rc}_hyp_del",
-                     type="secondary"):
-            st.session_state["hyp_daten"] = _default_hyp_daten()
-            st.rerun()

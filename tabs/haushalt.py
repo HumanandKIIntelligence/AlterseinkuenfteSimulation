@@ -21,6 +21,13 @@ except ImportError:
         return []
 
 
+def _eink_label(profil: "Profil", sel_jahr: int) -> str:
+    in_rente = profil.bereits_rentner or sel_jahr >= profil.eintritt_jahr
+    if not in_rente:
+        return "Brutto"
+    return "Pension" if profil.ist_pensionaer else "Rente"
+
+
 def _de(v: float, dec: int = 0) -> str:
     s = f"{v:,.{dec}f}"
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
@@ -88,44 +95,6 @@ def render(
             f"**Person 1:** {_status(p1)}  |  "
             f"**Person 2:** {_status(p2)}"
         )
-
-        # ── Mindesthaushaltsbetrag ────────────────────────────────────────────
-        with st.expander("🏠 Mindesthaushaltsbetrag", expanded=False):
-            st.caption("Monatlicher Mindestbetrag für die Haushaltsversorgung. Wird im Tab 💡 Entnahme-Optimierung als Zielgröße verwendet.")
-            _mindest_mono_val = st.number_input(
-                "Mindesthaushaltsbetrag (€/Monat)",
-                min_value=0, max_value=20_000,
-                value=int(st.session_state.get("mindest_haushalt_mono", 2_000)),
-                step=100,
-                key="mindest_haushalt_mono",
-                help=f"Jahreswert: {int(st.session_state.get('mindest_haushalt_mono', 2000)) * 12:,} €/Jahr",
-            )
-            if _mindest_mono_val > 0:
-                st.caption(f"**Jahresbetrag: {_mindest_mono_val * 12:,.0f} €/Jahr**")
-
-        # ── Lebenshaltungskosten ───────────────────────────────────────────────
-        with st.expander("💸 Lebenshaltungskosten"):
-            lhk1, lhk2 = st.columns(2)
-            with lhk1:
-                st.number_input(
-                    "Person 1 – Lebenshaltungskosten (€/Mon.)", 0.0, 15_000.0,
-                    value=float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0)),
-                    step=100.0, key=f"rc{_rc}_p1_lhk",
-                    help=(
-                        "Monatliche Fixausgaben (Miete, Lebensmittel, Versicherungen …). "
-                        "Wird im Planungshorizont jährlich vom Nettoeinkommen abgezogen."
-                    ),
-                )
-            with lhk2:
-                st.number_input(
-                    "Person 2 – Lebenshaltungskosten (€/Mon.)", 0.0, 15_000.0,
-                    value=float(st.session_state.get(f"rc{_rc}_p2_lhk", 0.0)),
-                    step=100.0, key=f"rc{_rc}_p2_lhk",
-                    help=(
-                        "Monatliche Fixausgaben (Miete, Lebensmittel, Versicherungen …). "
-                        "Wird im Planungshorizont jährlich vom Nettoeinkommen abgezogen."
-                    ),
-                )
 
         # ── Jahres- und Personenfilter ─────────────────────────────────────────
         fil1, fil2 = st.columns([2, 3])
@@ -293,119 +262,43 @@ def render(
 
         st.divider()
 
-        # ── Seite-an-Seite Vergleich ──────────────────────────────────────────
-        if ansicht != "Haushalt gesamt":
-            # Einzelpersonen-Ansicht – Slider-Jahr oder Eintrittsmonat als Fallback
-            _e   = e1 if ansicht == "Person 1" else e2
-            _p   = p1 if ansicht == "Person 1" else p2
-            _row = _row_p1 if ansicht == "Person 1" else _row_p2
-            _b_d = _row["Brutto"] / 12 if _row else _e.brutto_monatlich
-            _n_d = _row["Netto"]  / 12 if _row else _e.netto_monatlich
-            _s_d = _row["Steuer"] / 12 if _row else _e.steuer_monatlich
-            _k_d = _row["KV_PV"]  / 12 if _row else _e.kv_monatlich
-            _note = "" if _row else " (Eintrittsmonat)"
-            st.subheader(f"{ansicht} – {betrachtungsjahr}{_note}")
-            cv1, cv2 = st.columns(2)
-            with cv1:
-                for label, wert in [
-                    ("Bruttoeinkommen", f"{_de(_b_d)} €"),
-                    ("− Steuer", f"{_de(_s_d)} €"),
-                    ("− KV / PV", f"{_de(_k_d)} €"),
-                    ("**= Netto**", f"**{_de(_n_d)} €**"),
-                    ("Rentenpunkte", f"{_e.gesamtpunkte:.1f}".replace(".", ",")),
-                    ("Renteneintritt",
-                     str(_p.rentenbeginn_jahr if _p.bereits_rentner else _p.eintritt_jahr)),
-                ]:
-                    a, b = st.columns([2, 1])
-                    a.markdown(label)
-                    b.markdown(wert)
-        else:
-            # Jahr-spezifische Werte aus Slider; Fallback auf Eintrittsmonat
-            _p1_b = _row_p1["Brutto"] / 12 if _row_p1 else e1.brutto_monatlich
-            _p1_n = _row_p1["Netto"]  / 12 if _row_p1 else e1.netto_monatlich
-            _p1_s = _row_p1["Steuer"] / 12 if _row_p1 else e1.steuer_monatlich
-            _p1_k = _row_p1["KV_PV"]  / 12 if _row_p1 else e1.kv_monatlich
-            _p2_b = _row_p2["Brutto"] / 12 if _row_p2 else e2.brutto_monatlich
-            _p2_n = _row_p2["Netto"]  / 12 if _row_p2 else e2.netto_monatlich
-            _p2_s = _row_p2["Steuer"] / 12 if _row_p2 else e2.steuer_monatlich
-            _p2_k = _row_p2["KV_PV"]  / 12 if _row_p2 else e2.kv_monatlich
-            _note = "" if (_row_p1 and _row_p2) else " (Eintrittsmonat)"
-
-            st.subheader(f"Person 1 vs. Person 2 – {betrachtungsjahr}{_note}")
-            col1, col2, col3 = st.columns([2, 2, 3])
-
-            with col1:
-                st.markdown("**Person 1**")
-                for label, wert in [
-                    ("Bruttoeinkommen", f"{_de(_p1_b)} €"),
-                    ("− Steuer", f"{_de(_p1_s)} €"),
-                    ("− KV / PV", f"{_de(_p1_k)} €"),
-                    ("**= Netto**", f"**{_de(_p1_n)} €**"),
-                    ("Rentenpunkte", f"{e1.gesamtpunkte:.1f}".replace(".", ",")),
-                    ("Ruhestand seit" if p1.bereits_rentner else "Renteneintritt",
-                     str(p1.rentenbeginn_jahr if p1.bereits_rentner else p1.eintritt_jahr)),
-                ]:
-                    a, b = st.columns([2, 1])
-                    a.markdown(label)
-                    b.markdown(wert)
-
-            with col2:
-                st.markdown("**Person 2**")
-                for label, wert in [
-                    ("Bruttoeinkommen", f"{_de(_p2_b)} €"),
-                    ("− Steuer", f"{_de(_p2_s)} €"),
-                    ("− KV / PV", f"{_de(_p2_k)} €"),
-                    ("**= Netto**", f"**{_de(_p2_n)} €**"),
-                    ("Rentenpunkte", f"{e2.gesamtpunkte:.1f}".replace(".", ",")),
-                    ("Ruhestand seit" if p2.bereits_rentner else "Renteneintritt",
-                     str(p2.rentenbeginn_jahr if p2.bereits_rentner else p2.eintritt_jahr)),
-                ]:
-                    a, b = st.columns([2, 1])
-                    a.markdown(label)
-                    b.markdown(wert)
-
-            with col3:
-                # Stacked bar: Netto + Steuer + KV = Brutto (Total-Höhe)
-                personen = ["Person 1", "Person 2"]
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    name="Netto", x=personen, y=[_p1_n, _p2_n],
-                    marker_color="#A5D6A7",
-                    text=[f"{_de(_p1_n)} €", f"{_de(_p2_n)} €"],
-                    textposition="inside",
-                ))
-                fig.add_trace(go.Bar(
-                    name="− Steuer", x=personen, y=[_p1_s, _p2_s],
-                    marker_color="#EF9A9A",
-                    text=[f"{_de(_p1_s)} €", f"{_de(_p2_s)} €"],
-                    textposition="inside",
-                ))
-                fig.add_trace(go.Bar(
-                    name="− KV/PV", x=personen, y=[_p1_k, _p2_k],
-                    marker_color="#FFF176",
-                    text=[f"{_de(_p1_k)} €", f"{_de(_p2_k)} €"],
-                    textposition="inside",
-                ))
-                fig.update_layout(
-                    barmode="stack",
-                    template="plotly_white",
-                    height=320,
-                    yaxis=dict(title="€ / Monat (Brutto = Gesamthöhe)"),
-                    showlegend=True,
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                    margin=dict(l=0, r=0, t=30, b=0),
-                    separators=",.",
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-        if mieteinnahmen > 0:
-            st.info(
-                f"🏠 **Mieteinnahmen:** {_de(mieteinnahmen)} €/Monat "
-                f"(+{mietsteigerung:.1%}".replace(".", ",") +
-                " p.a.) – in Steuerberechnung enthalten, keine KV-Pflicht."
+        # ── Mindesthaushaltsbetrag ────────────────────────────────────────────
+        with st.expander("🏠 Mindesthaushaltsbetrag", expanded=False):
+            st.caption("Monatlicher Mindestbetrag für die Haushaltsversorgung. Wird im Tab 💡 Entnahme-Optimierung als Zielgröße verwendet.")
+            _mindest_mono_val = st.number_input(
+                "Mindesthaushaltsbetrag (€/Monat)",
+                min_value=0, max_value=20_000,
+                value=int(st.session_state.get("mindest_haushalt_mono", 2_000)),
+                step=100,
+                key="mindest_haushalt_mono",
+                help=f"Jahreswert: {int(st.session_state.get('mindest_haushalt_mono', 2000)) * 12:,} €/Jahr",
             )
+            if _mindest_mono_val > 0:
+                st.caption(f"**Jahresbetrag: {_mindest_mono_val * 12:,.0f} €/Jahr**")
 
-        st.divider()
+        # ── Lebenshaltungskosten ───────────────────────────────────────────────
+        with st.expander("💸 Lebenshaltungskosten"):
+            lhk1, lhk2 = st.columns(2)
+            with lhk1:
+                st.number_input(
+                    "Person 1 – Lebenshaltungskosten (€/Mon.)", 0.0, 15_000.0,
+                    value=float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0)),
+                    step=100.0, key=f"rc{_rc}_p1_lhk",
+                    help=(
+                        "Monatliche Fixausgaben (Miete, Lebensmittel, Versicherungen …). "
+                        "Wird im Planungshorizont jährlich vom Nettoeinkommen abgezogen."
+                    ),
+                )
+            with lhk2:
+                st.number_input(
+                    "Person 2 – Lebenshaltungskosten (€/Mon.)", 0.0, 15_000.0,
+                    value=float(st.session_state.get(f"rc{_rc}_p2_lhk", 0.0)),
+                    step=100.0, key=f"rc{_rc}_p2_lhk",
+                    help=(
+                        "Monatliche Fixausgaben (Miete, Lebensmittel, Versicherungen …). "
+                        "Wird im Planungshorizont jährlich vom Nettoeinkommen abgezogen."
+                    ),
+                )
 
         # ── Fixe monatliche Ausgaben erfassen ─────────────────────────────────
         with st.expander("➕ Fixe monatliche Ausgaben erfassen"):
@@ -504,6 +397,92 @@ def render(
                                 st.session_state["hh_fixausgaben"] = _fixausgaben
                                 st.session_state.pop("hh_fa_edit_idx", None)
                                 st.rerun()
+
+        # ── Ausgaben im Planungszeitraum ──────────────────────────────────────
+        st.subheader("📤 Ausgaben im Planungszeitraum")
+
+        _ansicht_person = ("Person 1" if ansicht == "Person 1"
+                           else "Person 2" if ansicht == "Person 2"
+                           else None)
+        _ausgaben_rows = []
+
+        # Vorsorgebeiträge: Produkte mit laufenden Beiträgen die noch nicht ausgezahlt werden
+        for _vp in _vp_produkte:
+            if _ansicht_person is not None and _vp.get("person", "Person 1") != _ansicht_person:
+                continue
+            _je = float(_vp.get("jaehrl_einzahlung", 0.0))
+            if _je <= 0.0:
+                continue
+            _frueh = int(_vp.get("fruehestes_startjahr", AKTUELLES_JAHR))
+            if _frueh <= betrachtungsjahr:
+                continue
+            _bbj = int(_vp.get("beitragsbefreiung_jahr", 0))
+            if _bbj > 0 and betrachtungsjahr >= _bbj:
+                continue
+            _dyn = float(_vp.get("jaehrl_dynamik", 0.0))
+            _jahre_gelaufen = max(0, betrachtungsjahr - AKTUELLES_JAHR)
+            _beitrag_j = _je * (1.0 + _dyn) ** _jahre_gelaufen
+            _name = _vp.get("bezeichnung") or _vp.get("typ", "Produkt")
+            _ausgaben_rows.append({
+                "Name / Beschreibung": f"{_name} ({_vp.get('typ', '')})",
+                "_jaehrl": _beitrag_j,
+            })
+
+        # Fixe Ausgaben für Betrachtungsjahr
+        for _fa in _fixausgaben:
+            if _fa["startjahr"] <= betrachtungsjahr <= _fa["endjahr"]:
+                _ausgaben_rows.append({
+                    "Name / Beschreibung": f"{_fa['name']} (Fixausgabe)",
+                    "_jaehrl": _fa["betrag_monatlich"] * 12,
+                })
+
+        # Hypothek: Jahresausgabe für Betrachtungsjahr
+        _hyp_schedule = get_hyp_schedule()
+        _hyp_row = next((r for r in _hyp_schedule if r["Jahr"] == betrachtungsjahr), None)
+        if _hyp_row is not None:
+            _ausgaben_rows.append({
+                "Name / Beschreibung": "Hypothek (Annuität + Sondertilgung)",
+                "_jaehrl": _hyp_row["Jahresausgabe"],
+            })
+
+        if _ausgaben_rows:
+            _total_j = sum(r["_jaehrl"] for r in _ausgaben_rows)
+            _total_m = _total_j / 12.0
+
+            _df_aus = pd.DataFrame([{
+                "Name / Beschreibung": r["Name / Beschreibung"],
+                "Jährl. Betrag (€)": _de(r["_jaehrl"]),
+                "Monatl. Betrag (€)": _de(r["_jaehrl"] / 12.0),
+            } for r in _ausgaben_rows])
+            st.dataframe(_df_aus.set_index("Name / Beschreibung"), use_container_width=True)
+
+            out1, out2, out3 = st.columns(3)
+            out1.metric("Gesamtausgaben/Jahr", f"{_de(_total_j)} €")
+            out2.metric("Gesamtausgaben/Monat", f"{_de(_total_m)} €")
+
+            # Verfügbares Netto nach Abzug der Ausgaben
+            if ansicht == "Haushalt gesamt" and _row_comb:
+                _netto_hh_m = _row_comb["Netto"] / 12.0
+            elif ansicht == "Haushalt gesamt":
+                _netto_hh_m = hh["netto_gesamt"]
+            else:
+                _netto_hh_m = 0.0
+
+            if _netto_hh_m > 0:
+                _verfuegbar = _netto_hh_m - _total_m
+                out3.metric(
+                    "Verfügbares Netto (nach Ausgaben)",
+                    f"{_de(_verfuegbar)} €/Mon.",
+                    help="Vereinfacht: Netto Haushalt minus monatliche Ausgaben. "
+                         "Individuelle Steuerwirkung der Beiträge nicht berücksichtigt.",
+                )
+        else:
+            st.caption(
+                f"Für {betrachtungsjahr} liegen keine laufenden Vorsorgebeiträge oder "
+                "Hypothekzahlungen vor."
+            )
+
+        st.divider()
 
         # ── Brutto → Netto / Verfügbar Wasserfall ────────────────────────────
         _ansicht_person = ("Person 1" if ansicht == "Person 1"
@@ -650,7 +629,28 @@ def render(
                     f"−{_de(_ak_m_wf)} €/Mon.<br>"
                     f"Annuität auf Restschuld nach Hypothek-Endjahr."
                 )
-            _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf - _hyp_m_wf - _ak_m_wf
+            # Lebenshaltungskosten
+            _lhk_p1 = float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0))
+            _lhk_p2 = float(st.session_state.get(f"rc{_rc}_p2_lhk", 0.0))
+            if ansicht == "Person 1":
+                _lhk_m_wf = _lhk_p1
+            elif ansicht == "Person 2":
+                _lhk_m_wf = _lhk_p2
+            else:
+                _lhk_m_wf = _lhk_p1 + _lhk_p2
+            if _lhk_m_wf > 0:
+                _wf_x.append("− Lebenshalt.")
+                _wf_meas.append("relative")
+                _wf_y.append(-_lhk_m_wf)
+                _wf_t.append(f"−{_de(_lhk_m_wf)} €")
+                _wf_h.append(
+                    f"<b>Lebenshaltungskosten</b><br>"
+                    f"−{_de(_lhk_m_wf)} €/Mon.<br>"
+                    f"Monatliche Fixkosten (Miete, Lebensmittel …).<br>"
+                    f"Konfiguration im Expander 'Lebenshaltungskosten'."
+                )
+
+            _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf - _hyp_m_wf - _ak_m_wf - _lhk_m_wf
             _wf_x.append("Verfügbar")
             _wf_meas.append("total")
             _wf_y.append(_verfuegbar_m)
@@ -658,7 +658,7 @@ def render(
             _wf_h.append(
                 f"<b>Verfügbares Einkommen</b><br>"
                 f"{_de(_verfuegbar_m)} €/Mon.<br>"
-                f"Nach Steuer, KV/PV, Vorsorge-Beiträgen und Fixausgaben."
+                f"Nach Steuer, KV/PV, Vorsorge-Beiträgen, Lebenshaltungskosten und Fixausgaben."
             )
             st.subheader(f"Brutto → Verfügbar {betrachtungsjahr} ({_label})")
             fig_wf_hh = go.Figure(go.Waterfall(
@@ -817,85 +817,162 @@ def render(
 
         st.divider()
 
-        # ── Ausgaben im Planungszeitraum ──────────────────────────────────────
-        st.subheader("📤 Ausgaben im Planungszeitraum")
+        # ── Szenarien-Vergleich Haushalt ──────────────────────────────────────
+        st.subheader(f"Haushalt-Szenarien {betrachtungsjahr} (pessimistisch / neutral / optimistisch)")
 
-        _ausgaben_rows = []
+        sz1 = simuliere_szenarien(p1)
+        sz2 = simuliere_szenarien(p2)
+        _sz_params = {
+            "Pessimistisch": (0.01, 0.03),
+            "Neutral":       (p1.rentenanpassung_pa, p1.rendite_pa),
+            "Optimistisch":  (0.03, 0.07),
+        }
+        # Genaue Jahressimulation je Szenario (korrekte Steuerprogression)
+        _hh_sz_jd: dict[str, dict[int, dict]] = {}
+        _p1_sz_jd: dict[str, dict[int, dict]] = {}
+        _p2_sz_jd: dict[str, dict[int, dict]] = {}
+        for _nm, (_rpa, _kpa) in _sz_params.items():
+            _p1_n = _dc_replace(p1, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
+            _e1_n = berechne_rente(_p1_n)
+            _p2_n = _dc_replace(p2, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
+            _e2_n = berechne_rente(_p2_n)
+            _, _jd_hh = _netto_ueber_horizont(
+                _p1_n, _e1_n, [], _horizont_hh, mieteinnahmen, mietsteigerung,
+                profil2=_p2_n, ergebnis2=_e2_n, veranlagung=veranlagung,
+            )
+            _, _jd_p1 = _netto_ueber_horizont(_p1_n, _e1_n, [], _horizont_p1, _miete_je, mietsteigerung)
+            _, _jd_p2 = _netto_ueber_horizont(_p2_n, _e2_n, [], _horizont_p2, _miete_je, mietsteigerung)
+            _hh_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_hh}
+            _p1_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_p1}
+            _p2_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_p2}
 
-        # Vorsorgebeiträge: Produkte mit laufenden Beiträgen die noch nicht ausgezahlt werden
-        for _vp in _vp_produkte:
-            if _ansicht_person is not None and _vp.get("person", "Person 1") != _ansicht_person:
-                continue
-            _je = float(_vp.get("jaehrl_einzahlung", 0.0))
-            if _je <= 0.0:
-                continue
-            _frueh = int(_vp.get("fruehestes_startjahr", AKTUELLES_JAHR))
-            if _frueh <= betrachtungsjahr:
-                continue
-            _bbj = int(_vp.get("beitragsbefreiung_jahr", 0))
-            if _bbj > 0 and betrachtungsjahr >= _bbj:
-                continue
-            _dyn = float(_vp.get("jaehrl_dynamik", 0.0))
-            _jahre_gelaufen = max(0, betrachtungsjahr - AKTUELLES_JAHR)
-            _beitrag_j = _je * (1.0 + _dyn) ** _jahre_gelaufen
-            _name = _vp.get("bezeichnung") or _vp.get("typ", "Produkt")
-            _ausgaben_rows.append({
-                "Name / Beschreibung": f"{_name} ({_vp.get('typ', '')})",
-                "_jaehrl": _beitrag_j,
+        rows = []
+        for name in ["Pessimistisch", "Neutral", "Optimistisch"]:
+            _row_hh = _hh_sz_jd[name].get(betrachtungsjahr)
+            _row_p1 = _p1_sz_jd[name].get(betrachtungsjahr)
+            _row_p2 = _p2_sz_jd[name].get(betrachtungsjahr)
+            rows.append({
+                "Szenario": name,
+                "Brutto gesamt (€/Mon.)": _de(_row_hh["Brutto"] / 12 if _row_hh else (sz1[name].brutto_monatlich + sz2[name].brutto_monatlich)),
+                "Netto gesamt (€/Mon.)":  _de(_row_hh["Netto"]  / 12 if _row_hh else (sz1[name].netto_monatlich  + sz2[name].netto_monatlich)),
+                "Netto Person 1":         _de(_row_p1["Netto"]  / 12 if _row_p1 else sz1[name].netto_monatlich),
+                "Netto Person 2":         _de(_row_p2["Netto"]  / 12 if _row_p2 else sz2[name].netto_monatlich),
             })
+        st.dataframe(pd.DataFrame(rows).set_index("Szenario"), use_container_width=True)
+        st.caption("Vollständige Jahressimulation mit korrekter Steuerprogression (keine Näherung).")
 
-        # Fixe Ausgaben für Betrachtungsjahr
-        for _fa in _fixausgaben:
-            if _fa["startjahr"] <= betrachtungsjahr <= _fa["endjahr"]:
-                _ausgaben_rows.append({
-                    "Name / Beschreibung": f"{_fa['name']} (Fixausgabe)",
-                    "_jaehrl": _fa["betrag_monatlich"] * 12,
-                })
+        st.divider()
 
-        # Hypothek: Jahresausgabe für Betrachtungsjahr
-        _hyp_schedule = get_hyp_schedule()
-        _hyp_row = next((r for r in _hyp_schedule if r["Jahr"] == betrachtungsjahr), None)
-        if _hyp_row is not None:
-            _ausgaben_rows.append({
-                "Name / Beschreibung": "Hypothek (Annuität + Sondertilgung)",
-                "_jaehrl": _hyp_row["Jahresausgabe"],
-            })
-
-        if _ausgaben_rows:
-            _total_j = sum(r["_jaehrl"] for r in _ausgaben_rows)
-            _total_m = _total_j / 12.0
-
-            _df_aus = pd.DataFrame([{
-                "Name / Beschreibung": r["Name / Beschreibung"],
-                "Jährl. Betrag (€)": _de(r["_jaehrl"]),
-                "Monatl. Betrag (€)": _de(r["_jaehrl"] / 12.0),
-            } for r in _ausgaben_rows])
-            st.dataframe(_df_aus.set_index("Name / Beschreibung"), use_container_width=True)
-
-            out1, out2, out3 = st.columns(3)
-            out1.metric("Gesamtausgaben/Jahr", f"{_de(_total_j)} €")
-            out2.metric("Gesamtausgaben/Monat", f"{_de(_total_m)} €")
-
-            # Verfügbares Netto nach Abzug der Ausgaben
-            if ansicht == "Haushalt gesamt" and _row_comb:
-                _netto_hh_m = _row_comb["Netto"] / 12.0
-            elif ansicht == "Haushalt gesamt":
-                _netto_hh_m = hh["netto_gesamt"]
-            else:
-                _netto_hh_m = 0.0
-
-            if _netto_hh_m > 0:
-                _verfuegbar = _netto_hh_m - _total_m
-                out3.metric(
-                    "Verfügbares Netto (nach Ausgaben)",
-                    f"{_de(_verfuegbar)} €/Mon.",
-                    help="Vereinfacht: Netto Haushalt minus monatliche Ausgaben. "
-                         "Individuelle Steuerwirkung der Beiträge nicht berücksichtigt.",
-                )
+        # ── Seite-an-Seite Vergleich ──────────────────────────────────────────
+        if ansicht != "Haushalt gesamt":
+            # Einzelpersonen-Ansicht – Slider-Jahr oder Eintrittsmonat als Fallback
+            _e   = e1 if ansicht == "Person 1" else e2
+            _p   = p1 if ansicht == "Person 1" else p2
+            _row = _row_p1 if ansicht == "Person 1" else _row_p2
+            _b_d = _row["Brutto"] / 12 if _row else _e.brutto_monatlich
+            _n_d = _row["Netto"]  / 12 if _row else _e.netto_monatlich
+            _s_d = _row["Steuer"] / 12 if _row else _e.steuer_monatlich
+            _k_d = _row["KV_PV"]  / 12 if _row else _e.kv_monatlich
+            _note = "" if _row else " (Eintrittsmonat)"
+            st.subheader(f"{ansicht} – {betrachtungsjahr}{_note}")
+            cv1, cv2 = st.columns(2)
+            with cv1:
+                for label, wert in [
+                    ("Bruttoeinkommen", f"{_de(_b_d)} €"),
+                    ("− Steuer", f"{_de(_s_d)} €"),
+                    ("− KV / PV", f"{_de(_k_d)} €"),
+                    ("**= Netto**", f"**{_de(_n_d)} €**"),
+                    ("Rentenpunkte", f"{_e.gesamtpunkte:.1f}".replace(".", ",")),
+                    ("Renteneintritt",
+                     str(_p.rentenbeginn_jahr if _p.bereits_rentner else _p.eintritt_jahr)),
+                ]:
+                    a, b = st.columns([2, 1])
+                    a.markdown(label)
+                    b.markdown(wert)
         else:
-            st.caption(
-                f"Für {betrachtungsjahr} liegen keine laufenden Vorsorgebeiträge oder "
-                "Hypothekzahlungen vor."
+            # Jahr-spezifische Werte aus Slider; Fallback auf Eintrittsmonat
+            _p1_b = _row_p1["Brutto"] / 12 if _row_p1 else e1.brutto_monatlich
+            _p1_n = _row_p1["Netto"]  / 12 if _row_p1 else e1.netto_monatlich
+            _p1_s = _row_p1["Steuer"] / 12 if _row_p1 else e1.steuer_monatlich
+            _p1_k = _row_p1["KV_PV"]  / 12 if _row_p1 else e1.kv_monatlich
+            _p2_b = _row_p2["Brutto"] / 12 if _row_p2 else e2.brutto_monatlich
+            _p2_n = _row_p2["Netto"]  / 12 if _row_p2 else e2.netto_monatlich
+            _p2_s = _row_p2["Steuer"] / 12 if _row_p2 else e2.steuer_monatlich
+            _p2_k = _row_p2["KV_PV"]  / 12 if _row_p2 else e2.kv_monatlich
+            _note = "" if (_row_p1 and _row_p2) else " (Eintrittsmonat)"
+
+            st.subheader(f"Person 1 vs. Person 2 – {betrachtungsjahr}{_note}")
+            col1, col2, col3 = st.columns([2, 2, 3])
+
+            with col1:
+                st.markdown("**Person 1**")
+                for label, wert in [
+                    ("Bruttoeinkommen", f"{_de(_p1_b)} €"),
+                    ("− Steuer", f"{_de(_p1_s)} €"),
+                    ("− KV / PV", f"{_de(_p1_k)} €"),
+                    ("**= Netto**", f"**{_de(_p1_n)} €**"),
+                    ("Rentenpunkte", f"{e1.gesamtpunkte:.1f}".replace(".", ",")),
+                    ("Ruhestand seit" if p1.bereits_rentner else "Renteneintritt",
+                     str(p1.rentenbeginn_jahr if p1.bereits_rentner else p1.eintritt_jahr)),
+                ]:
+                    a, b = st.columns([2, 1])
+                    a.markdown(label)
+                    b.markdown(wert)
+
+            with col2:
+                st.markdown("**Person 2**")
+                for label, wert in [
+                    ("Bruttoeinkommen", f"{_de(_p2_b)} €"),
+                    ("− Steuer", f"{_de(_p2_s)} €"),
+                    ("− KV / PV", f"{_de(_p2_k)} €"),
+                    ("**= Netto**", f"**{_de(_p2_n)} €**"),
+                    ("Rentenpunkte", f"{e2.gesamtpunkte:.1f}".replace(".", ",")),
+                    ("Ruhestand seit" if p2.bereits_rentner else "Renteneintritt",
+                     str(p2.rentenbeginn_jahr if p2.bereits_rentner else p2.eintritt_jahr)),
+                ]:
+                    a, b = st.columns([2, 1])
+                    a.markdown(label)
+                    b.markdown(wert)
+
+            with col3:
+                # Stacked bar: Netto + Steuer + KV = Brutto (Total-Höhe)
+                personen = ["Person 1", "Person 2"]
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    name="Netto", x=personen, y=[_p1_n, _p2_n],
+                    marker_color="#A5D6A7",
+                    text=[f"{_de(_p1_n)} €", f"{_de(_p2_n)} €"],
+                    textposition="inside",
+                ))
+                fig.add_trace(go.Bar(
+                    name="− Steuer", x=personen, y=[_p1_s, _p2_s],
+                    marker_color="#EF9A9A",
+                    text=[f"{_de(_p1_s)} €", f"{_de(_p2_s)} €"],
+                    textposition="inside",
+                ))
+                fig.add_trace(go.Bar(
+                    name="− KV/PV", x=personen, y=[_p1_k, _p2_k],
+                    marker_color="#FFF176",
+                    text=[f"{_de(_p1_k)} €", f"{_de(_p2_k)} €"],
+                    textposition="inside",
+                ))
+                fig.update_layout(
+                    barmode="stack",
+                    template="plotly_white",
+                    height=320,
+                    yaxis=dict(title="€ / Monat (Brutto = Gesamthöhe)"),
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                    margin=dict(l=0, r=0, t=30, b=0),
+                    separators=",.",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        if mieteinnahmen > 0:
+            st.info(
+                f"🏠 **Mieteinnahmen:** {_de(mieteinnahmen)} €/Monat "
+                f"(+{mietsteigerung:.1%}".replace(".", ",") +
+                " p.a.) – in Steuerberechnung enthalten, keine KV-Pflicht."
             )
 
         st.divider()
@@ -979,52 +1056,6 @@ def render(
         )
         st.caption("Zusammen/Getrennt = Haushalt gesamt (beide Personen); P1/P2 = Einzelwerte je Person.")
         st.plotly_chart(fig_st, use_container_width=True)
-
-        st.divider()
-
-        # ── Szenarien-Vergleich Haushalt ──────────────────────────────────────
-        st.subheader(f"Haushalt-Szenarien {betrachtungsjahr} (pessimistisch / neutral / optimistisch)")
-
-        sz1 = simuliere_szenarien(p1)
-        sz2 = simuliere_szenarien(p2)
-        _sz_params = {
-            "Pessimistisch": (0.01, 0.03),
-            "Neutral":       (p1.rentenanpassung_pa, p1.rendite_pa),
-            "Optimistisch":  (0.03, 0.07),
-        }
-        # Genaue Jahressimulation je Szenario (korrekte Steuerprogression)
-        _hh_sz_jd: dict[str, dict[int, dict]] = {}
-        _p1_sz_jd: dict[str, dict[int, dict]] = {}
-        _p2_sz_jd: dict[str, dict[int, dict]] = {}
-        for _nm, (_rpa, _kpa) in _sz_params.items():
-            _p1_n = _dc_replace(p1, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
-            _e1_n = berechne_rente(_p1_n)
-            _p2_n = _dc_replace(p2, rentenanpassung_pa=_rpa, rendite_pa=_kpa)
-            _e2_n = berechne_rente(_p2_n)
-            _, _jd_hh = _netto_ueber_horizont(
-                _p1_n, _e1_n, [], _horizont_hh, mieteinnahmen, mietsteigerung,
-                profil2=_p2_n, ergebnis2=_e2_n, veranlagung=veranlagung,
-            )
-            _, _jd_p1 = _netto_ueber_horizont(_p1_n, _e1_n, [], _horizont_p1, _miete_je, mietsteigerung)
-            _, _jd_p2 = _netto_ueber_horizont(_p2_n, _e2_n, [], _horizont_p2, _miete_je, mietsteigerung)
-            _hh_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_hh}
-            _p1_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_p1}
-            _p2_sz_jd[_nm] = {r["Jahr"]: r for r in _jd_p2}
-
-        rows = []
-        for name in ["Pessimistisch", "Neutral", "Optimistisch"]:
-            _row_hh = _hh_sz_jd[name].get(betrachtungsjahr)
-            _row_p1 = _p1_sz_jd[name].get(betrachtungsjahr)
-            _row_p2 = _p2_sz_jd[name].get(betrachtungsjahr)
-            rows.append({
-                "Szenario": name,
-                "Brutto gesamt (€/Mon.)": _de(_row_hh["Brutto"] / 12 if _row_hh else (sz1[name].brutto_monatlich + sz2[name].brutto_monatlich)),
-                "Netto gesamt (€/Mon.)":  _de(_row_hh["Netto"]  / 12 if _row_hh else (sz1[name].netto_monatlich  + sz2[name].netto_monatlich)),
-                "Netto Person 1":         _de(_row_p1["Netto"]  / 12 if _row_p1 else sz1[name].netto_monatlich),
-                "Netto Person 2":         _de(_row_p2["Netto"]  / 12 if _row_p2 else sz2[name].netto_monatlich),
-            })
-        st.dataframe(pd.DataFrame(rows).set_index("Szenario"), use_container_width=True)
-        st.caption("Vollständige Jahressimulation mit korrekter Steuerprogression (keine Näherung).")
 
         st.divider()
 
