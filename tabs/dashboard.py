@@ -32,8 +32,10 @@ def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
         je = float(vp.get("jaehrl_einzahlung", 0.0))
         if je <= 0.0:
             continue
-        if int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR)) <= jahr:
-            continue
+        # LV: Beiträge enden nicht am Auszahlungsjahr, sondern per Beitragsbefreiung
+        if vp.get("typ") != "LV":
+            if int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR)) <= jahr:
+                continue
         bbj = int(vp.get("beitragsbefreiung_jahr", 0))
         if bbj > 0 and jahr >= bbj:
             continue
@@ -46,6 +48,28 @@ def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
 def _vorsorge_non_bav_monatlich(produkte: list[dict], jahr: int,
                                  person: str | None = None) -> float:
     return sum(b for _, b in _vorsorge_non_bav_einzeln(produkte, jahr, person=person))
+
+
+def _vorsorge_bav_monatlich(produkte: list[dict], jahr: int,
+                             person: str | None = None) -> float:
+    """Monatliche bAV-Beiträge (AN-Anteil) für das gegebene Jahr."""
+    total = 0.0
+    for vp in produkte:
+        if vp.get("typ") != "bAV":
+            continue
+        if person is not None and vp.get("person", "Person 1") != person:
+            continue
+        je = float(vp.get("jaehrl_einzahlung", 0.0))
+        if je <= 0.0:
+            continue
+        if int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR)) <= jahr:
+            continue
+        bbj = int(vp.get("beitragsbefreiung_jahr", 0))
+        if bbj > 0 and jahr >= bbj:
+            continue
+        dyn = float(vp.get("jaehrl_dynamik", 0.0))
+        total += je * (1.0 + dyn) ** max(0, jahr - AKTUELLES_JAHR) / 12.0
+    return total
 
 
 def _eink_label(profil: "Profil", sel_jahr: int) -> str:
@@ -446,8 +470,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"{_de(_hh_netto)} €/Mon.<br>"
                 f"Nach Steuer und KV/PV-Abzügen.",
             ]
-            # Vorsorgebeiträge (ohne bAV)
+            # Vorsorgebeiträge: bAV-Beiträge (AN-Anteil) + sonstige Vorsorge
             _vp_produkte_hh = st.session_state.get("vp_produkte", [])
+            _bav_m_hh = _vorsorge_bav_monatlich(_vp_produkte_hh, _sel_j_dash)
+            if _bav_m_hh > 0:
+                _wf_x.append("− bAV-Beiträge")
+                _wf_m.append("relative")
+                _wf_y.append(-_bav_m_hh)
+                _wf_t.append(f"−{_de(_bav_m_hh)} €")
+                _wf_h.append(
+                    f"<b>bAV-Beiträge (AN-Anteil)</b><br>"
+                    f"−{_de(_bav_m_hh)} €/Mon.<br>"
+                    f"Eigenbeitrag zur betrieblichen Altersversorgung.<br>"
+                    f"Reduziert verfügbares Netto in der Ansparphase."
+                )
             _vb_einzeln_hh = _vorsorge_non_bav_einzeln(_vp_produkte_hh, _sel_j_dash)
             _vb_m_hh = sum(b for _, b in _vb_einzeln_hh)
             if _vb_m_hh > 0:
@@ -526,7 +562,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     f"P1 + P2, Miete, Lebensmittel u.a.<br>"
                     f"Konfiguration im Tab Haushalt."
                 )
-            _hh_verfuegbar = _hh_netto - _vb_m_hh - _hh_fix_m - _hyp_m_hh - _ak_m_hh - _hh_lhk
+            _hh_verfuegbar = _hh_netto - _bav_m_hh - _vb_m_hh - _hh_fix_m - _hyp_m_hh - _ak_m_hh - _hh_lhk
             _wf_x.append("Verfügbar")
             _wf_m.append("total")
             _wf_y.append(_hh_verfuegbar)
@@ -881,9 +917,21 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             f"§ 55 SGB XI; Kinderstaffelung § 55 Abs. 3a SGB XI.<br>"
             f"Kinderlosenzuschlag: +0,6 % (trägt Versicherter allein).",
         ]
-        # Vorsorgebeiträge (ohne bAV)
+        # Vorsorgebeiträge: bAV-Beiträge + sonstige (inkl. LV)
         _d_person_vb = "Person 2" if wahl == "Person 2" else "Person 1"
         _vp_produkte_e = st.session_state.get("vp_produkte", [])
+        _bav_m_e = _vorsorge_bav_monatlich(_vp_produkte_e, _sel_j_dash, person=_d_person_vb)
+        if _bav_m_e > 0:
+            _wf_x_e.append("− bAV-Beiträge")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(-_bav_m_e)
+            _wf_t_e.append(f"−{_de(_bav_m_e)} €")
+            _wf_h_e.append(
+                f"<b>bAV-Beiträge (AN-Anteil)</b><br>"
+                f"−{_de(_bav_m_e)} €/Mon.<br>"
+                f"Eigenbeitrag zur betrieblichen Altersversorgung.<br>"
+                f"Reduziert verfügbares Netto in der Ansparphase."
+            )
         _vb_einzeln_e = _vorsorge_non_bav_einzeln(_vp_produkte_e, _sel_j_dash, person=_d_person_vb)
         _vb_m_e = sum(b for _, b in _vb_einzeln_e)
         if _vb_m_e > 0:
@@ -960,7 +1008,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Monatliche Fixkosten (Miete, Lebensmittel …).<br>"
                 f"Konfiguration im Tab Haushalt."
             )
-        _d_verfuegbar = _d_netto - _vb_m_e - _d_fix_m - _hyp_m_e_val - _ak_m_e_val - _d_lhk
+        _d_verfuegbar = _d_netto - _bav_m_e - _vb_m_e - _d_fix_m - _hyp_m_e_val - _ak_m_e_val - _d_lhk
         _wf_x_e.append("Verfügbar")
         _wf_m_e.append("total")
         _wf_y_e.append(_d_verfuegbar)

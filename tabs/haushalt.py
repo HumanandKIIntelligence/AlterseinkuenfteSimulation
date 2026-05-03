@@ -39,11 +39,35 @@ def _vorsorge_non_bav_monatlich(produkte: list[dict], jahr: int,
     return sum(b for _, b in _vorsorge_non_bav_einzeln(produkte, jahr, person=person))
 
 
+def _vorsorge_bav_monatlich(produkte: list[dict], jahr: int,
+                             person: str | None = None) -> float:
+    """Monatliche bAV-Beiträge (AN-Anteil) für das gegebene Jahr."""
+    total = 0.0
+    for vp in produkte:
+        if vp.get("typ") != "bAV":
+            continue
+        if person is not None and vp.get("person", "Person 1") != person:
+            continue
+        je = float(vp.get("jaehrl_einzahlung", 0.0))
+        if je <= 0.0:
+            continue
+        if int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR)) <= jahr:
+            continue
+        bbj = int(vp.get("beitragsbefreiung_jahr", 0))
+        if bbj > 0 and jahr >= bbj:
+            continue
+        dyn = float(vp.get("jaehrl_dynamik", 0.0))
+        total += je * (1.0 + dyn) ** max(0, jahr - AKTUELLES_JAHR) / 12.0
+    return total
+
+
 def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
                                person: str | None = None) -> list[tuple[str, float]]:
     """Liste von (Name, €/Mon.) für aktive nicht-bAV Vorsorge-Beiträge im Jahr.
 
     person: wenn gesetzt, nur Produkte dieser Person (None = alle Personen).
+    LV-Produkte: fruehestes_startjahr gilt nur als Auszahlungszeitpunkt, nicht
+    als Beitragsende – Beiträge laufen bis beitragsbefreiung_jahr weiter.
     """
     result: list[tuple[str, float]] = []
     for vp in produkte:
@@ -54,8 +78,10 @@ def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
         je = float(vp.get("jaehrl_einzahlung", 0.0))
         if je <= 0.0:
             continue
-        if int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR)) <= jahr:
-            continue
+        # LV: Beiträge enden nicht am Auszahlungsjahr, sondern per Beitragsbefreiung
+        if vp.get("typ") != "LV":
+            if int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR)) <= jahr:
+                continue
         bbj = int(vp.get("beitragsbefreiung_jahr", 0))
         if bbj > 0 and jahr >= bbj:
             continue
@@ -732,6 +758,9 @@ def render(
             _vbnbav_py = {j: _vorsorge_non_bav_monatlich(_vp_produkte, j,
                                                            person=_ansicht_person)
                          for j in _alle_jahre}
+            _bav_beitrag_py = {j: _vorsorge_bav_monatlich(_vp_produkte, j,
+                                                           person=_ansicht_person)
+                               for j in _alle_jahre}
             _hyp_sched_jv  = get_hyp_schedule()
             _ak_sched_jv   = get_anschluss_schedule()
             _hyp_py = {
@@ -755,12 +784,15 @@ def render(
             _lhk_py = {j: _lhk_m_jv for j in _alle_jahre}
             _verfuegbar_py = {
                 j: (_df.loc[j, "Netto"] / 12)
-                   - _vbnbav_py[j] - _fix_py[j] - _lhk_py[j] - _hyp_py[j]
+                   - _bav_beitrag_py[j] - _vbnbav_py[j]
+                   - _fix_py[j] - _lhk_py[j] - _hyp_py[j]
                 for j in _alle_jahre
             }
             # Hover-Breakdown: alle aktiven Abzüge je Jahr
             def _jv2_hover(j: int) -> str:
                 parts = []
+                if _bav_beitrag_py[j] > 0:
+                    parts.append(f"bAV-Beitrag: −{_de(_bav_beitrag_py[j])} €/Mon.")
                 if _vbnbav_py[j] > 0:
                     parts.append(f"Vorsorge: −{_de(_vbnbav_py[j])} €/Mon.")
                 if _hyp_py[j] > 0:
@@ -778,6 +810,14 @@ def render(
                 marker_color="#90CAF9",
                 hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Brutto</extra>",
             ))
+            if any(_bav_beitrag_py[j] > 0 for j in _alle_jahre):
+                fig_jv2.add_trace(go.Bar(
+                    name="− bAV-Beiträge (AN)", x=_alle_jahre,
+                    y=[-_bav_beitrag_py[j] for j in _alle_jahre],
+                    marker_color="#F48FB1",
+                    customdata=_cd_jv2,
+                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>bAV-Beitrag</extra>",
+                ))
             if any(_vbnbav_py[j] > 0 for j in _alle_jahre):
                 fig_jv2.add_trace(go.Bar(
                     name="− Vorsorge (ohne bAV)", x=_alle_jahre,
