@@ -12,6 +12,41 @@ from engine import (
 from tabs import steuern
 from tabs.analyse import render_analyse
 
+try:
+    from tabs.hypothek import get_hyp_schedule, get_anschluss_schedule
+except ImportError:
+    def get_hyp_schedule():
+        return []
+    def get_anschluss_schedule():
+        return []
+
+
+def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
+                               person: str | None = None) -> list[tuple[str, float]]:
+    result: list[tuple[str, float]] = []
+    for vp in produkte:
+        if vp.get("typ") == "bAV":
+            continue
+        if person is not None and vp.get("person", "Person 1") != person:
+            continue
+        je = float(vp.get("jaehrl_einzahlung", 0.0))
+        if je <= 0.0:
+            continue
+        if int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR)) <= jahr:
+            continue
+        bbj = int(vp.get("beitragsbefreiung_jahr", 0))
+        if bbj > 0 and jahr >= bbj:
+            continue
+        dyn = float(vp.get("jaehrl_dynamik", 0.0))
+        monatlich = je * (1.0 + dyn) ** max(0, jahr - AKTUELLES_JAHR) / 12.0
+        result.append((vp.get("name", "Vorsorge"), monatlich))
+    return result
+
+
+def _vorsorge_non_bav_monatlich(produkte: list[dict], jahr: int,
+                                 person: str | None = None) -> float:
+    return sum(b for _, b in _vorsorge_non_bav_einzeln(produkte, jahr, person=person))
+
 
 def _eink_label(profil: "Profil", sel_jahr: int) -> str:
     """Einkommens-Label abhängig vom Zustand der Person im gewählten Jahr."""
@@ -316,8 +351,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
             st.divider()
 
-            # ── Wasserfall Haushalt Brutto → Netto ───────────────────────────
-            st.subheader(f"Haushalt Brutto → Netto {_sel_j_dash} (monatlich)")
+            # ── Wasserfall Haushalt Brutto → Verfügbar ───────────────────────
+            st.subheader(f"Haushalt Brutto → Verfügbar {_sel_j_dash} (monatlich)")
             _ba1_pct = f"{ergebnis.besteuerungsanteil:.0%}".replace(".", ",")
             _ba2_pct = f"{ergebnis2.besteuerungsanteil:.0%}".replace(".", ",")
             _ver_label = "Zusammenveranlagung (Splitting)" if veranlagung == "Zusammen" else "Getrenntveranlagung"
@@ -404,10 +439,100 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 + (f"<br>P1: {_de(_hh_kv_p1)} €, P2: {_de(_hh_kv_p2)} €" if _hh_kv_p1 is not None else "")
                 + "<br>GKV/PKV je nach Versicherungsstatus.<br>"
                 "BBG: 5.175 €/Mon.",
-                f"<b>Netto Haushalt (verfügbar)</b><br>"
+                f"<b>Netto Haushalt</b><br>"
                 f"{_de(_hh_netto)} €/Mon.<br>"
                 f"Nach Steuer und KV/PV-Abzügen.",
             ]
+            # Vorsorgebeiträge (ohne bAV)
+            _vp_produkte_hh = st.session_state.get("vp_produkte", [])
+            _vb_einzeln_hh = _vorsorge_non_bav_einzeln(_vp_produkte_hh, _sel_j_dash)
+            _vb_m_hh = sum(b for _, b in _vb_einzeln_hh)
+            if _vb_m_hh > 0:
+                _vb_detail_hh = "; ".join(f"{n}: {_de(v)} €" for n, v in _vb_einzeln_hh)
+                _wf_x.append("− Vorsorge\n(ohne bAV)")
+                _wf_m.append("relative")
+                _wf_y.append(-_vb_m_hh)
+                _wf_t.append(f"−{_de(_vb_m_hh)} €")
+                _wf_h.append(
+                    f"<b>Vorsorge-Beiträge (ohne bAV)</b><br>"
+                    f"−{_de(_vb_m_hh)} €/Mon.<br>"
+                    f"Laufende Beiträge: {_vb_detail_hh}.<br>"
+                    f"Reduzieren das verfügbare Netto während der Beitragsphase."
+                )
+            # Fixe monatliche Ausgaben
+            _hh_fix_aktiv = [
+                fa for fa in st.session_state.get("hh_fixausgaben", [])
+                if fa["startjahr"] <= _sel_j_dash <= fa["endjahr"]
+            ]
+            _hh_fix_m = sum(fa["betrag_monatlich"] for fa in _hh_fix_aktiv)
+            if _hh_fix_m > 0:
+                _hh_fix_detail = "; ".join(
+                    f"{fa['name']}: {_de(fa['betrag_monatlich'])} €" for fa in _hh_fix_aktiv
+                )
+                _wf_x.append("− Fixe Ausgaben")
+                _wf_m.append("relative")
+                _wf_y.append(-_hh_fix_m)
+                _wf_t.append(f"−{_de(_hh_fix_m)} €")
+                _wf_h.append(
+                    f"<b>Fixe monatliche Ausgaben</b><br>"
+                    f"−{_de(_hh_fix_m)} €/Mon.<br>"
+                    f"Summe aktiver Fixausgaben {_sel_j_dash}.<br>"
+                    + (f"{_hh_fix_detail}." if _hh_fix_detail else "")
+                )
+            # Hypothek
+            _hyp_sched_hh = get_hyp_schedule()
+            _hyp_row_hh = next((r for r in _hyp_sched_hh if r["Jahr"] == _sel_j_dash), None)
+            _hyp_m_hh = _hyp_row_hh["Jahresausgabe"] / 12 if _hyp_row_hh else 0.0
+            if _hyp_m_hh > 0:
+                _wf_x.append("− Hypothek")
+                _wf_m.append("relative")
+                _wf_y.append(-_hyp_m_hh)
+                _wf_t.append(f"−{_de(_hyp_m_hh)} €")
+                _wf_h.append(
+                    f"<b>Hypothek-Jahresrate</b><br>"
+                    f"−{_de(_hyp_m_hh)} €/Mon.<br>"
+                    f"Annuität {_sel_j_dash} (Zins + Tilgung).<br>"
+                    f"Konfiguration im Tab Hypothek-Verwaltung."
+                )
+            _ak_sched_hh = get_anschluss_schedule()
+            _ak_row_hh = next((r for r in _ak_sched_hh if r["Jahr"] == _sel_j_dash), None)
+            _ak_m_hh = _ak_row_hh["Jahresausgabe"] / 12 if _ak_row_hh else 0.0
+            if _ak_m_hh > 0:
+                _wf_x.append("− Anschlusskredit")
+                _wf_m.append("relative")
+                _wf_y.append(-_ak_m_hh)
+                _wf_t.append(f"−{_de(_ak_m_hh)} €")
+                _wf_h.append(
+                    f"<b>Anschlussfinanzierung</b><br>"
+                    f"−{_de(_ak_m_hh)} €/Mon.<br>"
+                    f"Annuität auf Restschuld nach Hypothek-Endjahr."
+                )
+            # Lebenshaltungskosten (beide Personen)
+            _hh_lhk = (
+                float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0))
+                + float(st.session_state.get(f"rc{_rc}_p2_lhk", 0.0))
+            )
+            if _hh_lhk > 0:
+                _wf_x.append("− Lebenshalt.")
+                _wf_m.append("relative")
+                _wf_y.append(-_hh_lhk)
+                _wf_t.append(f"−{_de(_hh_lhk)} €")
+                _wf_h.append(
+                    f"<b>Lebenshaltungskosten (Haushalt)</b><br>"
+                    f"−{_de(_hh_lhk)} €/Mon.<br>"
+                    f"P1 + P2, Miete, Lebensmittel u.a.<br>"
+                    f"Konfiguration im Tab Haushalt."
+                )
+            _hh_verfuegbar = _hh_netto - _vb_m_hh - _hh_fix_m - _hyp_m_hh - _ak_m_hh - _hh_lhk
+            _wf_x.append("Verfügbar")
+            _wf_m.append("total")
+            _wf_y.append(_hh_verfuegbar)
+            _wf_t.append(f"{_de(_hh_verfuegbar)} €")
+            _wf_h.append(
+                f"<b>Verfügbares Einkommen (Haushalt)</b><br>"
+                f"{_de(_hh_verfuegbar)} €/Mon.<br>"
+                f"Nach Steuer, KV/PV, Vorsorge, Hypothek, Lebenshaltung und Fixausgaben."
+            )
             fig_wf = go.Figure(go.Waterfall(
                 orientation="v",
                 measure=_wf_m,
@@ -422,6 +547,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 decreasing=dict(marker=dict(color="#F44336")),
                 totals=dict(marker=dict(color="#2196F3")),
             ))
+            _mindest_mono_hh = float(st.session_state.get("mindest_haushalt_mono", 2_000))
+            fig_wf.add_hline(
+                y=_mindest_mono_hh, line_dash="dot", line_color="orange", line_width=2,
+                annotation_text=f"Mindest {_de(_mindest_mono_hh)} €",
+                annotation_position="top right",
+            )
             fig_wf.update_layout(
                 template="plotly_white",
                 height=380,
@@ -747,7 +878,24 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             f"§ 55 SGB XI; Kinderstaffelung § 55 Abs. 3a SGB XI.<br>"
             f"Kinderlosenzuschlag: +0,6 % (trägt Versicherter allein).",
         ]
-        # Lebenshaltungskosten und fixe Ausgaben
+        # Vorsorgebeiträge (ohne bAV)
+        _d_person_vb = "Person 2" if wahl == "Person 2" else "Person 1"
+        _vp_produkte_e = st.session_state.get("vp_produkte", [])
+        _vb_einzeln_e = _vorsorge_non_bav_einzeln(_vp_produkte_e, _sel_j_dash, person=_d_person_vb)
+        _vb_m_e = sum(b for _, b in _vb_einzeln_e)
+        if _vb_m_e > 0:
+            _vb_detail_e = "; ".join(f"{n}: {_de(v)} €" for n, v in _vb_einzeln_e)
+            _wf_x_e.append("− Vorsorge\n(ohne bAV)")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(-_vb_m_e)
+            _wf_t_e.append(f"−{_de(_vb_m_e)} €")
+            _wf_h_e.append(
+                f"<b>Vorsorge-Beiträge (ohne bAV)</b><br>"
+                f"−{_de(_vb_m_e)} €/Mon.<br>"
+                f"Laufende Beiträge: {_vb_detail_e}.<br>"
+                f"Reduzieren das verfügbare Netto während der Beitragsphase."
+            )
+        # Fixe monatliche Ausgaben
         _lhk_key_d = "p2_lhk" if wahl == "Person 2" else "p1_lhk"
         _d_lhk = float(st.session_state.get(f"rc{_rc}_{_lhk_key_d}", 0.0))
         _d_fix_aktiv = [
@@ -755,6 +903,49 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             if fa["startjahr"] <= _sel_j_dash <= fa["endjahr"]
         ]
         _d_fix_m = sum(fa["betrag_monatlich"] for fa in _d_fix_aktiv)
+        if _d_fix_m > 0:
+            _d_fix_detail_e = "; ".join(
+                f"{fa['name']}: {_de(fa['betrag_monatlich'])} €" for fa in _d_fix_aktiv
+            )
+            _wf_x_e.append("− Fixe Ausgaben")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(-_d_fix_m)
+            _wf_t_e.append(f"−{_de(_d_fix_m)} €")
+            _wf_h_e.append(
+                f"<b>Fixe monatliche Ausgaben</b><br>"
+                f"−{_de(_d_fix_m)} €/Mon.<br>"
+                f"Summe aktiver Fixausgaben {_sel_j_dash}.<br>"
+                + (f"{_d_fix_detail_e}." if _d_fix_detail_e else "")
+            )
+        # Hypothek
+        _hyp_sched_e = get_hyp_schedule()
+        _hyp_row_e = next((r for r in _hyp_sched_e if r["Jahr"] == _sel_j_dash), None)
+        _hyp_m_e_val = _hyp_row_e["Jahresausgabe"] / 12 if _hyp_row_e else 0.0
+        if _hyp_m_e_val > 0:
+            _wf_x_e.append("− Hypothek")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(-_hyp_m_e_val)
+            _wf_t_e.append(f"−{_de(_hyp_m_e_val)} €")
+            _wf_h_e.append(
+                f"<b>Hypothek-Jahresrate</b><br>"
+                f"−{_de(_hyp_m_e_val)} €/Mon.<br>"
+                f"Annuität {_sel_j_dash} (Zins + Tilgung).<br>"
+                f"Konfiguration im Tab Hypothek-Verwaltung."
+            )
+        _ak_sched_e = get_anschluss_schedule()
+        _ak_row_e = next((r for r in _ak_sched_e if r["Jahr"] == _sel_j_dash), None)
+        _ak_m_e_val = _ak_row_e["Jahresausgabe"] / 12 if _ak_row_e else 0.0
+        if _ak_m_e_val > 0:
+            _wf_x_e.append("− Anschlusskredit")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(-_ak_m_e_val)
+            _wf_t_e.append(f"−{_de(_ak_m_e_val)} €")
+            _wf_h_e.append(
+                f"<b>Anschlussfinanzierung</b><br>"
+                f"−{_de(_ak_m_e_val)} €/Mon.<br>"
+                f"Annuität auf Restschuld nach Hypothek-Endjahr."
+            )
+        # Lebenshaltungskosten
         if _d_lhk > 0:
             _wf_x_e.append("− Lebenshalt.")
             _wf_m_e.append("relative")
@@ -766,18 +957,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Monatliche Fixkosten (Miete, Lebensmittel …).<br>"
                 f"Konfiguration im Tab Haushalt."
             )
-        if _d_fix_m > 0:
-            _wf_x_e.append("− Fixe Ausgaben")
-            _wf_m_e.append("relative")
-            _wf_y_e.append(-_d_fix_m)
-            _wf_t_e.append(f"−{_de(_d_fix_m)} €")
-            _wf_h_e.append(
-                f"<b>Fixe monatliche Ausgaben</b><br>"
-                f"−{_de(_d_fix_m)} €/Mon.<br>"
-                f"Summe aktiver Fixausgaben {_sel_j_dash}.<br>"
-                f"Konfiguration im Tab Haushalt."
-            )
-        _d_verfuegbar = _d_netto - _d_lhk - _d_fix_m
+        _d_verfuegbar = _d_netto - _vb_m_e - _d_fix_m - _hyp_m_e_val - _ak_m_e_val - _d_lhk
         _wf_x_e.append("Verfügbar")
         _wf_m_e.append("total")
         _wf_y_e.append(_d_verfuegbar)
@@ -785,7 +965,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         _wf_h_e.append(
             f"<b>Verfügbares Einkommen</b><br>"
             f"{_de(_d_verfuegbar)} €/Mon.<br>"
-            f"Nach Steuer, KV/PV, Lebenshaltungskosten und Fixausgaben."
+            f"Nach Steuer, KV/PV, Vorsorge, Hypothek, Lebenshaltung und Fixausgaben."
         )
         fig_wf = go.Figure(go.Waterfall(
             orientation="v",
