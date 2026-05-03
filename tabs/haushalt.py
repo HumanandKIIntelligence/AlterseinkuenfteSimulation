@@ -753,6 +753,56 @@ def render(
         if _jd_display:
             _df = pd.DataFrame(_jd_display).set_index("Jahr")
 
+            # ── Blended Brutto für Renteneintritts-Jahr ───────────────────────
+            # Für jede angezeigte Person: Brutto im Eintrittsjahr anteilig aus
+            # Gehalt (Monate 1..m-1) + Rente (Monate m..12) berechnen.
+            def _blend_brutto(prof, jd_single: list[dict]) -> None:
+                if prof.bereits_rentner:
+                    return
+                ej = prof.eintritt_jahr
+                m = prof.renteneintritt_monat   # 1–12; 1 = ganzes Jahr Rente
+                if m <= 1 or ej not in _df.index:
+                    return
+                _by_y = {r["Jahr"]: r for r in jd_single}
+                pension_mono = _by_y.get(ej, {}).get("Src_GesRente", 0.0) / 12
+                # Gehalt des Vorjahres als Monatsgehalt (letztes Arbeitsjahr)
+                prev = _by_y.get(ej - 1)
+                if prev is None:
+                    return
+                salary_mono = prev.get("Src_Gehalt", 0.0) / 12
+                m_before = m - 1
+                m_after  = 12 - m_before
+                blended  = m_before * salary_mono + m_after * pension_mono
+                _df.loc[ej, "Brutto"] = blended * 12
+
+            if ansicht == "Person 1":
+                _blend_brutto(p1, _jd_p1)
+            elif ansicht == "Person 2":
+                _blend_brutto(p2, _jd_p2)
+            else:
+                # Haushalt gesamt: blend each person in their individual series,
+                # then rebuild combined Brutto for the affected years
+                _p1_by_y_orig = {r["Jahr"]: r for r in _jd_p1}
+                _p2_by_y_orig = {r["Jahr"]: r for r in _jd_p2}
+                for _prof, _jd_s in ((p1, _jd_p1), (p2, _jd_p2)):
+                    if _prof.bereits_rentner or _prof.renteneintritt_monat <= 1:
+                        continue
+                    _ej = _prof.eintritt_jahr
+                    if _ej not in _df.index:
+                        continue
+                    _by_y = {r["Jahr"]: r for r in _jd_s}
+                    _pm = _by_y.get(_ej, {}).get("Src_GesRente", 0.0) / 12
+                    _prev = _by_y.get(_ej - 1)
+                    if _prev is None:
+                        continue
+                    _sm = _prev.get("Src_Gehalt", 0.0) / 12
+                    _mb = _prof.renteneintritt_monat - 1
+                    _ma = 12 - _mb
+                    _bl = (_mb * _sm + _ma * _pm) * 12
+                    # Difference to replace in combined df
+                    _old = _by_y.get(_ej, {}).get("Brutto", 0.0)
+                    _df.loc[_ej, "Brutto"] = _df.loc[_ej, "Brutto"] - _old + _bl
+
             # ── Jahresverlauf mit Abzügen ─────────────────────────────────────
             _alle_jahre = list(_df.index)
             _vbnbav_py = {j: _vorsorge_non_bav_monatlich(_vp_produkte, j,

@@ -48,6 +48,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         rentenbeginn_jahr    = int(_get(pfx, "rbj", AKTUELLES_JAHR - 3))
         aktuelles_brutto     = float(_get(pfx, "akt_brutto", 2_000.0))
         renteneintritt_alter = max(60, rentenbeginn_jahr - geburtsjahr)
+        renteneintritt_monat = 1
         aktuelle_punkte      = 0.0
         punkte_pro_jahr      = 0.0
         rentenanpassung      = 0.02
@@ -58,6 +59,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
         rentenbeginn_jahr    = AKTUELLES_JAHR
         aktuelles_brutto     = float(_get(pfx, "akt_brutto", 3_000.0)) if ist_pensionaer else float(_get(pfx, "gehalt", 0.0))
         renteneintritt_alter = int(_get(pfx, "re_alter", 67))
+        renteneintritt_monat = int(_get(pfx, "re_monat", 1))
         sparkapital          = float(_get(pfx, "spkap", 50_000.0)) if _hat_kapital else 0.0
         sparrate             = float(_get(pfx, "sprate", 500.0)) if _hat_kapital else 0.0
         rendite              = float(_get(pfx, "rendite", 5.0)) / 100
@@ -106,6 +108,7 @@ def _profil_from_session(pfx: str, geb_default: int) -> Profil:
     return Profil(
         geburtsjahr=geburtsjahr,
         renteneintritt_alter=renteneintritt_alter,
+        renteneintritt_monat=renteneintritt_monat,
         aktuelle_punkte=aktuelle_punkte,
         punkte_pro_jahr=punkte_pro_jahr,
         zusatz_monatlich=0.0,   # O2: Zusatzrente nur noch via Vorsorge-Bausteine
@@ -156,6 +159,7 @@ def _write_profil_to_state(p: Profil, pfx: str) -> None:
     updates = {
         f"rc{_RC}_{pfx}_geb":        p.geburtsjahr,
         f"rc{_RC}_{pfx}_re_alter":   p.renteneintritt_alter,
+        f"rc{_RC}_{pfx}_re_monat":   p.renteneintritt_monat,
         f"rc{_RC}_{pfx}_punkte":     p.aktuelle_punkte,
         f"rc{_RC}_{pfx}_ren_anp":    p.rentenanpassung_pa * 100,
         f"rc{_RC}_{pfx}_spkap":      p.sparkapital,
@@ -232,14 +236,28 @@ def _render_profil_inputs(label: str, pfx: str, geb_default: int,
             )
     else:
         _re_alter_val = int(_get(pfx, "re_alter", 67))
-        st.slider(
-            "Pensionierungsalter" if ist_pensionaer else "Renteneintrittsalter",
-            60, 70,
-            value=_re_alter_val,
-            key=f"rc{_RC}_{pfx}_re_alter",
-            help="Regelaltersgrenze 2025: 67 Jahre." if not ist_pensionaer
-                 else "Pensionierungsalter Bund/Länder: i.d.R. 65–67 J.",
-        )
+        _re_col_a, _re_col_b = st.columns([3, 1])
+        with _re_col_a:
+            st.slider(
+                "Pensionierungsalter" if ist_pensionaer else "Renteneintrittsalter",
+                60, 70,
+                value=_re_alter_val,
+                key=f"rc{_RC}_{pfx}_re_alter",
+                help="Regelaltersgrenze 2025: 67 Jahre." if not ist_pensionaer
+                     else "Pensionierungsalter Bund/Länder: i.d.R. 65–67 J.",
+            )
+        with _re_col_b:
+            _monatsnamen = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+                            "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+            _re_monat_val = int(_get(pfx, "re_monat", 1))
+            st.selectbox(
+                "Monat",
+                options=list(range(1, 13)),
+                index=_re_monat_val - 1,
+                format_func=lambda m: _monatsnamen[m - 1],
+                key=f"rc{_RC}_{pfx}_re_monat",
+                help="Monat des Rentenbeginns im Eintrittsjahr.",
+            )
         if not ist_pensionaer and _re_alter_val < 63:
             st.warning(
                 f"⚠️ Renteneintrittsalter {_re_alter_val}: Das frühestmögliche GRV-Eintrittsalter "

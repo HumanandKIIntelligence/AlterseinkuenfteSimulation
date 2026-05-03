@@ -229,6 +229,7 @@ def besteuerungsanteil(eintritt_jahr: int) -> float:
 class Profil:
     geburtsjahr: int = 1970
     renteneintritt_alter: int = 67
+    renteneintritt_monat: int = 1   # Monat des Rentenbeginns (1–12); für Jahres-Blend
     aktuelle_punkte: float = 25.0
     punkte_pro_jahr: float = 1.2
     zusatz_monatlich: float = 0.0      # bAV / Riester / Rürup – monatliche Auszahlung in Rente
