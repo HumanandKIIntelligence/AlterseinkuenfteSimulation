@@ -726,36 +726,19 @@ def render(
 
         if _jd_display:
             _df = pd.DataFrame(_jd_display).set_index("Jahr")
-            fig_jv = go.Figure()
-            fig_jv.add_trace(go.Bar(
-                name="Brutto", x=_df.index, y=_df["Brutto"] / 12,
-                marker_color="#90CAF9",
-                hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Brutto</extra>",
-            ))
-            fig_jv.add_trace(go.Scatter(
-                name=_label_netto, x=_df.index, y=_df["Netto"] / 12,
-                mode="lines+markers", line=dict(color="#4CAF50", width=2),
-                hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Netto</extra>",
-            ))
-            fig_jv.add_vline(
-                x=betrachtungsjahr, line_width=1, line_dash="dash", line_color="#FF9800",
-                annotation_text=str(betrachtungsjahr), annotation_position="top right",
-            )
-            fig_jv.update_layout(
-                template="plotly_white", height=340,
-                xaxis=dict(title="Jahr", dtick=2),
-                yaxis=dict(title="€ / Monat", tickformat=",.0f"),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                margin=dict(l=10, r=10, t=40, b=10),
-                separators=",.",
-            )
-            st.plotly_chart(fig_jv, use_container_width=True)
 
-            # ── Jahresverlauf mit Abzügen (non-bAV Vorsorge + Fixausgaben + LHK) ─
+            # ── Jahresverlauf mit Abzügen ─────────────────────────────────────
             _alle_jahre = list(_df.index)
             _vbnbav_py = {j: _vorsorge_non_bav_monatlich(_vp_produkte, j,
                                                            person=_ansicht_person)
                          for j in _alle_jahre}
+            _hyp_sched_jv  = get_hyp_schedule()
+            _ak_sched_jv   = get_anschluss_schedule()
+            _hyp_py = {
+                j: (next((r["Jahresausgabe"] for r in _hyp_sched_jv if r["Jahr"] == j), 0.0)
+                    + next((r["Jahresausgabe"] for r in _ak_sched_jv if r["Jahr"] == j), 0.0)) / 12
+                for j in _alle_jahre
+            }
             _fix_py    = {
                 j: sum(fa["betrag_monatlich"] for fa in _fixausgaben
                        if fa["startjahr"] <= j <= fa["endjahr"])
@@ -770,99 +753,99 @@ def render(
             else:
                 _lhk_m_jv = _lhk_p1_jv + _lhk_p2_jv
             _lhk_py = {j: _lhk_m_jv for j in _alle_jahre}
-            _hat_abzuege = (
-                any(_vbnbav_py[j] > 0 for j in _alle_jahre)
-                or any(_fix_py[j] > 0 for j in _alle_jahre)
-                or _lhk_m_jv > 0
-            )
-            if _hat_abzuege:
-                _caption_parts = []
-                if any(_vbnbav_py[j] > 0 for j in _alle_jahre):
-                    _caption_parts.append("nicht-bAV Vorsorge-Beiträge")
-                if _lhk_m_jv > 0:
-                    _caption_parts.append("Lebenshaltungskosten")
-                if any(_fix_py[j] > 0 for j in _alle_jahre):
-                    _caption_parts.append("Fixausgaben")
-                st.caption(
-                    "Nachfolgendes Diagramm zeigt zusätzlich "
-                    + " und ".join(_caption_parts) + " als Abzüge."
-                )
-                _verfuegbar_py = {
-                    j: (_df.loc[j, "Netto"] / 12) - _vbnbav_py[j] - _fix_py[j] - _lhk_py[j]
-                    for j in _alle_jahre
-                }
-                # Hover-Breakdown: alle aktiven Abzüge je Jahr
-                def _jv2_hover(j: int) -> str:
-                    parts = []
-                    if _vbnbav_py[j] > 0:
-                        parts.append(f"Vorsorge: −{_de(_vbnbav_py[j])} €/Mon.")
-                    if _lhk_py[j] > 0:
-                        parts.append(f"Lebenshalt.: −{_de(_lhk_py[j])} €/Mon.")
-                    if _fix_py[j] > 0:
-                        parts.append(f"Fixausgaben: −{_de(_fix_py[j])} €/Mon.")
-                    return "<br>".join(parts)
-                _cd_jv2 = [_jv2_hover(j) for j in _alle_jahre]
-                fig_jv2 = go.Figure()
+            _verfuegbar_py = {
+                j: (_df.loc[j, "Netto"] / 12)
+                   - _vbnbav_py[j] - _fix_py[j] - _lhk_py[j] - _hyp_py[j]
+                for j in _alle_jahre
+            }
+            # Hover-Breakdown: alle aktiven Abzüge je Jahr
+            def _jv2_hover(j: int) -> str:
+                parts = []
+                if _vbnbav_py[j] > 0:
+                    parts.append(f"Vorsorge: −{_de(_vbnbav_py[j])} €/Mon.")
+                if _hyp_py[j] > 0:
+                    parts.append(f"Hypothek: −{_de(_hyp_py[j])} €/Mon.")
+                if _lhk_py[j] > 0:
+                    parts.append(f"Lebenshalt.: −{_de(_lhk_py[j])} €/Mon.")
+                if _fix_py[j] > 0:
+                    parts.append(f"Fixausgaben: −{_de(_fix_py[j])} €/Mon.")
+                return "<br>".join(parts)
+            _cd_jv2 = [_jv2_hover(j) for j in _alle_jahre]
+            fig_jv2 = go.Figure()
+            fig_jv2.add_trace(go.Bar(
+                name="Brutto", x=_alle_jahre,
+                y=[_df.loc[j, "Brutto"] / 12 for j in _alle_jahre],
+                marker_color="#90CAF9",
+                hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Brutto</extra>",
+            ))
+            if any(_vbnbav_py[j] > 0 for j in _alle_jahre):
                 fig_jv2.add_trace(go.Bar(
-                    name="Brutto", x=_alle_jahre,
-                    y=[_df.loc[j, "Brutto"] / 12 for j in _alle_jahre],
-                    marker_color="#90CAF9",
-                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Brutto</extra>",
-                ))
-                if any(_vbnbav_py[j] > 0 for j in _alle_jahre):
-                    fig_jv2.add_trace(go.Bar(
-                        name="− Vorsorge (ohne bAV)", x=_alle_jahre,
-                        y=[-_vbnbav_py[j] for j in _alle_jahre],
-                        marker_color="#EF9A9A",
-                        customdata=_cd_jv2,
-                        hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Vorsorge-Abzug</extra>",
-                    ))
-                if _lhk_m_jv > 0:
-                    fig_jv2.add_trace(go.Bar(
-                        name="− Lebenshaltungskosten", x=_alle_jahre,
-                        y=[-_lhk_py[j] for j in _alle_jahre],
-                        marker_color="#CE93D8",
-                        customdata=_cd_jv2,
-                        hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Lebenshaltungskosten</extra>",
-                    ))
-                if any(_fix_py[j] > 0 for j in _alle_jahre):
-                    fig_jv2.add_trace(go.Bar(
-                        name="− Fixausgaben", x=_alle_jahre,
-                        y=[-_fix_py[j] for j in _alle_jahre],
-                        marker_color="#FFCC80",
-                        customdata=_cd_jv2,
-                        hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Fixausgaben</extra>",
-                    ))
-                fig_jv2.add_trace(go.Scatter(
-                    name=_label_netto, x=_alle_jahre,
-                    y=[_df.loc[j, "Netto"] / 12 for j in _alle_jahre],
-                    mode="lines+markers", line=dict(color="#4CAF50", width=2),
+                    name="− Vorsorge (ohne bAV)", x=_alle_jahre,
+                    y=[-_vbnbav_py[j] for j in _alle_jahre],
+                    marker_color="#EF9A9A",
                     customdata=_cd_jv2,
-                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Netto</extra>",
+                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Vorsorge-Abzug</extra>",
                 ))
-                fig_jv2.add_trace(go.Scatter(
-                    name="Verfügbar (nach Abzügen)", x=_alle_jahre,
-                    y=[_verfuegbar_py[j] for j in _alle_jahre],
-                    mode="lines+markers",
-                    line=dict(color="#FF9800", width=2, dash="dash"),
+            if any(_hyp_py[j] > 0 for j in _alle_jahre):
+                fig_jv2.add_trace(go.Bar(
+                    name="− Hypothek", x=_alle_jahre,
+                    y=[-_hyp_py[j] for j in _alle_jahre],
+                    marker_color="#B0BEC5",
                     customdata=_cd_jv2,
-                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Verfügbar</extra>",
+                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Hypothek</extra>",
                 ))
-                fig_jv2.add_vline(
-                    x=betrachtungsjahr, line_width=1, line_dash="dash",
-                    line_color="#FF9800",
-                    annotation_text=str(betrachtungsjahr),
-                    annotation_position="top right",
-                )
-                fig_jv2.update_layout(
-                    barmode="overlay", template="plotly_white", height=360,
-                    xaxis=dict(title="Jahr", dtick=2),
-                    yaxis=dict(title="€ / Monat", tickformat=",.0f"),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                    margin=dict(l=10, r=10, t=40, b=10),
-                    separators=",.",
-                )
-                st.plotly_chart(fig_jv2, use_container_width=True)
+            if _lhk_m_jv > 0:
+                fig_jv2.add_trace(go.Bar(
+                    name="− Lebenshaltungskosten", x=_alle_jahre,
+                    y=[-_lhk_py[j] for j in _alle_jahre],
+                    marker_color="#CE93D8",
+                    customdata=_cd_jv2,
+                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Lebenshaltungskosten</extra>",
+                ))
+            if any(_fix_py[j] > 0 for j in _alle_jahre):
+                fig_jv2.add_trace(go.Bar(
+                    name="− Fixausgaben", x=_alle_jahre,
+                    y=[-_fix_py[j] for j in _alle_jahre],
+                    marker_color="#FFCC80",
+                    customdata=_cd_jv2,
+                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Fixausgaben</extra>",
+                ))
+            fig_jv2.add_trace(go.Scatter(
+                name=_label_netto, x=_alle_jahre,
+                y=[_df.loc[j, "Netto"] / 12 for j in _alle_jahre],
+                mode="lines+markers", line=dict(color="#4CAF50", width=2),
+                customdata=_cd_jv2,
+                hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Netto</extra>",
+            ))
+            fig_jv2.add_trace(go.Scatter(
+                name="Verfügbar (nach Abzügen)", x=_alle_jahre,
+                y=[_verfuegbar_py[j] for j in _alle_jahre],
+                mode="lines+markers",
+                line=dict(color="#FF9800", width=2, dash="dash"),
+                customdata=_cd_jv2,
+                hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Verfügbar</extra>",
+            ))
+            fig_jv2.add_vline(
+                x=betrachtungsjahr, line_width=1, line_dash="dash",
+                line_color="#FF9800",
+                annotation_text=str(betrachtungsjahr),
+                annotation_position="top right",
+            )
+            _mindest_jv = float(st.session_state.get("mindest_haushalt_mono", 2_000))
+            fig_jv2.add_hline(
+                y=_mindest_jv, line_dash="dot", line_color="orange", line_width=2,
+                annotation_text=f"Mindest {_de(_mindest_jv)} €",
+                annotation_position="top right",
+            )
+            fig_jv2.update_layout(
+                barmode="overlay", template="plotly_white", height=400,
+                xaxis=dict(title="Jahr", dtick=2),
+                yaxis=dict(title="€ / Monat", tickformat=",.0f"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                margin=dict(l=10, r=10, t=40, b=10),
+                separators=",.",
+            )
+            st.plotly_chart(fig_jv2, use_container_width=True)
 
         st.divider()
 
