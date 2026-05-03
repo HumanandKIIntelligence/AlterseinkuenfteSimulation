@@ -10,6 +10,7 @@ from engine import (
     einkommensteuer, einkommensteuer_splitting, solidaritaetszuschlag,
 )
 from tabs import steuern
+from tabs.analyse import render_analyse
 
 
 def _eink_label(profil: "Profil", sel_jahr: int) -> str:
@@ -499,6 +500,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             with st.expander("🧾 Steuer- & KV-Details Person 2", expanded=False):
                 steuern.render_section(profil2, ergebnis2, mieteinnahmen / 2 if mieteinnahmen > 0 else 0.0)
 
+            render_analyse(
+                profil, ergebnis, label="Person 1",
+                profil2=profil2, ergebnis2=ergebnis2,
+                veranlagung=veranlagung,
+                mieteinnahmen=mieteinnahmen / 2,
+                hh=hh,
+                rc=_rc,
+            )
+
             # Grundsicherungs-Hinweis für beide Personen
             for _gs_label, _gs_netto in [("Person 1", _p1_n_y), ("Person 2", _p2_n_y)]:
                 if 0 < _gs_netto < GRUNDSICHERUNG_SCHWELLE:
@@ -957,6 +967,16 @@ h2{{color:#1976d2}}</style></head><body>
                 mime="text/html",
             )
             st.caption("Die HTML-Datei kann im Browser geöffnet und als PDF gedruckt werden (Strg+P).")
+
+        render_analyse(
+            profil, ergebnis,
+            label=wahl,
+            profil2=profil2 if hat_partner else None,
+            ergebnis2=ergebnis2 if hat_partner else None,
+            veranlagung=veranlagung,
+            mieteinnahmen=_miete_einzel,
+            rc=_rc,
+        )
 
         st.caption(
             "⚠️ Alle Angaben sind Simulationswerte auf Basis vereinfachter Annahmen. "
