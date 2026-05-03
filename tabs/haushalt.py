@@ -650,28 +650,30 @@ def render(
                 )
             _hyp_schedule_wf = get_hyp_schedule()
             _hyp_row_wf = next((r for r in _hyp_schedule_wf if r["Jahr"] == betrachtungsjahr), None)
-            _hyp_m_wf = _hyp_row_wf["Jahresausgabe"] / 12 if _hyp_row_wf else 0.0
+            _hyp_faktor_wf = 0.5 if ansicht in ("Person 1", "Person 2") else 1.0
+            _hyp_m_wf = (_hyp_row_wf["Jahresausgabe"] / 12 if _hyp_row_wf else 0.0) * _hyp_faktor_wf
             if _hyp_m_wf > 0:
+                _hyp_hint = " (½ Haushalt)" if _hyp_faktor_wf < 1.0 else ""
                 _wf_x.append("− Hypothek")
                 _wf_meas.append("relative")
                 _wf_y.append(-_hyp_m_wf)
                 _wf_t.append(f"−{_de(_hyp_m_wf)} €")
                 _wf_h.append(
-                    f"<b>Hypothek-Jahresrate</b><br>"
+                    f"<b>Hypothek-Jahresrate{_hyp_hint}</b><br>"
                     f"−{_de(_hyp_m_wf)} €/Mon.<br>"
                     f"Annuität {betrachtungsjahr} (Zins + Tilgung).<br>"
                     f"Konfiguration im Tab Hypothek-Verwaltung."
                 )
             _ak_schedule_wf = get_anschluss_schedule()
             _ak_row_wf = next((r for r in _ak_schedule_wf if r["Jahr"] == betrachtungsjahr), None)
-            _ak_m_wf = _ak_row_wf["Jahresausgabe"] / 12 if _ak_row_wf else 0.0
+            _ak_m_wf = (_ak_row_wf["Jahresausgabe"] / 12 if _ak_row_wf else 0.0) * _hyp_faktor_wf
             if _ak_m_wf > 0:
                 _wf_x.append("− Anschlusskredit")
                 _wf_meas.append("relative")
                 _wf_y.append(-_ak_m_wf)
                 _wf_t.append(f"−{_de(_ak_m_wf)} €")
                 _wf_h.append(
-                    f"<b>Anschlussfinanzierung</b><br>"
+                    f"<b>Anschlussfinanzierung{_hyp_hint}</b><br>"
                     f"−{_de(_ak_m_wf)} €/Mon.<br>"
                     f"Annuität auf Restschuld nach Hypothek-Endjahr."
                 )
@@ -830,9 +832,11 @@ def render(
                                for j in _alle_jahre}
             _hyp_sched_jv  = get_hyp_schedule()
             _ak_sched_jv   = get_anschluss_schedule()
+            _hyp_faktor_jv = 0.5 if ansicht in ("Person 1", "Person 2") else 1.0
             _hyp_py = {
                 j: (next((r["Jahresausgabe"] for r in _hyp_sched_jv if r["Jahr"] == j), 0.0)
-                    + next((r["Jahresausgabe"] for r in _ak_sched_jv if r["Jahr"] == j), 0.0)) / 12
+                    + next((r["Jahresausgabe"] for r in _ak_sched_jv if r["Jahr"] == j), 0.0))
+                   / 12 * _hyp_faktor_jv
                 for j in _alle_jahre
             }
             _fix_py    = {

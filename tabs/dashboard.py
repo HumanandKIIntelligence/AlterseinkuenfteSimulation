@@ -985,31 +985,33 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Summe aktiver Fixausgaben {_sel_j_dash}.<br>"
                 + (f"{_d_fix_detail_e}." if _d_fix_detail_e else "")
             )
-        # Hypothek
+        # Hypothek (bei Paar: 50/50 je Person)
+        _hyp_faktor_e = 0.5 if hat_partner else 1.0
         _hyp_sched_e = get_hyp_schedule()
         _hyp_row_e = next((r for r in _hyp_sched_e if r["Jahr"] == _sel_j_dash), None)
-        _hyp_m_e_val = _hyp_row_e["Jahresausgabe"] / 12 if _hyp_row_e else 0.0
+        _hyp_m_e_val = (_hyp_row_e["Jahresausgabe"] / 12 if _hyp_row_e else 0.0) * _hyp_faktor_e
         if _hyp_m_e_val > 0:
+            _hyp_hint_e = " (½ Haushalt)" if hat_partner else ""
             _wf_x_e.append("− Hypothek")
             _wf_m_e.append("relative")
             _wf_y_e.append(-_hyp_m_e_val)
             _wf_t_e.append(f"−{_de(_hyp_m_e_val)} €")
             _wf_h_e.append(
-                f"<b>Hypothek-Jahresrate</b><br>"
+                f"<b>Hypothek-Jahresrate{_hyp_hint_e}</b><br>"
                 f"−{_de(_hyp_m_e_val)} €/Mon.<br>"
                 f"Annuität {_sel_j_dash} (Zins + Tilgung).<br>"
                 f"Konfiguration im Tab Hypothek-Verwaltung."
             )
         _ak_sched_e = get_anschluss_schedule()
         _ak_row_e = next((r for r in _ak_sched_e if r["Jahr"] == _sel_j_dash), None)
-        _ak_m_e_val = _ak_row_e["Jahresausgabe"] / 12 if _ak_row_e else 0.0
+        _ak_m_e_val = (_ak_row_e["Jahresausgabe"] / 12 if _ak_row_e else 0.0) * _hyp_faktor_e
         if _ak_m_e_val > 0:
             _wf_x_e.append("− Anschlusskredit")
             _wf_m_e.append("relative")
             _wf_y_e.append(-_ak_m_e_val)
             _wf_t_e.append(f"−{_de(_ak_m_e_val)} €")
             _wf_h_e.append(
-                f"<b>Anschlussfinanzierung</b><br>"
+                f"<b>Anschlussfinanzierung{_hyp_hint_e}</b><br>"
                 f"−{_de(_ak_m_e_val)} €/Mon.<br>"
                 f"Annuität auf Restschuld nach Hypothek-Endjahr."
             )
