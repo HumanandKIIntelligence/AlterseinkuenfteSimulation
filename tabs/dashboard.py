@@ -261,9 +261,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             # Einzelnetto für P1 vs P2 Chart (inkl. Produkteinkommen)
             _p1_n_y = _row_dash_p1["Netto"]  / 12 if _row_dash_p1 else ergebnis.netto_monatlich
             _p2_n_y = _row_dash_p2["Netto"]  / 12 if _row_dash_p2 else ergebnis2.netto_monatlich
-            # P1/P2 Basis-Brutto (Rente/Pension/Gehalt, ohne bAV/Riester)
-            _p1_b_y = (_row_dash.get("Src_GesRente", 0) + _row_dash.get("Src_Gehalt", 0)) / 12 \
-                      if _row_dash else ergebnis.brutto_monatlich
+            # P1/P2 Basis-Brutto (Rente/Pension/Gehalt + Zusatzentgelt, ohne bAV/Riester)
+            _p1_b_y = (
+                _row_dash.get("Src_GesRente", 0)
+                + _row_dash.get("Src_Gehalt", 0)
+                + _row_dash.get("Src_Zusatzentgelt", 0)
+            ) / 12 if _row_dash else ergebnis.brutto_monatlich
             _p2_b_y = _row_dash.get("Src_P2_Rente", 0) / 12 if _row_dash else ergebnis2.brutto_monatlich
             # bAV und Riester (P1 + P2 zusammen, aus HH-Simulation)
             _zus_bav = (_row_dash.get("Src_bAV_P1", 0) + _row_dash.get("Src_bAV_P2", 0)) / 12 \
