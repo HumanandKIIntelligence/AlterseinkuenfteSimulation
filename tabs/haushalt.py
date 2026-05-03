@@ -33,6 +33,23 @@ def _de(v: float, dec: int = 0) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _actual_startjahr(vp: dict) -> int:
+    """Tatsächlich gewähltes Auszahlungs-Startjahr aus dem Vorsorge-Tab.
+
+    Liest rc{_rc}_vp_sels (vom Vorsorge-Tab gespeichert); Fallback: fruehestes_startjahr.
+    """
+    _rc = st.session_state.get("_rc", 0)
+    _sels = st.session_state.get(f"rc{_rc}_vp_sels", {})
+    _pid = vp.get("id")
+    _sel = _sels.get(_pid) if _pid else None
+    if _sel is not None:
+        try:
+            return int(str(_sel).rsplit("_", 1)[0])
+        except (ValueError, IndexError):
+            pass
+    return int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR))
+
+
 def _vorsorge_non_bav_monatlich(produkte: list[dict], jahr: int,
                                 person: str | None = None) -> float:
     """Monatliche Vorsorge-Beiträge (ohne bAV) für das gegebene Jahr."""
@@ -51,7 +68,7 @@ def _vorsorge_bav_monatlich(produkte: list[dict], jahr: int,
         je = float(vp.get("jaehrl_einzahlung", 0.0))
         if je <= 0.0:
             continue
-        if int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR)) <= jahr:
+        if _actual_startjahr(vp) <= jahr:
             continue
         bbj = int(vp.get("beitragsbefreiung_jahr", 0))
         if bbj > 0 and jahr >= bbj:
@@ -80,7 +97,7 @@ def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
             continue
         # LV: Beiträge enden nicht am Auszahlungsjahr, sondern per Beitragsbefreiung
         if vp.get("typ") != "LV":
-            if int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR)) <= jahr:
+            if _actual_startjahr(vp) <= jahr:
                 continue
         bbj = int(vp.get("beitragsbefreiung_jahr", 0))
         if bbj > 0 and jahr >= bbj:
@@ -166,7 +183,7 @@ def render(
                 if person is not None and d.get("person", "Person 1") != person:
                     continue
                 try:
-                    _entsch.append((_vd(d), int(d.get("fruehestes_startjahr", AKTUELLES_JAHR + 5)), 0.0))
+                    _entsch.append((_vd(d), _actual_startjahr(d), 0.0))
                 except Exception:
                     pass
             return _entsch
