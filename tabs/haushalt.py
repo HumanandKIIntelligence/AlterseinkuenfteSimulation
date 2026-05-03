@@ -33,6 +33,29 @@ def _de(v: float, dec: int = 0) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _blend_brutto_wf(prof: "Profil", jd: list[dict], sel_jahr: int) -> "float | None":
+    """Monatlich gemitteltes Brutto für das Renteneintritts-Jahr.
+
+    Gibt None zurück wenn kein Blend nötig (Aufrufer nutzt Engine-Wert).
+    Formel: (m_vor × Gehalt/Mon. + m_nach × Rente/Mon.) / 12
+    """
+    if prof.bereits_rentner or sel_jahr != prof.eintritt_jahr:
+        return None
+    m = getattr(prof, "renteneintritt_monat", 1)
+    if m <= 1:
+        return None
+    by_y = {r["Jahr"]: r for r in jd}
+    row_ej   = by_y.get(sel_jahr)
+    row_prev = by_y.get(sel_jahr - 1)
+    if row_ej is None or row_prev is None:
+        return None
+    pension_mono = row_ej.get("Src_GesRente", 0.0) / 12
+    salary_mono  = row_prev.get("Src_Gehalt", 0.0) / 12
+    m_before = m - 1
+    m_after  = 12 - m_before
+    return (m_before * salary_mono + m_after * pension_mono) / 12
+
+
 def _actual_startjahr(vp: dict) -> int:
     """Tatsächlich gewähltes Auszahlungs-Startjahr aus dem Vorsorge-Tab.
 
@@ -263,6 +286,16 @@ def render(
             _s = _row_comb["Steuer"] / 12
             _k = _row_comb["KV_PV"] / 12
             _label = "Haushalt gesamt"
+            # Blend Brutto per person and patch combined value
+            _bl1 = _blend_brutto_wf(p1, _jd_p1, betrachtungsjahr)
+            _bl2 = _blend_brutto_wf(p2, _jd_p2, betrachtungsjahr)
+            if _bl1 is not None or _bl2 is not None:
+                _p1_by_y = {r["Jahr"]: r for r in _jd_p1}
+                _p2_by_y = {r["Jahr"]: r for r in _jd_p2}
+                _p1_orig = _p1_by_y.get(betrachtungsjahr, {}).get("Brutto", 0.0) / 12
+                _p2_orig = _p2_by_y.get(betrachtungsjahr, {}).get("Brutto", 0.0) / 12
+                _b = _b - _p1_orig + (_bl1 if _bl1 is not None else _p1_orig) \
+                       - _p2_orig + (_bl2 if _bl2 is not None else _p2_orig)
         elif ansicht == "Haushalt gesamt":
             _b = hh["brutto_gesamt"]
             _n = hh["netto_gesamt"]
@@ -275,12 +308,18 @@ def render(
             _s = _row_p1["Steuer"] / 12
             _k = _row_p1["KV_PV"] / 12
             _label = "Person 1"
+            _bl = _blend_brutto_wf(p1, _jd_p1, betrachtungsjahr)
+            if _bl is not None:
+                _b = _bl
         elif ansicht == "Person 2" and _row_p2:
             _b = _row_p2["Brutto"] / 12
             _n = _row_p2["Netto"] / 12
             _s = _row_p2["Steuer"] / 12
             _k = _row_p2["KV_PV"] / 12
             _label = "Person 2"
+            _bl = _blend_brutto_wf(p2, _jd_p2, betrachtungsjahr)
+            if _bl is not None:
+                _b = _bl
         else:
             _no_data = True
             _start_sel = _start_p1 if ansicht == "Person 1" else _start_p2

@@ -21,6 +21,29 @@ except ImportError:
         return []
 
 
+def _blend_brutto_wf(prof: "Profil", jd: list[dict], sel_jahr: int) -> "float | None":
+    """Monatlich gemitteltes Brutto für das Renteneintritts-Jahr.
+
+    Gibt None zurück wenn kein Blend nötig (Aufrufer nutzt Engine-Wert).
+    Formel: (m_vor × Gehalt/Mon. + m_nach × Rente/Mon.) / 12
+    """
+    if prof.bereits_rentner or sel_jahr != prof.eintritt_jahr:
+        return None
+    m = getattr(prof, "renteneintritt_monat", 1)
+    if m <= 1:
+        return None
+    by_y = {r["Jahr"]: r for r in jd}
+    row_ej   = by_y.get(sel_jahr)
+    row_prev = by_y.get(sel_jahr - 1)
+    if row_ej is None or row_prev is None:
+        return None
+    pension_mono = row_ej.get("Src_GesRente", 0.0) / 12
+    salary_mono  = row_prev.get("Src_Gehalt", 0.0) / 12
+    m_before = m - 1
+    m_after  = 12 - m_before
+    return (m_before * salary_mono + m_after * pension_mono) / 12
+
+
 def _actual_startjahr(vp: dict) -> int:
     """Tatsächlich gewähltes Auszahlungs-Startjahr aus dem Vorsorge-Tab.
 
@@ -308,7 +331,13 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 + _row_dash.get("Src_Gehalt", 0)
                 + _row_dash.get("Src_Zusatzentgelt", 0)
             ) / 12 if _row_dash else ergebnis.brutto_monatlich
+            _p1_blend = _blend_brutto_wf(profil, _jd_dash_p1, _sel_j_dash)
+            if _p1_blend is not None:
+                _p1_b_y = _p1_blend
             _p2_b_y = _row_dash.get("Src_P2_Rente", 0) / 12 if _row_dash else ergebnis2.brutto_monatlich
+            _p2_blend = _blend_brutto_wf(profil2, _jd_dash_p2, _sel_j_dash)
+            if _p2_blend is not None:
+                _p2_b_y = _p2_blend
             # bAV und Riester (P1 + P2 zusammen, aus HH-Simulation)
             _zus_bav = (_row_dash.get("Src_bAV_P1", 0) + _row_dash.get("Src_bAV_P2", 0)) / 12 \
                        if _row_dash else 0.0
@@ -736,6 +765,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         # Bruttorente = Rente/Pension + Produkte, OHNE Mieteinnahmen (eigene Kategorie)
         _d_brutto = (_row_dash["Brutto"] - _row_dash.get("Src_Miete", 0)) / 12 \
                     if _row_dash else ergebnis.brutto_monatlich
+        _d_brutto_blend = _blend_brutto_wf(profil, _jd_dash, _sel_j_dash)
+        if _d_brutto_blend is not None:
+            _d_brutto = _d_brutto_blend
         _d_netto  = _row_dash["Netto"]  / 12 if _row_dash else ergebnis.netto_monatlich
         _d_steuer = _row_dash["Steuer"] / 12 if _row_dash else ergebnis.steuer_monatlich
         _d_kv     = _row_dash["KV_PV"]  / 12 if _row_dash else ergebnis.kv_monatlich
