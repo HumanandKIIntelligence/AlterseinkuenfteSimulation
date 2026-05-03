@@ -293,7 +293,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                                                     _miete_je_dash, mietsteigerung, gehalt_monatlich=_g_p2)
             _sel_j_dash = st.slider(
                 "Betrachtungsjahr", _start_slider_hh, _end_hh,
-                min(_end_hh, max(_start_slider_hh, _start_hh)), key=f"rc{_rc}_dash_jahr",
+                min(_end_hh, _start_slider_hh), key=f"rc{_rc}_dash_jahr",
                 help="Zeigt projizierte Haushaltswerte mit Rentenanpassung für das gewählte Jahr.",
             )
             _row_dash    = next((r for r in _jd_dash    if r["Jahr"] == _sel_j_dash), None)
@@ -728,7 +728,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         _, _jd_dash = _netto_ueber_horizont(profil, ergebnis, _entsch_einzel, 31, _miete_einzel, mietsteigerung, gehalt_monatlich=_g_einzel)
         _sel_j_dash = st.slider(
             "Betrachtungsjahr", _start_slider_einzel, _end_einzel,
-            min(_end_einzel, max(_start_slider_einzel, _start_einzel)), key=f"rc{_rc}_dash_jahr",
+            min(_end_einzel, _start_slider_einzel), key=f"rc{_rc}_dash_jahr",
             help="Zeigt projizierte Jahreswerte mit Rentenanpassung für das gewählte Jahr.",
         )
         _row_dash = next((r for r in _jd_dash if r["Jahr"] == _sel_j_dash), None)
