@@ -860,7 +860,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _df_sel = pd.DataFrame(_vp_jd_raw).set_index("Jahr")
 
         # ── Optimale Strategie: Netto & Steuer pro Jahr ───────────────────────
-        st.subheader("Optimale Strategie – Netto und Steuerbelastung pro Jahr")
+        st.subheader("Netto und Steuerbelastung pro Jahr")
 
         _df_opt = pd.DataFrame(opt["jahresdaten"]).set_index("Jahr")
         _opt_years = list(_df_opt.index)
