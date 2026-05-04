@@ -905,7 +905,7 @@ def render(
                 customdata=_wf_h,
                 hovertemplate="%{customdata}<extra></extra>",
                 connector=dict(line=dict(color="#888")),
-                marker_color=_wf_colors,
+                marker=dict(color=_wf_colors),
             ))
             fig_wf_hh.update_layout(
                 template="plotly_white", height=380,
@@ -1072,38 +1072,40 @@ def render(
                    - _fix_py[j] - _hyp_py[j]
                 for j in _alle_jahre
             }
-            # ── Sekundäre Y-Achse: Nulllinien-Ausrichtung ────────────────────
-            _zf_jv = 0.28   # 28 % der Chart-Höhe unterhalb der Null
+            # ── Steuer und KV pro Jahr (monatlich) ───────────────────────────
+            _est_py = {
+                j: float(_df.loc[j, "Steuer"]) / 12.0
+                for j in _alle_jahre
+            }
+            _kv_py = {
+                j: (float(_df.loc[j, "KV_PV"]) / 12.0 if "KV_PV" in _df.columns else 0.0)
+                for j in _alle_jahre
+            }
+
+            # Y-Achsen-Bereich: oben = Brutto, unten = Summe aller Abzüge
             _max_brutto_jv = max(
-                (_df.loc[j, "Brutto"] / 12) for j in _alle_jahre
+                _df.loc[j, "Brutto"] / 12 for j in _alle_jahre
             ) if _alle_jahre else 1000.0
-            _y1_hi = max(_max_brutto_jv * 1.1, 100.0)
-            _y1_lo = -_y1_hi * _zf_jv / (1.0 - _zf_jv)
             _max_ded_jv = max(
-                (_bav_beitrag_py[j] + _vbnbav_py[j]
-                 + _hyp_py[j] + _lhk_py[j] + _fix_py[j])
+                _est_py[j] + _kv_py[j] + _bav_beitrag_py[j] + _vbnbav_py[j]
+                + _hyp_py[j] + _lhk_col_py[j] + _fix_py[j]
                 for j in _alle_jahre
             ) if _alle_jahre else 0.0
-            _hat_abzuege_jv = _max_ded_jv > 0
-            if _hat_abzuege_jv:
-                _y2_lo = -_max_ded_jv * 1.3
-                _y2_hi = abs(_y2_lo) * (1.0 - _zf_jv) / _zf_jv
-            else:
-                _y2_lo, _y2_hi = -1.0, 1.0
-            _ded_yaxis = "y2" if _hat_abzuege_jv else "y"
+            _y1_hi = max(_max_brutto_jv * 1.12, 100.0)
+            _y1_lo = -_max_ded_jv * 1.15 if _max_ded_jv > 0 else -50.0
 
-            # Hover-Netto-Zusammenfassung für Linien
+            # Hover-Texte
             _netto_hover_jv = [
                 f"Netto (nach Steuer+KV): {_de(_netto_korr_py[j])} €/Mon."
                 for j in _alle_jahre
             ]
             _verf_hover_jv = [
                 f"Verfügbar: {_de(_verfuegbar_py[j])} €/Mon.<br>"
-                f"(Netto − bAV − Vorsorge − LHK − Hyp. − Fix)"
+                f"(Netto − Vorsorge − LHK − Hyp. − Fix)"
                 for j in _alle_jahre
             ]
 
-            # Brutto hover mit Einkommens-Bestandteilen
+            # Brutto-Hover mit Einkommens-Bestandteilen
             _src_cols = [
                 ("Src_Gehalt",         "Gehalt"),
                 ("Src_GesRente",       "Gesetzl. Rente"),
@@ -1126,7 +1128,8 @@ def render(
 
             _brutto_hover_jv = [_brutto_hover_str(j) for j in _alle_jahre]
 
-            # Balken-Reihenfolge (von 0 abwärts): Fixausgaben → LHK → Hypothek → Vorsorge → bAV
+            # Balken-Reihenfolge (gestapelt von 0 abwärts, wie im Wasserfall):
+            # ESt → KV → bAV-Beiträge → Vorsorge → Hypothek → LHK → Fixausgaben
             fig_jv2 = go.Figure()
             fig_jv2.add_trace(go.Bar(
                 name="Brutto", x=_alle_jahre,
@@ -1135,50 +1138,61 @@ def render(
                 customdata=_brutto_hover_jv,
                 hovertemplate="%{customdata}<extra></extra>",
             ))
-            if any(_fix_py[j] > 0 for j in _alle_jahre):
+            if any(_est_py[j] > 0 for j in _alle_jahre):
                 fig_jv2.add_trace(go.Bar(
-                    name="− Fixausgaben", x=_alle_jahre,
-                    y=[-_fix_py[j] for j in _alle_jahre],
-                    marker_color="#F9A825",
-                    yaxis=_ded_yaxis,
-                    customdata=[_fix_py[j] for j in _alle_jahre],
-                    hovertemplate="<b>%{x} – Fixausgaben</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
+                    name="− Einkommensteuer + Soli", x=_alle_jahre,
+                    y=[-_est_py[j] for j in _alle_jahre],
+                    marker_color="#EF5350",
+                    customdata=[int(_est_py[j]) for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – Einkommensteuer + Soli</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
                 ))
-            if _lhk_m_jv > 0:
+            if any(_kv_py[j] > 0 for j in _alle_jahre):
                 fig_jv2.add_trace(go.Bar(
-                    name="− Lebenshaltungskosten", x=_alle_jahre,
-                    y=[-_lhk_py[j] for j in _alle_jahre],
-                    marker_color="#6A1B9A",
-                    yaxis=_ded_yaxis,
-                    customdata=[_lhk_py[j] for j in _alle_jahre],
-                    hovertemplate="<b>%{x} – Lebenshaltungskosten</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
-                ))
-            if any(_hyp_py[j] > 0 for j in _alle_jahre):
-                fig_jv2.add_trace(go.Bar(
-                    name="− Hypothek", x=_alle_jahre,
-                    y=[-_hyp_py[j] for j in _alle_jahre],
-                    marker_color="#1565C0",
-                    yaxis=_ded_yaxis,
-                    customdata=[_hyp_py[j] for j in _alle_jahre],
-                    hovertemplate="<b>%{x} – Hypothek</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
-                ))
-            if any(_vbnbav_py[j] > 0 for j in _alle_jahre):
-                fig_jv2.add_trace(go.Bar(
-                    name="− Vorsorge (ohne bAV)", x=_alle_jahre,
-                    y=[-_vbnbav_py[j] for j in _alle_jahre],
-                    marker_color="#E65100",
-                    yaxis=_ded_yaxis,
-                    customdata=[_vbnbav_py[j] for j in _alle_jahre],
-                    hovertemplate="<b>%{x} – Vorsorge (ohne bAV)</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
+                    name="− KV / PV", x=_alle_jahre,
+                    y=[-_kv_py[j] for j in _alle_jahre],
+                    marker_color="#26A69A",
+                    customdata=[int(_kv_py[j]) for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – Kranken- + Pflegeversicherung</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
                 ))
             if any(_bav_beitrag_py[j] > 0 for j in _alle_jahre):
                 fig_jv2.add_trace(go.Bar(
                     name="− bAV-Beiträge (AN)", x=_alle_jahre,
                     y=[-_bav_beitrag_py[j] for j in _alle_jahre],
                     marker_color="#C62828",
-                    yaxis=_ded_yaxis,
                     customdata=[_bav_beitrag_py[j] for j in _alle_jahre],
                     hovertemplate="<b>%{x} – bAV-Beiträge (AN)</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
+                ))
+            if any(_vbnbav_py[j] > 0 for j in _alle_jahre):
+                fig_jv2.add_trace(go.Bar(
+                    name="− Vorsorge (ohne bAV)", x=_alle_jahre,
+                    y=[-_vbnbav_py[j] for j in _alle_jahre],
+                    marker_color="#E65100",
+                    customdata=[_vbnbav_py[j] for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – Vorsorge (ohne bAV)</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
+                ))
+            if any(_hyp_py[j] > 0 for j in _alle_jahre):
+                fig_jv2.add_trace(go.Bar(
+                    name="− Hypothek", x=_alle_jahre,
+                    y=[-_hyp_py[j] for j in _alle_jahre],
+                    marker_color="#1565C0",
+                    customdata=[_hyp_py[j] for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – Hypothek</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
+                ))
+            if any(_lhk_col_py[j] > 0 for j in _alle_jahre):
+                fig_jv2.add_trace(go.Bar(
+                    name="− Lebenshaltungskosten", x=_alle_jahre,
+                    y=[-_lhk_col_py[j] for j in _alle_jahre],
+                    marker_color="#6A1B9A",
+                    customdata=[_lhk_col_py[j] for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – Lebenshaltungskosten</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
+                ))
+            if any(_fix_py[j] > 0 for j in _alle_jahre):
+                fig_jv2.add_trace(go.Bar(
+                    name="− Fixausgaben", x=_alle_jahre,
+                    y=[-_fix_py[j] for j in _alle_jahre],
+                    marker_color="#F9A825",
+                    customdata=[_fix_py[j] for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – Fixausgaben</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
                 ))
             fig_jv2.add_trace(go.Scatter(
                 name=_label_netto, x=_alle_jahre,
@@ -1226,8 +1240,8 @@ def render(
                 annotation_text=f"Mindest {_de(_mindest_jv)} €",
                 annotation_position="top right",
             )
-            _layout_jv2: dict = dict(
-                barmode="overlay", template="plotly_white", height=520,
+            fig_jv2.update_layout(
+                barmode="relative", template="plotly_white", height=520,
                 xaxis=dict(title="Jahr", dtick=2),
                 yaxis=dict(
                     title="€ / Monat",
@@ -1235,19 +1249,9 @@ def render(
                     range=[_y1_lo, _y1_hi],
                 ),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-                margin=dict(l=10, r=60, t=80, b=10),
+                margin=dict(l=10, r=10, t=80, b=10),
                 separators=",.",
             )
-            if _hat_abzuege_jv:
-                _layout_jv2["yaxis2"] = dict(
-                    title="Abzüge (€ / Mon.)",
-                    overlaying="y", side="right",
-                    range=[_y2_lo, _y2_hi],
-                    showgrid=False,
-                    tickformat=",.0f",
-                    zeroline=False,
-                )
-            fig_jv2.update_layout(**_layout_jv2)
             st.plotly_chart(fig_jv2, use_container_width=True)
 
         st.divider()
