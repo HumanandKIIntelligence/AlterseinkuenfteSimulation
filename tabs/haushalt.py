@@ -1046,21 +1046,6 @@ def render(
                    - _fix_py[j] - _hyp_py[j]
                 for j in _alle_jahre
             }
-            # Hover-Breakdown: alle aktiven Abzüge je Jahr
-            def _jv2_hover(j: int) -> str:
-                parts = []
-                if _bav_beitrag_py[j] > 0:
-                    parts.append(f"bAV-Beitrag: −{_de(_bav_beitrag_py[j])} €/Mon.")
-                if _vbnbav_py[j] > 0:
-                    parts.append(f"Vorsorge: −{_de(_vbnbav_py[j])} €/Mon.")
-                if _hyp_py[j] > 0:
-                    parts.append(f"Hypothek: −{_de(_hyp_py[j])} €/Mon.")
-                if _lhk_py[j] > 0:
-                    parts.append(f"Lebenshalt.: −{_de(_lhk_py[j])} €/Mon.")
-                if _fix_py[j] > 0:
-                    parts.append(f"Fixausgaben: −{_de(_fix_py[j])} €/Mon.")
-                return "<br>".join(parts)
-            _cd_jv2 = [_jv2_hover(j) for j in _alle_jahre]
             # ── Sekundäre Y-Achse: Nulllinien-Ausrichtung ────────────────────
             _zf_jv = 0.28   # 28 % der Chart-Höhe unterhalb der Null
             _max_brutto_jv = max(
@@ -1081,72 +1066,83 @@ def render(
                 _y2_lo, _y2_hi = -1.0, 1.0
             _ded_yaxis = "y2" if _hat_abzuege_jv else "y"
 
+            # Hover-Netto-Zusammenfassung für Linien
+            _netto_hover_jv = [
+                f"Netto (nach Steuer+KV): {_de(_netto_korr_py[j])} €/Mon."
+                for j in _alle_jahre
+            ]
+            _verf_hover_jv = [
+                f"Verfügbar: {_de(_verfuegbar_py[j])} €/Mon.<br>"
+                f"(Netto − Hypothek − Fixausgaben)"
+                for j in _alle_jahre
+            ]
+
             fig_jv2 = go.Figure()
             fig_jv2.add_trace(go.Bar(
                 name="Brutto", x=_alle_jahre,
                 y=[_df.loc[j, "Brutto"] / 12 for j in _alle_jahre],
                 marker_color="#90CAF9",
-                hovertemplate="%{x}: %{y:,.0f} €/Mon.<extra>Brutto</extra>",
+                hovertemplate="<b>%{x} – Brutto</b><br>%{y:,.0f} €/Mon.<extra></extra>",
             ))
             if any(_bav_beitrag_py[j] > 0 for j in _alle_jahre):
                 fig_jv2.add_trace(go.Bar(
                     name="− bAV-Beiträge (AN)", x=_alle_jahre,
                     y=[-_bav_beitrag_py[j] for j in _alle_jahre],
-                    marker_color="#F48FB1",
+                    marker_color="#C62828",
                     yaxis=_ded_yaxis,
-                    customdata=_cd_jv2,
-                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>bAV-Beitrag</extra>",
+                    customdata=[_bav_beitrag_py[j] for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – bAV-Beiträge (AN)</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
                 ))
             if any(_vbnbav_py[j] > 0 for j in _alle_jahre):
                 fig_jv2.add_trace(go.Bar(
                     name="− Vorsorge (ohne bAV)", x=_alle_jahre,
                     y=[-_vbnbav_py[j] for j in _alle_jahre],
-                    marker_color="#EF9A9A",
+                    marker_color="#E65100",
                     yaxis=_ded_yaxis,
-                    customdata=_cd_jv2,
-                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Vorsorge-Abzug</extra>",
+                    customdata=[_vbnbav_py[j] for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – Vorsorge (ohne bAV)</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
                 ))
             if any(_hyp_py[j] > 0 for j in _alle_jahre):
                 fig_jv2.add_trace(go.Bar(
                     name="− Hypothek", x=_alle_jahre,
                     y=[-_hyp_py[j] for j in _alle_jahre],
-                    marker_color="#B0BEC5",
+                    marker_color="#1565C0",
                     yaxis=_ded_yaxis,
-                    customdata=_cd_jv2,
-                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Hypothek</extra>",
+                    customdata=[_hyp_py[j] for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – Hypothek</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
                 ))
             if _lhk_m_jv > 0:
                 fig_jv2.add_trace(go.Bar(
                     name="− Lebenshaltungskosten", x=_alle_jahre,
                     y=[-_lhk_py[j] for j in _alle_jahre],
-                    marker_color="#CE93D8",
+                    marker_color="#6A1B9A",
                     yaxis=_ded_yaxis,
-                    customdata=_cd_jv2,
-                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Lebenshaltungskosten</extra>",
+                    customdata=[_lhk_py[j] for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – Lebenshaltungskosten</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
                 ))
             if any(_fix_py[j] > 0 for j in _alle_jahre):
                 fig_jv2.add_trace(go.Bar(
                     name="− Fixausgaben", x=_alle_jahre,
                     y=[-_fix_py[j] for j in _alle_jahre],
-                    marker_color="#FFCC80",
+                    marker_color="#F9A825",
                     yaxis=_ded_yaxis,
-                    customdata=_cd_jv2,
-                    hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Fixausgaben</extra>",
+                    customdata=[_fix_py[j] for j in _alle_jahre],
+                    hovertemplate="<b>%{x} – Fixausgaben</b><br>−%{customdata:,.0f} €/Mon.<extra></extra>",
                 ))
             fig_jv2.add_trace(go.Scatter(
                 name=_label_netto, x=_alle_jahre,
                 y=[_netto_korr_py[j] for j in _alle_jahre],
                 mode="lines+markers", line=dict(color="#4CAF50", width=2),
-                customdata=_cd_jv2,
-                hovertemplate="%{x}: %{y:,.0f} €/Mon. (nach Steuer+KV)<br>%{customdata}<extra>Netto</extra>",
+                customdata=_netto_hover_jv,
+                hovertemplate="%{customdata}<extra></extra>",
             ))
             fig_jv2.add_trace(go.Scatter(
                 name="Verfügbar (nach Abzügen)", x=_alle_jahre,
                 y=[_verfuegbar_py[j] for j in _alle_jahre],
                 mode="lines+markers",
                 line=dict(color="#FF9800", width=2, dash="dash"),
-                customdata=_cd_jv2,
-                hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Verfügbar</extra>",
+                customdata=_verf_hover_jv,
+                hovertemplate="%{customdata}<extra></extra>",
             ))
             fig_jv2.add_vline(
                 x=betrachtungsjahr, line_width=1, line_dash="dash",
