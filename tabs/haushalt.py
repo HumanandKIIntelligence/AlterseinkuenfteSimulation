@@ -109,8 +109,7 @@ def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
     """Liste von (Name, €/Mon.) für aktive nicht-bAV Vorsorge-Beiträge im Jahr.
 
     person: wenn gesetzt, nur Produkte dieser Person (None = alle Personen).
-    LV-Produkte: fruehestes_startjahr gilt nur als Auszahlungszeitpunkt, nicht
-    als Beitragsende – Beiträge laufen bis beitragsbefreiung_jahr weiter.
+    Beiträge enden sobald das Auszahlungs-Startjahr erreicht ist (analog Engine-Logik).
     """
     result: list[tuple[str, float]] = []
     for vp in produkte:
@@ -121,10 +120,8 @@ def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
         je = float(vp.get("jaehrl_einzahlung", 0.0))
         if je <= 0.0:
             continue
-        # LV: Beiträge enden nicht am Auszahlungsjahr, sondern per Beitragsbefreiung
-        if vp.get("typ") != "LV":
-            if _actual_startjahr(vp) <= jahr:
-                continue
+        if _actual_startjahr(vp) <= jahr:
+            continue
         bbj = int(vp.get("beitragsbefreiung_jahr", 0))
         if bbj > 0 and jahr >= bbj:
             continue
@@ -264,6 +261,10 @@ def render(
                     "Netto":  (_r1["Netto"]  if _r1 else 0) + (_r2["Netto"]  if _r2 else 0),
                     "Steuer": (_r1["Steuer"] if _r1 else 0) + (_r2["Steuer"] if _r2 else 0),
                     "KV_PV":  (_r1["KV_PV"]  if _r1 else 0) + (_r2["KV_PV"]  if _r2 else 0),
+                    "Vorsorge_Beitraege": ((_r1.get("Vorsorge_Beitraege", 0) if _r1 else 0)
+                                           + (_r2.get("Vorsorge_Beitraege", 0) if _r2 else 0)),
+                    "LHK":    ((_r1.get("LHK", 0) if _r1 else 0)
+                                + (_r2.get("LHK", 0) if _r2 else 0)),
                     "Src_GesRente": (_r1.get("Src_GesRente", 0) if _r1 else 0),
                     "Src_Gehalt":   (_r1.get("Src_Gehalt", 0) if _r1 else 0),
                     "Src_P2_Rente": (_r2.get("Src_GesRente", 0) + _r2.get("Src_Gehalt", 0) if _r2 else 0),
@@ -332,10 +333,32 @@ def render(
                 f"Bruttogehalt im Profil eingeben, um Berufsjahre zu simulieren."
             )
 
+        # Vorab: LHK + Vorsorge-Beiträge für Netto-Basis (= nach Steuer+KV+bAV, vor VB/LHK)
+        _ansicht_person = ("Person 1" if ansicht == "Person 1"
+                           else "Person 2" if ansicht == "Person 2"
+                           else None)
         if not _no_data:
+            _lhk_p1_wf = float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0))
+            _lhk_p2_wf = float(st.session_state.get(f"rc{_rc}_p2_lhk", 0.0))
+            if ansicht == "Person 1":
+                _lhk_m_wf = _lhk_p1_wf
+            elif ansicht == "Person 2":
+                _lhk_m_wf = _lhk_p2_wf
+            else:
+                _lhk_m_wf = _lhk_p1_wf + _lhk_p2_wf
+            _bav_contrib_wf = _vorsorge_bav_monatlich(
+                _vp_produkte, betrachtungsjahr, person=_ansicht_person
+            )
+            _vorsorge_nbav_einzeln = _vorsorge_non_bav_einzeln(
+                _vp_produkte, betrachtungsjahr, person=_ansicht_person
+            )
+            _vorsorge_nbav_m = sum(b for _, b in _vorsorge_nbav_einzeln)
+            _n_nach_kv = _n + _lhk_m_wf + _vorsorge_nbav_m
+
             c1.metric("Brutto", f"{_de(_b)} €",
                       help=f"{_label}: Bruttoeinkommen inkl. Mieteinnahmen")
-            c2.metric("Netto", f"{_de(_n)} €")
+            c2.metric("Netto", f"{_de(_n_nach_kv)} €",
+                      help="Nach Einkommensteuer und KV/PV (vor Vorsorge-Beiträgen und Lebenshaltungskosten).")
             c3.metric("Steuer", f"{_de(_s)} €/Mon.")
             c4.metric("KV / PV", f"{_de(_k)} €/Mon.")
 
@@ -570,14 +593,7 @@ def render(
         st.divider()
 
         # ── Brutto → Netto / Verfügbar Wasserfall ────────────────────────────
-        _ansicht_person = ("Person 1" if ansicht == "Person 1"
-                           else "Person 2" if ansicht == "Person 2"
-                           else None)
         if not _no_data:
-            _vorsorge_nbav_einzeln = _vorsorge_non_bav_einzeln(
-                _vp_produkte, betrachtungsjahr, person=_ansicht_person
-            )
-            _vorsorge_nbav_m = sum(b for _, b in _vorsorge_nbav_einzeln)
             _aktive_fix = [
                 fa for fa in _fixausgaben
                 if fa["startjahr"] <= betrachtungsjahr <= fa["endjahr"]
@@ -679,10 +695,11 @@ def render(
                         f"Rürup, Private RV, Kapitalverzehr u.a.<br>"
                         f"Steuerlich nach jeweiliger Regelung."
                     )
-                _wf_x    += ["− Einkommensteuer", "− KV/PV", "Netto Haushalt"]
-                _wf_meas += ["relative", "relative", "total"]
-                _wf_y    += [-_s, -_k, _n]
-                _wf_t    += [f"−{_de(_s)} €", f"−{_de(_k)} €", f"{_de(_n)} €"]
+                _n_nach_kv_hh = _n + _lhk_m_wf + _vorsorge_nbav_m
+                _wf_x    += ["− Einkommensteuer", "− KV/PV"]
+                _wf_meas += ["relative", "relative"]
+                _wf_y    += [-_s, -_k]
+                _wf_t    += [f"−{_de(_s)} €", f"−{_de(_k)} €"]
                 _wf_h    += [
                     f"<b>Einkommensteuer + Solidaritätszuschlag</b><br>"
                     f"−{_de(_s)} €/Mon.<br>"
@@ -694,10 +711,23 @@ def render(
                        if _hh_kv_p1_wf is not None else "")
                     + "<br>GKV/PKV je nach Versicherungsstatus.<br>"
                     "BBG: 5.175 €/Mon.",
-                    f"<b>Netto Haushalt</b><br>"
-                    f"{_de(_n)} €/Mon.<br>"
-                    f"Nach Steuer und KV/PV-Abzügen.",
                 ]
+                if _bav_contrib_wf > 0:
+                    _wf_x.append("− bAV-Beiträge"); _wf_meas.append("relative")
+                    _wf_y.append(-_bav_contrib_wf); _wf_t.append(f"−{_de(_bav_contrib_wf)} €")
+                    _wf_h.append(
+                        f"<b>bAV-Beiträge (Entgeltumwandlung)</b><br>"
+                        f"−{_de(_bav_contrib_wf)} €/Mon.<br>"
+                        f"AN-Anteil laufender bAV-Einzahlungen.<br>"
+                        f"Reduziert das disponible Bruttoeinkommen."
+                    )
+                _wf_x.append("Netto Haushalt"); _wf_meas.append("total")
+                _wf_y.append(_n_nach_kv_hh); _wf_t.append(f"{_de(_n_nach_kv_hh)} €")
+                _wf_h.append(
+                    f"<b>Netto Haushalt</b><br>"
+                    f"{_de(_n_nach_kv_hh)} €/Mon.<br>"
+                    f"Nach Steuer, KV/PV und bAV-Beiträgen."
+                )
             else:
                 # Person 1 / Person 2: einzelne Rente/Pension-Säule
                 if ansicht == "Person 1":
@@ -747,12 +777,22 @@ def render(
                         f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
                         f"Nicht KVdR-pflichtig (private Rentenleistung)."
                     )
+                _n_nach_kv_p = _n + _lhk_m_wf + _vorsorge_nbav_m
+                if _bav_contrib_wf > 0:
+                    _wf_x.append("− bAV-Beiträge"); _wf_meas.append("relative")
+                    _wf_y.append(-_bav_contrib_wf); _wf_t.append(f"−{_de(_bav_contrib_wf)} €")
+                    _wf_h.append(
+                        f"<b>bAV-Beiträge (Entgeltumwandlung)</b><br>"
+                        f"−{_de(_bav_contrib_wf)} €/Mon.<br>"
+                        f"AN-Anteil laufender bAV-Einzahlungen.<br>"
+                        f"Reduziert das disponible Bruttoeinkommen."
+                    )
                 _wf_x.append("Netto"); _wf_meas.append("total")
-                _wf_y.append(_n); _wf_t.append(f"{_de(abs(_n))} €")
+                _wf_y.append(_n_nach_kv_p); _wf_t.append(f"{_de(_n_nach_kv_p)} €")
                 _wf_h.append(
                     f"<b>Nettoeinkommen</b><br>"
-                    f"{_de(_n)} €/Mon.<br>"
-                    f"Brutto nach Einkommensteuer, KV und PV."
+                    f"{_de(_n_nach_kv_p)} €/Mon.<br>"
+                    f"Nach Einkommensteuer, KV, PV und bAV-Beiträgen."
                 )
 
             # ── Gemeinsame Abzüge (Vorsorge, Fixe, Hypothek, Lebenshaltung) ──
@@ -811,14 +851,6 @@ def render(
                     f"−{_de(_ak_m_wf)} €/Mon.<br>"
                     f"Annuität auf Restschuld nach Hypothek-Endjahr."
                 )
-            _lhk_p1 = float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0))
-            _lhk_p2 = float(st.session_state.get(f"rc{_rc}_p2_lhk", 0.0))
-            if ansicht == "Person 1":
-                _lhk_m_wf = _lhk_p1
-            elif ansicht == "Person 2":
-                _lhk_m_wf = _lhk_p2
-            else:
-                _lhk_m_wf = _lhk_p1 + _lhk_p2
             if _lhk_m_wf > 0:
                 _wf_x.append("− Lebenshalt.")
                 _wf_meas.append("relative")
@@ -830,7 +862,7 @@ def render(
                     f"Monatliche Fixkosten (Miete, Lebensmittel …).<br>"
                     f"Konfiguration im Expander 'Lebenshaltungskosten'."
                 )
-            _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf - _hyp_m_wf - _ak_m_wf - _lhk_m_wf
+            _verfuegbar_m = _n - _fix_m_wf - _hyp_m_wf - _ak_m_wf
             _wf_x.append("Verfügbar")
             _wf_meas.append("total")
             _wf_y.append(_verfuegbar_m)
@@ -955,12 +987,25 @@ def render(
 
             # ── Jahresverlauf mit Abzügen ─────────────────────────────────────
             _alle_jahre = list(_df.index)
-            _vbnbav_py = {j: _vorsorge_non_bav_monatlich(_vp_produkte, j,
-                                                           person=_ansicht_person)
-                         for j in _alle_jahre}
-            _bav_beitrag_py = {j: _vorsorge_bav_monatlich(_vp_produkte, j,
+            # Vorsorge-Beiträge aus Engine-Daten (korrekte Beitragsphase je Produkt)
+            _has_vb_col = "Vorsorge_Beitraege" in _df.columns
+            if _has_vb_col:
+                _vbtotal_py = {j: float(_df.loc[j, "Vorsorge_Beitraege"]) / 12.0
+                               for j in _alle_jahre}
+                _bav_raw_py = {j: _vorsorge_bav_monatlich(_vp_produkte, j,
                                                            person=_ansicht_person)
                                for j in _alle_jahre}
+                _bav_beitrag_py = {j: min(_bav_raw_py[j], _vbtotal_py[j])
+                                   for j in _alle_jahre}
+                _vbnbav_py = {j: max(0.0, _vbtotal_py[j] - _bav_beitrag_py[j])
+                              for j in _alle_jahre}
+            else:
+                _vbnbav_py = {j: _vorsorge_non_bav_monatlich(_vp_produkte, j,
+                                                               person=_ansicht_person)
+                              for j in _alle_jahre}
+                _bav_beitrag_py = {j: _vorsorge_bav_monatlich(_vp_produkte, j,
+                                                               person=_ansicht_person)
+                                   for j in _alle_jahre}
             _hyp_sched_jv  = get_hyp_schedule()
             _ak_sched_jv   = get_anschluss_schedule()
             _hyp_faktor_jv = 0.5 if ansicht in ("Person 1", "Person 2") else 1.0
@@ -985,10 +1030,20 @@ def render(
             else:
                 _lhk_m_jv = _lhk_p1_jv + _lhk_p2_jv
             _lhk_py = {j: _lhk_m_jv for j in _alle_jahre}
+            # Korrigiertes Netto: nach Steuer+KV, vor Vorsorge-Beiträgen und LHK
+            _lhk_col_py = {
+                j: (_df.loc[j, "LHK"] / 12 if "LHK" in _df.columns else _lhk_m_jv)
+                for j in _alle_jahre
+            }
+            _netto_korr_py = {
+                j: (_df.loc[j, "Netto"] / 12
+                    + (_bav_beitrag_py[j] + _vbnbav_py[j])
+                    + _lhk_col_py[j])
+                for j in _alle_jahre
+            }
             _verfuegbar_py = {
                 j: (_df.loc[j, "Netto"] / 12)
-                   - _bav_beitrag_py[j] - _vbnbav_py[j]
-                   - _fix_py[j] - _lhk_py[j] - _hyp_py[j]
+                   - _fix_py[j] - _hyp_py[j]
                 for j in _alle_jahre
             }
             # Hover-Breakdown: alle aktiven Abzüge je Jahr
@@ -1080,10 +1135,10 @@ def render(
                 ))
             fig_jv2.add_trace(go.Scatter(
                 name=_label_netto, x=_alle_jahre,
-                y=[_df.loc[j, "Netto"] / 12 for j in _alle_jahre],
+                y=[_netto_korr_py[j] for j in _alle_jahre],
                 mode="lines+markers", line=dict(color="#4CAF50", width=2),
                 customdata=_cd_jv2,
-                hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Netto</extra>",
+                hovertemplate="%{x}: %{y:,.0f} €/Mon. (nach Steuer+KV)<br>%{customdata}<extra>Netto</extra>",
             ))
             fig_jv2.add_trace(go.Scatter(
                 name="Verfügbar (nach Abzügen)", x=_alle_jahre,

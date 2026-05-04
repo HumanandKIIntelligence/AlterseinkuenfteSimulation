@@ -1431,6 +1431,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 hovertemplate="%{x|.0f}: %{y:,.0f} € Sondertilgung<extra>Sondertilgung</extra>",
             ))
 
+        # Korrigiertes Netto: nach Steuer+KV, vor Vorsorge-Beiträgen und LHK
+        _vb_col_eo  = df_jd["Vorsorge_Beitraege"] if "Vorsorge_Beitraege" in df_jd.columns else pd.Series(0, index=df_jd.index)
+        _lhk_col_eo = df_jd["LHK"]                if "LHK"                in df_jd.columns else pd.Series(0, index=df_jd.index)
+        _netto_korr_eo = df_jd["Netto"] + _vb_col_eo + _lhk_col_eo
+
         # Netto-Linie mit Hover-Details zu allen Abzügen
         _netto_hover = []
         for _nhj in _jahre:
@@ -1445,11 +1450,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             if _nh_lhk    > 0: _nh_parts.append(f"Lebenshaltung: −{_de(_nh_lhk)} €")
             _netto_hover.append("<br>".join(_nh_parts))
         fig_src.add_trace(go.Scatter(
-            name="Netto", x=df_jd.index, y=df_jd["Netto"],
+            name="Netto", x=df_jd.index, y=_netto_korr_eo,
             mode="lines+markers",
             line=dict(color="black", width=2),
             customdata=_netto_hover,
-            hovertemplate="%{x}: %{y:,.0f} € Netto<br>%{customdata}<extra>Netto</extra>",
+            hovertemplate="%{x}: %{y:,.0f} € Netto (nach Steuer+KV)<br>%{customdata}<extra>Netto</extra>",
         ))
         # Mindesthaushaltsbetrag als blaue Linie
         _mindest_mono = st.session_state.get("mindest_haushalt_mono", 0)
@@ -1477,7 +1482,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 fig_src.add_trace(go.Scatter(
                     name="Netto nach Hyp.-Rate",
                     x=_ap_prim_yrs,
-                    y=[df_jd.loc[yr, "Netto"] - _ausgaben_plan[yr] for yr in _ap_prim_yrs],
+                    y=[_netto_korr_eo.loc[yr] - _ausgaben_plan[yr] for yr in _ap_prim_yrs],
                     mode="lines+markers",
                     line=dict(color="#D32F2F", width=2, dash="dot"),
                     hovertemplate="%{x}: %{y:,.0f} € nach Hyp.-Rate<extra></extra>",
@@ -1486,7 +1491,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 fig_src.add_trace(go.Scatter(
                     name="Netto nach Anschlusskredit",
                     x=_ap_ak_yrs,
-                    y=[df_jd.loc[yr, "Netto"] - _ausgaben_plan[yr] for yr in _ap_ak_yrs],
+                    y=[_netto_korr_eo.loc[yr] - _ausgaben_plan[yr] for yr in _ap_ak_yrs],
                     mode="lines+markers",
                     line=dict(color="#FF6F00", width=2, dash="dot"),
                     hovertemplate="%{x}: %{y:,.0f} € nach Anschlusskredit<extra></extra>",
@@ -1517,12 +1522,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 annotation_text="P2 Renteneintritt", annotation_position="bottom left",
             )
         # Einmalige Auszahlungen (Einkommen) als Markierungen oberhalb des Diagramms
+        _einmal_idx = 0
         for _ej in _jahre:
             if _einmal_info.get(_ej):
                 fig_src.add_vline(x=_ej, line_width=1, line_dash="dot", line_color="#FF9800")
+                _ann_y = 1.08 if _einmal_idx % 2 == 0 else 1.22
                 fig_src.add_annotation(
                     x=_ej, xref="x",
-                    y=1.08, yref="paper",
+                    y=_ann_y, yref="paper",
                     text="<br>".join(_einmal_info[_ej]),
                     showarrow=False,
                     xanchor="left", yanchor="bottom",
@@ -1530,6 +1537,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     bgcolor="rgba(255,152,0,0.08)",
                     bordercolor="#FF9800",
                 )
+                _einmal_idx += 1
         # Sonderausgaben (Hypothek-Raten / Einmaltilgung) als Annotationen unterhalb der Balken
         _hat_sonder = "Sonderausgabe" in df_jd.columns and df_jd["Sonderausgabe"].sum() > 0
         if _hat_sonder:
@@ -1588,11 +1596,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _y1_lo = min(_y1_lo_data * 1.08, -_y1_hi * 0.05)
 
         _has_einmal_annotations = any(_einmal_info.get(j) for j in _jahre)
-        # Legende über dem Diagramm positionieren:
-        # Vline-Annotation "P1 Renteneintritt" liegt bei paper-y≈1.0 → Legende-Untergrenze
-        # muss darüber liegen (y=1.08).  Mit Einmal-Annotations (y=1.08) noch höher (y=1.30).
-        _legend_y = 1.42 if _has_einmal_annotations else 1.20
-        _margin_t = 270 if _has_einmal_annotations else 160
+        # Legende über dem Diagramm: Einmal-Annotations gehen jetzt bis y=1.22 (alternierend),
+        # daher Legende und Top-Margin entsprechend erhöht.
+        _legend_y = 1.50 if _has_einmal_annotations else 1.20
+        _margin_t = 310 if _has_einmal_annotations else 160
         _src_layout: dict = dict(
             barmode="stack", template="plotly_white", height=520,
             xaxis=dict(title="Jahr", dtick=2),
@@ -1806,10 +1813,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                             )
                     if _s["Restschuld_Ende"] <= 0:
                         break
-                # Endpunkt am tatsächlichen endjahr eintragen (Schedule läuft nur bis endjahr-1)
+                # Endpunkt: am endjahr die tatsächliche Resthypothek anzeigen (nicht 0),
+                # damit die Linie nahtlos in den Anschlusskredit übergeht.
+                _rs_end_val = _ak_zeitleiste_rs if _ak_zeitleiste_rs > 0 else 0.0
                 if _rs_x and _endjahr_hyp and _rs_x[-1] < _endjahr_hyp:
                     _rs_x.append(_endjahr_hyp)
-                    _rs_y.append(0.0)
+                    _rs_y.append(_rs_end_val)
+                elif _rs_x and _rs_x[-1] == _endjahr_hyp and _rs_end_val > 0:
+                    _rs_y[-1] = _rs_end_val
                 if _rs_x:
                     fig_spar.add_trace(go.Scatter(
                         name="Restschuld",

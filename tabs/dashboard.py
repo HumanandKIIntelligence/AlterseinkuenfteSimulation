@@ -359,22 +359,38 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     f"  |  Abschlag: {ergebnis.rentenabschlag:.1%}".replace(".", ",")
                     if ergebnis.rentenabschlag > 0 else ""
                 )
-                st.info(
-                    f"**P1:** {profil.aktuelles_alter} Jahre  |  "
-                    f"Renteneintritt {profil.renteneintritt_alter} ({profil.eintritt_jahr})  |  "
-                    f"Noch {profil.jahre_bis_rente} Jahre" + _ab1
-                )
+                if profil.bereits_rentner:
+                    _p1_status = f"Bereits in Rente/Pension seit {profil.rentenbeginn_jahr}"
+                else:
+                    _p1_status = (
+                        f"Renteneintritt {profil.renteneintritt_alter} ({profil.eintritt_jahr})  |  "
+                        f"Noch {profil.jahre_bis_rente} Jahre"
+                    )
+                st.info(f"**P1:** {profil.aktuelles_alter} Jahre  |  " + _p1_status + _ab1)
             with hi2:
                 _ab2 = (
                     f"  |  Abschlag: {ergebnis2.rentenabschlag:.1%}".replace(".", ",")
                     if ergebnis2.rentenabschlag > 0 else ""
                 )
-                st.info(
-                    f"**P2:** {profil2.aktuelles_alter} Jahre  |  "
-                    f"Renteneintritt {profil2.renteneintritt_alter} ({profil2.eintritt_jahr})  |  "
-                    f"Noch {profil2.jahre_bis_rente} Jahre" + _ab2
-                )
+                if profil2.bereits_rentner:
+                    _p2_status = f"Bereits in Rente/Pension seit {profil2.rentenbeginn_jahr}"
+                else:
+                    _p2_status = (
+                        f"Renteneintritt {profil2.renteneintritt_alter} ({profil2.eintritt_jahr})  |  "
+                        f"Noch {profil2.jahre_bis_rente} Jahre"
+                    )
+                st.info(f"**P2:** {profil2.aktuelles_alter} Jahre  |  " + _p2_status + _ab2)
 
+            # Vorsorgebeiträge + LHK vorab: Simulation zieht diese bereits ab, daher für
+            # korrekte "Netto Haushalt"-Basis (= nach Steuer+KV, vor Vorsorge+Lebenshaltung)
+            _vp_produkte_hh = st.session_state.get("vp_produkte", [])
+            _bav_m_hh = _vorsorge_bav_monatlich(_vp_produkte_hh, _sel_j_dash)
+            _vb_einzeln_hh = _vorsorge_non_bav_einzeln(_vp_produkte_hh, _sel_j_dash)
+            _vb_m_hh = sum(b for _, b in _vb_einzeln_hh)
+            _hh_lhk = (
+                float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0))
+                + float(st.session_state.get(f"rc{_rc}_p2_lhk", 0.0))
+            )
             # ── Top-Kennzahlen (Jahr-spezifisch) ─────────────────────────────
             _hh_brutto = _row_dash["Brutto"] / 12 if _row_dash else hh["brutto_gesamt"]
             _hh_netto  = _row_dash["Netto"]  / 12 if _row_dash else hh["netto_gesamt"]
@@ -382,6 +398,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             _hh_kv     = _row_dash["KV_PV"]  / 12 if _row_dash else hh["kv_gesamt"]
             _hh_kv_p1  = _row_dash["KV_P1"]  / 12 if _row_dash and "KV_P1" in _row_dash else None
             _hh_kv_p2  = _row_dash["KV_P2"]  / 12 if _row_dash and "KV_P2" in _row_dash else None
+            # Netto nach Steuer+KV+bAV-Beiträgen (vor sonstiger Vorsorge und Lebenshaltung)
+            _hh_netto_nach_kv = _hh_netto + _hh_lhk + _vb_m_hh
 
             c1, c2, c3, c4 = st.columns(4)
             c1.metric(
@@ -389,8 +407,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 help="Gesetzliche Renten + Zusatzrenten beider Personen + Mieteinnahmen.",
             )
             c2.metric(
-                f"Netto Haushalt {_sel_j_dash}", f"{_de(_hh_netto)} €/Mon.",
-                help="Nach Einkommensteuer und KV/PV beider Personen.",
+                f"Netto Haushalt {_sel_j_dash}", f"{_de(_hh_netto_nach_kv)} €/Mon.",
+                help="Nach Einkommensteuer und KV/PV beider Personen (vor Vorsorge und Lebenshaltung).",
             )
             kapital_gesamt = ergebnis.kapital_bei_renteneintritt  # P1 = geteiltes Haushaltsvermögen
             c3.metric(
@@ -494,13 +512,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     f"Rürup, Private RV, Kapitalverzehr u.a.<br>"
                     f"Steuerlich nach jeweiliger Regelung."
                 )
-            _wf_x += ["− Einkommensteuer", "− KV/PV", "Netto Haushalt"]
-            _wf_m += ["relative", "relative", "total"]
-            _wf_y += [-_hh_steuer, -_hh_kv, _hh_netto]
+            _wf_x += ["− Einkommensteuer", "− KV/PV"]
+            _wf_m += ["relative", "relative"]
+            _wf_y += [-_hh_steuer, -_hh_kv]
             _wf_t += [
                 f"−{_de(_hh_steuer)} €",
                 f"−{_de(_hh_kv)} €",
-                f"{_de(_hh_netto)} €",
             ]
             _wf_h += [
                 f"<b>Einkommensteuer + Solidaritätszuschlag</b><br>"
@@ -512,13 +529,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 + (f"<br>P1: {_de(_hh_kv_p1)} €, P2: {_de(_hh_kv_p2)} €" if _hh_kv_p1 is not None else "")
                 + "<br>GKV/PKV je nach Versicherungsstatus.<br>"
                 "BBG: 5.175 €/Mon.",
-                f"<b>Netto Haushalt</b><br>"
-                f"{_de(_hh_netto)} €/Mon.<br>"
-                f"Nach Steuer und KV/PV-Abzügen.",
             ]
-            # Vorsorgebeiträge: bAV-Beiträge (AN-Anteil) + sonstige Vorsorge
-            _vp_produkte_hh = st.session_state.get("vp_produkte", [])
-            _bav_m_hh = _vorsorge_bav_monatlich(_vp_produkte_hh, _sel_j_dash)
+            # bAV-Beiträge vor Netto (Entgeltumwandlung reduziert disponibles Bruttoeinkommen)
             if _bav_m_hh > 0:
                 _wf_x.append("− bAV-Beiträge")
                 _wf_m.append("relative")
@@ -530,8 +542,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     f"Eigenbeitrag zur betrieblichen Altersversorgung.<br>"
                     f"Reduziert verfügbares Netto in der Ansparphase."
                 )
-            _vb_einzeln_hh = _vorsorge_non_bav_einzeln(_vp_produkte_hh, _sel_j_dash)
-            _vb_m_hh = sum(b for _, b in _vb_einzeln_hh)
+            _wf_x.append("Netto Haushalt")
+            _wf_m.append("total")
+            _wf_y.append(_hh_netto_nach_kv)
+            _wf_t.append(f"{_de(_hh_netto_nach_kv)} €")
+            _wf_h.append(
+                f"<b>Netto Haushalt</b><br>"
+                f"{_de(_hh_netto_nach_kv)} €/Mon.<br>"
+                f"Nach Steuer, KV/PV und bAV-Beiträgen.",
+            )
+            # Vorsorgebeiträge: sonstige (ohne bAV)
             if _vb_m_hh > 0:
                 _vb_detail_hh = "; ".join(f"{n}: {_de(v)} €" for n, v in _vb_einzeln_hh)
                 _wf_x.append("− Vorsorge\n(ohne bAV)")
@@ -593,10 +613,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     f"Annuität auf Restschuld nach Hypothek-Endjahr."
                 )
             # Lebenshaltungskosten (beide Personen)
-            _hh_lhk = (
-                float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0))
-                + float(st.session_state.get(f"rc{_rc}_p2_lhk", 0.0))
-            )
             if _hh_lhk > 0:
                 _wf_x.append("− Lebenshalt.")
                 _wf_m.append("relative")
@@ -608,7 +624,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     f"P1 + P2, Miete, Lebensmittel u.a.<br>"
                     f"Konfiguration im Tab Haushalt."
                 )
-            _hh_verfuegbar = _hh_netto - _bav_m_hh - _vb_m_hh - _hh_fix_m - _hyp_m_hh - _ak_m_hh - _hh_lhk
+            _hh_verfuegbar = _hh_netto - _hh_fix_m - _hyp_m_hh - _ak_m_hh
             _wf_x.append("Verfügbar")
             _wf_m.append("total")
             _wf_y.append(_hh_verfuegbar)
@@ -711,20 +727,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
             st.divider()
 
-            with st.expander("🧾 Steuer- & KV-Details Person 1", expanded=False):
-                steuern.render_section(profil, ergebnis, mieteinnahmen / 2 if mieteinnahmen > 0 else 0.0)
-            with st.expander("🧾 Steuer- & KV-Details Person 2", expanded=False):
-                steuern.render_section(profil2, ergebnis2, mieteinnahmen / 2 if mieteinnahmen > 0 else 0.0)
-
-            render_analyse(
-                profil, ergebnis, label="Person 1",
-                profil2=profil2, ergebnis2=ergebnis2,
-                veranlagung=veranlagung,
-                mieteinnahmen=mieteinnahmen / 2,
-                hh=hh,
-                rc=_rc,
-            )
-
             # Grundsicherungs-Hinweis für beide Personen
             for _gs_label, _gs_netto in [("Person 1", _p1_n_y), ("Person 2", _p2_n_y)]:
                 if 0 < _gs_netto < GRUNDSICHERUNG_SCHWELLE:
@@ -784,13 +786,28 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             f" ({(67 - profil.renteneintritt_alter) * 12} Monate × 0,3 % § 77 SGB VI)"
             if ergebnis.rentenabschlag > 0 else ""
         )
+        if profil.bereits_rentner:
+            _einzel_status = f"**Bereits in Rente/Pension seit {profil.rentenbeginn_jahr}**"
+        else:
+            _einzel_status = (
+                f"**Renteneintritt:** {profil.renteneintritt_alter} Jahre ({profil.eintritt_jahr})  |  "
+                f"**Noch {profil.jahre_bis_rente} Jahre bis zur Rente**"
+            )
         st.info(
             f"**Alter heute:** {profil.aktuelles_alter} Jahre  |  "
-            f"**Renteneintritt:** {profil.renteneintritt_alter} Jahre ({profil.eintritt_jahr})  |  "
-            f"**Noch {profil.jahre_bis_rente} Jahre bis zur Rente**"
-            + abschlag_info
+            + _einzel_status + abschlag_info
         )
 
+        # Vorsorgebeiträge + LHK vorab für Nettorente-Basis und Wasserfall
+        _d_person_vb = "Person 2" if wahl == "Person 2" else "Person 1"
+        _vp_produkte_e = st.session_state.get("vp_produkte", [])
+        _bav_m_e = _vorsorge_bav_monatlich(_vp_produkte_e, _sel_j_dash, person=_d_person_vb)
+        _vb_einzeln_e = _vorsorge_non_bav_einzeln(_vp_produkte_e, _sel_j_dash, person=_d_person_vb)
+        _vb_m_e = sum(b for _, b in _vb_einzeln_e)
+        _lhk_key_d = "p2_lhk" if wahl == "Person 2" else "p1_lhk"
+        _d_lhk = float(st.session_state.get(f"rc{_rc}_{_lhk_key_d}", 0.0))
+        # Netto nach Steuer+KV+bAV-Beiträgen (vor sonstiger Vorsorge und Lebenshaltung)
+        _d_netto_nach_kv = _d_netto + _d_lhk + _vb_m_e
         # ── Kennzahlen (Jahr-spezifisch via Slider) ───────────────────────────
         c1, c2, c3, c4 = st.columns(4)
         c1.metric(
@@ -798,8 +815,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             help="Gesetzliche Rente + Zusatzrente vor Steuer und KV-Abzügen.",
         )
         c2.metric(
-            f"Nettorente {_sel_j_dash}", f"{_de(_d_netto)} €/Mon.",
-            help="Nach Einkommensteuer und Kranken-/Pflegeversicherungsbeitrag.",
+            f"Nettorente {_sel_j_dash}", f"{_de(_d_netto_nach_kv)} €/Mon.",
+            help="Nach Einkommensteuer, KV und PV (vor Vorsorge und Lebenshaltung).",
         )
         _kapital_einzel = (_ergebnis_p1_kapital.kapital_bei_renteneintritt / 2
                           if hat_partner
@@ -966,10 +983,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             f"§ 55 SGB XI; Kinderstaffelung § 55 Abs. 3a SGB XI.<br>"
             f"Kinderlosenzuschlag: +0,6 % (trägt Versicherter allein).",
         ]
-        # Vorsorgebeiträge: bAV-Beiträge + sonstige (inkl. LV)
-        _d_person_vb = "Person 2" if wahl == "Person 2" else "Person 1"
-        _vp_produkte_e = st.session_state.get("vp_produkte", [])
-        _bav_m_e = _vorsorge_bav_monatlich(_vp_produkte_e, _sel_j_dash, person=_d_person_vb)
+        # bAV-Beiträge vor Netto (Entgeltumwandlung reduziert disponibles Bruttoeinkommen)
         if _bav_m_e > 0:
             _wf_x_e.append("− bAV-Beiträge")
             _wf_m_e.append("relative")
@@ -981,8 +995,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Eigenbeitrag zur betrieblichen Altersversorgung.<br>"
                 f"Reduziert verfügbares Netto in der Ansparphase."
             )
-        _vb_einzeln_e = _vorsorge_non_bav_einzeln(_vp_produkte_e, _sel_j_dash, person=_d_person_vb)
-        _vb_m_e = sum(b for _, b in _vb_einzeln_e)
+        _wf_x_e.append("Netto")
+        _wf_m_e.append("total")
+        _wf_y_e.append(_d_netto_nach_kv)
+        _wf_t_e.append(f"{_de(_d_netto_nach_kv)} €")
+        _wf_h_e.append(
+            f"<b>Nettoeinkommen</b><br>"
+            f"{_de(_d_netto_nach_kv)} €/Mon.<br>"
+            f"Brutto nach Einkommensteuer, KV, PV und bAV-Beiträgen."
+        )
+        # Vorsorgebeiträge: sonstige (ohne bAV)
         if _vb_m_e > 0:
             _vb_detail_e = "; ".join(f"{n}: {_de(v)} €" for n, v in _vb_einzeln_e)
             _wf_x_e.append("− Vorsorge\n(ohne bAV)")
@@ -996,8 +1018,6 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Reduzieren das verfügbare Netto während der Beitragsphase."
             )
         # Fixe monatliche Ausgaben
-        _lhk_key_d = "p2_lhk" if wahl == "Person 2" else "p1_lhk"
-        _d_lhk = float(st.session_state.get(f"rc{_rc}_{_lhk_key_d}", 0.0))
         _d_fix_aktiv = [
             fa for fa in st.session_state.get("hh_fixausgaben", [])
             if fa["startjahr"] <= _sel_j_dash <= fa["endjahr"]
@@ -1059,7 +1079,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Monatliche Fixkosten (Miete, Lebensmittel …).<br>"
                 f"Konfiguration im Tab Haushalt."
             )
-        _d_verfuegbar = _d_netto - _bav_m_e - _vb_m_e - _d_fix_m - _hyp_m_e_val - _ak_m_e_val - _d_lhk
+        _d_verfuegbar = _d_netto - _d_fix_m - _hyp_m_e_val - _ak_m_e_val
         _wf_x_e.append("Verfügbar")
         _wf_m_e.append("total")
         _wf_y_e.append(_d_verfuegbar)

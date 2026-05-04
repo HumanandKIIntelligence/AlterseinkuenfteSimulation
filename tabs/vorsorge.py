@@ -889,14 +889,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         _hover_opt = [_opt_hover(yr) for yr in _opt_years]
 
+        # Korrigiertes Netto: nach Steuer+KV, vor Vorsorge-Beiträgen und LHK
+        _vb_col_sel  = _df_sel["Vorsorge_Beitraege"] if "Vorsorge_Beitraege" in _df_sel.columns else 0
+        _lhk_col_sel = _df_sel["LHK"]                if "LHK"                in _df_sel.columns else 0
+        _netto_korr_sel = _df_sel["Netto"] + _vb_col_sel + _lhk_col_sel
+
         # Kennzahlen
-        _avg_netto_mon = _df_sel["Netto"].mean() / 12
+        _avg_netto_mon = _netto_korr_sel.mean() / 12
         _total_steuer  = _df_sel["Steuer"].sum()
         _total_kv      = _df_sel["KV_PV"].sum()
-        _total_netto   = _df_sel["Netto"].sum()
+        _total_netto   = _netto_korr_sel.sum()
         _overhead_pct  = (_total_steuer + _total_kv) / max(1, _total_steuer + _total_kv + _total_netto) * 100
         _km1, _km2, _km3, _km4 = st.columns(4)
-        _km1.metric("Ø Netto/Mon. (optimal)", f"{_de(_avg_netto_mon)} €")
+        _km1.metric("Ø Netto/Mon. (optimal)", f"{_de(_avg_netto_mon)} €",
+                    help="Nach Einkommensteuer und KV/PV (vor Vorsorge-Beiträgen und Lebenshaltungskosten).")
         _km2.metric(f"Steuer gesamt ({horizon} J.)", f"{_de(_total_steuer)} €")
         _km3.metric("Steuer+KV-Anteil am Brutto", f"{_overhead_pct:.1f} %")
         _km4.metric(f"Steuer+KV gesamt ({horizon} J.)", f"{_de(_total_steuer + _total_kv)} €",
@@ -909,9 +915,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                        "#880E4F","#006064","#1B5E20","#F57F17","#4E342E"]
         fig_opt = go.Figure()
         fig_opt.add_trace(go.Bar(
-            name="Netto", x=_df_sel.index, y=_df_sel["Netto"],
+            name="Netto", x=_df_sel.index, y=_netto_korr_sel,
             marker_color="#4CAF50", customdata=_hover_opt,
-            hovertemplate="<b>%{x}</b>: %{y:,.0f} € Netto<br>%{customdata}<extra>Netto</extra>",
+            hovertemplate="<b>%{x}</b>: %{y:,.0f} € Netto (nach Steuer+KV)<br>%{customdata}<extra>Netto</extra>",
         ))
 
         # Alle Verträge als EIN kombinierter Balkensegment mit Hover-Breakdown

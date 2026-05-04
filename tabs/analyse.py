@@ -70,12 +70,13 @@ def _analyse_person(
 
     # 2. Versorgungslücke
     if not profil.bereits_rentner and _brutto_g > 0:
-        _netto_quote = _netto / _brutto_g
-        if _netto_quote < 0.65:
+        _brutto_rente = ergebnis.brutto_monatlich
+        _brutto_quote = _brutto_rente / _brutto_g
+        if _brutto_quote < 0.65:
             hinweise.append(Hinweis(_WARN, "Hohe Versorgungslücke",
-                f"Nettorente **{_de(_netto)} €/Mon.** = nur **{_netto_quote:.0%}** "
+                f"Bruttorente **{_de(_brutto_rente)} €/Mon.** = nur **{_brutto_quote:.0%}** "
                 f"des heutigen Bruttogehalts ({_de(_brutto_g)} €/Mon.). "
-                f"Lücke: **{_de(_brutto_g - _netto)} €/Mon.** "
+                f"Lücke: **{_de(_brutto_g - _brutto_rente)} €/Mon.** "
                 f"Zusatzvorsorge (bAV, Rürup, ETF-Sparplan) prüfen."))
 
     # 3. Fixausgaben nahe an Nettorente
