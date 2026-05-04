@@ -889,11 +889,9 @@ if _eo_jd:
                     st.sidebar.metric("Einmalerträge", f"{_de_sidebar(_einm_p1)} €/Mon.")
 
 # O3d: 6 Tabs (Steuern → Dashboard-Expander; Auszahlung → Entnahme-Expander)
-tab_labels = ["⚙️ Profil", "📊 Dashboard", "🔮 Simulation",
+tab_labels = ["⚙️ Profil", "📊 Dashboard", "👥 Haushalt", "🔮 Simulation",
               "🏦 Vorsorge-Bausteine", "🏠 Hypothek", "💡 Entnahme-Optimierung",
               "📖 Dokumentation"]
-if profil2:
-    tab_labels.insert(2, "👥 Haushalt")
 
 tabs = st.tabs(tab_labels)
 
@@ -901,8 +899,7 @@ idx = 0
 T: dict = {}
 T["Profil"]        = tabs[idx]; idx += 1
 T["Dashboard"]     = tabs[idx]; idx += 1
-if profil2:
-    T["Haushalt"]  = tabs[idx]; idx += 1
+T["Haushalt"]      = tabs[idx]; idx += 1
 T["Simulation"]    = tabs[idx]; idx += 1
 T["Vorsorge"]      = tabs[idx]; idx += 1
 T["Hypothek"]      = tabs[idx]; idx += 1
@@ -913,9 +910,8 @@ render_profil_tab(T)
 dashboard.render(T, profil1, ergebnis1, mieteinnahmen=mieteinnahmen,
                  mietsteigerung=mietsteigerung,
                  profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung)
-if profil2:
-    haushalt.render(T, profil1, profil2, ergebnis1, ergebnis2, veranlagung, haushalt_daten,
-                    mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
+haushalt.render(T, profil1, profil2, ergebnis1, ergebnis2, veranlagung, haushalt_daten,
+                mieteinnahmen=mieteinnahmen, mietsteigerung=mietsteigerung)
 simulation.render(T, profil1, ergebnis1, profil2=profil2, ergebnis2=ergebnis2,
                   veranlagung=veranlagung, mieteinnahmen=mieteinnahmen)
 vorsorge.render(T, profil1, ergebnis1, profil2=profil2,

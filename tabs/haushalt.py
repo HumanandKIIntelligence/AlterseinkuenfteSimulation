@@ -134,9 +134,9 @@ def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
 def render(
     T: dict,
     p1: Profil,
-    p2: Profil,
+    p2: "Profil | None",
     e1: RentenErgebnis,
-    e2: RentenErgebnis,
+    e2: "RentenErgebnis | None",
     veranlagung: str,
     hh: dict,
     mieteinnahmen: float = 0.0,
@@ -147,6 +147,13 @@ def render(
     _fixausgaben: list[dict] = list(st.session_state.get("hh_fixausgaben", []))
     with T["Haushalt"]:
         st.header("👥 Haushalts-Übersicht")
+        if p2 is None:
+            st.info(
+                "Dieser Tab zeigt die gemeinsame Haushaltsübersicht für Paare. "
+                "Bitte aktivieren Sie im **Profil-Tab** die Option **'Mit Partner/in'**, "
+                "um Paarvergleich, Splitting-Vorteil und gemeinsamen Jahresverlauf zu sehen."
+            )
+            return
 
         veranlagung_label = "Zusammenveranlagung (Splitting)" if veranlagung == "Zusammen" \
             else "Getrennte Veranlagung"
