@@ -21,7 +21,8 @@ def _de(v: float, dec: int = 0) -> str:
 
 
 def render_section(profil: Profil, ergebnis: RentenErgebnis,
-                   mieteinnahmen: float = 0.0) -> None:
+                   mieteinnahmen: float = 0.0,
+                   key_prefix: str = "") -> None:
     """Steuern & KV ohne Tab-Wrapper – aufrufbar aus Dashboard-Expander."""
     # ── Einkommensteuer ───────────────────────────────────────────────────
     st.subheader("Einkommensteuer auf die Rente")
@@ -97,7 +98,7 @@ def render_section(profil: Profil, ergebnis: RentenErgebnis,
             margin=dict(l=0, r=10, t=10, b=10),
             separators=",.",
         )
-        st.plotly_chart(fig_st, use_container_width=True)
+        st.plotly_chart(fig_st, use_container_width=True, key=f"{key_prefix}_fig_st")
 
     st.divider()
 
@@ -129,7 +130,7 @@ def render_section(profil: Profil, ergebnis: RentenErgebnis,
         showlegend=False,
         separators=",.",
     )
-    st.plotly_chart(fig_ba, use_container_width=True)
+    st.plotly_chart(fig_ba, use_container_width=True, key=f"{key_prefix}_fig_ba")
 
     st.info(
         "**Jahressteuergesetz 2022 (JStG 2022):** Seit 2023 steigt der Besteuerungsanteil "
@@ -210,7 +211,7 @@ def render_section(profil: Profil, ergebnis: RentenErgebnis,
             margin=dict(l=10, r=10, t=10, b=10),
             separators=",.",
         )
-        st.plotly_chart(fig_kv, use_container_width=True)
+        st.plotly_chart(fig_kv, use_container_width=True, key=f"{key_prefix}_fig_kv")
 
         st.warning(
             "⚠️ **PKV im Rentenalter:** PKV-Beiträge steigen mit Alter und Leistungsnutzung "

@@ -20,6 +20,9 @@ except ImportError:
     def get_anschluss_schedule():
         return []
 
+from tabs import steuern
+from tabs.analyse import render_analyse
+
 
 def _eink_label(profil: "Profil", sel_jahr: int) -> str:
     in_rente = profil.bereits_rentner or sel_jahr >= profil.eintritt_jahr
@@ -579,7 +582,8 @@ def render(
                 fa for fa in _fixausgaben
                 if fa["startjahr"] <= betrachtungsjahr <= fa["endjahr"]
             ]
-            _fix_m_wf = sum(fa["betrag_monatlich"] for fa in _aktive_fix)
+            _fix_faktor_wf = 0.5 if ansicht in ("Person 1", "Person 2") else 1.0
+            _fix_m_wf = sum(fa["betrag_monatlich"] for fa in _aktive_fix) * _fix_faktor_wf
 
             # bAV und Riester aus der aktuellen Zeile extrahieren
             if ansicht == "Haushalt gesamt" and _row_comb:
@@ -595,72 +599,163 @@ def render(
                 _bav_m_wf = _riester_m_wf = 0.0
             _b_basis = _b - _bav_m_wf - _riester_m_wf
 
-            # Hover-Kontext je nach Ansicht
-            if ansicht == "Person 1":
-                _erg_wf   = e1
-                _prof_wf  = p1
-                _kv_txt   = f"PKV {_de(p1.pkv_beitrag, 0)} €/Mon. (Fixbetrag)" if p1.krankenversicherung == "PKV" else "GKV-Beitrag (AN-Anteil)"
-                _ba_pct   = f"{e1.besteuerungsanteil:.0%}".replace(".", ",")
-                _eff_pct  = f"{e1.effektiver_steuersatz:.1%}".replace(".", ",")
-                _ver_txt  = ""
-            elif ansicht == "Person 2":
-                _erg_wf   = e2
-                _prof_wf  = p2
-                _kv_txt   = f"PKV {_de(p2.pkv_beitrag, 0)} €/Mon. (Fixbetrag)" if p2.krankenversicherung == "PKV" else "GKV-Beitrag (AN-Anteil)"
-                _ba_pct   = f"{e2.besteuerungsanteil:.0%}".replace(".", ",")
-                _eff_pct  = f"{e2.effektiver_steuersatz:.1%}".replace(".", ",")
-                _ver_txt  = ""
-            else:  # Haushalt gesamt
-                _erg_wf   = e1
-                _prof_wf  = p1
-                _kv_txt   = "GKV/PKV je Person"
-                _ba_pct   = (f"P1: {e1.besteuerungsanteil:.0%} / "
-                             f"P2: {e2.besteuerungsanteil:.0%}".replace(".", ","))
-                _eff_pct  = f"{e1.effektiver_steuersatz:.1%}".replace(".", ",")
-                _ver_txt  = f"<br>{veranlagung_label}"
+            # ── Wasserfall-Einkommensquellen (ansichtsabhängig) ──────────────
+            if ansicht == "Haushalt gesamt":
+                # Dashboard-Stil: P1 / P2 als getrennte Säulen + Mieteinnahmen + Sonstige
+                _lbl_p1_wf = _eink_label(p1, betrachtungsjahr)
+                _lbl_p2_wf = _eink_label(p2, betrachtungsjahr)
+                _ba1_pct = f"{e1.besteuerungsanteil:.0%}".replace(".", ",")
+                _ba2_pct = f"{e2.besteuerungsanteil:.0%}".replace(".", ",")
+                _ver_label_wf = ("Zusammenveranlagung (Splitting)"
+                                 if veranlagung == "Zusammen" else "Getrenntveranlagung")
+                _hh_kv_p1_wf = (_row_comb["KV_P1"] / 12
+                                 if _row_comb and "KV_P1" in _row_comb else None)
+                _hh_kv_p2_wf = (_row_comb["KV_P2"] / 12
+                                 if _row_comb and "KV_P2" in _row_comb else None)
+                _p1_b_wf = (
+                    (_row_comb.get("Src_GesRente", 0)
+                     + _row_comb.get("Src_Gehalt", 0)
+                     + _row_comb.get("Src_Zusatzentgelt", 0)) / 12
+                ) if _row_comb else e1.brutto_monatlich
+                _bl1_wf = _blend_brutto_wf(p1, _jd_p1, betrachtungsjahr)
+                if _bl1_wf is not None:
+                    _p1_b_wf = _bl1_wf
+                _p2_b_wf = (
+                    _row_comb.get("Src_P2_Rente", 0) / 12
+                ) if _row_comb else e2.brutto_monatlich
+                _bl2_wf = _blend_brutto_wf(p2, _jd_p2, betrachtungsjahr)
+                if _bl2_wf is not None:
+                    _p2_b_wf = _bl2_wf
+                _miete_wf = _row_comb.get("Src_Miete", 0) / 12 if _row_comb else mieteinnahmen
+                _sonst_wf = max(0.0, _b - _p1_b_wf - _p2_b_wf
+                                - _bav_m_wf - _riester_m_wf - _miete_wf)
+                _wf_x    = [f"P1 {_lbl_p1_wf}", f"P2 {_lbl_p2_wf}"]
+                _wf_meas = ["absolute", "relative"]
+                _wf_y    = [_p1_b_wf, _p2_b_wf]
+                _wf_t    = [f"{_de(_p1_b_wf)} €", f"+{_de(_p2_b_wf)} €"]
+                _wf_h    = [
+                    f"<b>P1 {_lbl_p1_wf} (brutto)</b><br>"
+                    f"{_de(_p1_b_wf)} €/Mon.<br>"
+                    f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
+                    f"Besteuerungsanteil: {_ba1_pct} (Renteneintritt {p1.eintritt_jahr})",
+                    f"<b>P2 {_lbl_p2_wf} (brutto)</b><br>"
+                    f"+{_de(_p2_b_wf)} €/Mon.<br>"
+                    f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
+                    f"Besteuerungsanteil: {_ba2_pct} (Renteneintritt {p2.eintritt_jahr})",
+                ]
+                if _bav_m_wf > 0:
+                    _wf_x.append("+ bAV"); _wf_meas.append("relative")
+                    _wf_y.append(_bav_m_wf); _wf_t.append(f"+{_de(_bav_m_wf)} €")
+                    _wf_h.append(
+                        f"<b>Betriebliche Altersversorgung (P1+P2)</b><br>"
+                        f"+{_de(_bav_m_wf)} €/Mon.<br>"
+                        f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
+                        f"KV: abzgl. Freibetrag 187,25 €/Mon. (§ 226 Abs. 2 SGB V)."
+                    )
+                if _riester_m_wf > 0:
+                    _wf_x.append("+ Riester"); _wf_meas.append("relative")
+                    _wf_y.append(_riester_m_wf); _wf_t.append(f"+{_de(_riester_m_wf)} €")
+                    _wf_h.append(
+                        f"<b>Riester-Rente (P1+P2)</b><br>"
+                        f"+{_de(_riester_m_wf)} €/Mon.<br>"
+                        f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
+                        f"Nicht KV-pflichtig (private Rentenleistung)."
+                    )
+                if _miete_wf > 0:
+                    _wf_x.append("Mieteinnahmen"); _wf_meas.append("relative")
+                    _wf_y.append(_miete_wf); _wf_t.append(f"+{_de(_miete_wf)} €")
+                    _wf_h.append(
+                        f"<b>Mieteinnahmen (gesamt)</b><br>"
+                        f"+{_de(_miete_wf)} €/Mon.<br>"
+                        f"Netto nach abzugsfähigen Werbungskosten (§ 21 EStG).<br>"
+                        f"Voll steuerpflichtig, keine KV-Pflicht. Steuerlich 50/50 aufgeteilt."
+                    )
+                if _sonst_wf > 0.5:
+                    _wf_x.append("+ Sonstige"); _wf_meas.append("relative")
+                    _wf_y.append(_sonst_wf); _wf_t.append(f"+{_de(_sonst_wf)} €")
+                    _wf_h.append(
+                        f"<b>Sonstige Einnahmen</b><br>"
+                        f"+{_de(_sonst_wf)} €/Mon.<br>"
+                        f"Rürup, Private RV, Kapitalverzehr u.a.<br>"
+                        f"Steuerlich nach jeweiliger Regelung."
+                    )
+                _wf_x    += ["− Einkommensteuer", "− KV/PV", "Netto Haushalt"]
+                _wf_meas += ["relative", "relative", "total"]
+                _wf_y    += [-_s, -_k, _n]
+                _wf_t    += [f"−{_de(_s)} €", f"−{_de(_k)} €", f"{_de(_n)} €"]
+                _wf_h    += [
+                    f"<b>Einkommensteuer + Solidaritätszuschlag</b><br>"
+                    f"−{_de(_s)} €/Mon.<br>"
+                    f"{_ver_label_wf} (§ 32a EStG).<br>"
+                    f"Soli: 5,5 % ab 17.543 € ESt (§ 51a EStG).",
+                    f"<b>Kranken- + Pflegeversicherung (Haushalt)</b><br>"
+                    f"−{_de(_k)} €/Mon."
+                    + (f"<br>P1: {_de(_hh_kv_p1_wf)} €, P2: {_de(_hh_kv_p2_wf)} €"
+                       if _hh_kv_p1_wf is not None else "")
+                    + "<br>GKV/PKV je nach Versicherungsstatus.<br>"
+                    "BBG: 5.175 €/Mon.",
+                    f"<b>Netto Haushalt</b><br>"
+                    f"{_de(_n)} €/Mon.<br>"
+                    f"Nach Steuer und KV/PV-Abzügen.",
+                ]
+            else:
+                # Person 1 / Person 2: einzelne Rente/Pension-Säule
+                if ansicht == "Person 1":
+                    _kv_txt  = (f"PKV {_de(p1.pkv_beitrag, 0)} €/Mon. (Fixbetrag)"
+                                if p1.krankenversicherung == "PKV" else "GKV-Beitrag (AN-Anteil)")
+                    _ba_pct  = f"{e1.besteuerungsanteil:.0%}".replace(".", ",")
+                    _eff_pct = f"{e1.effektiver_steuersatz:.1%}".replace(".", ",")
+                else:
+                    _kv_txt  = (f"PKV {_de(p2.pkv_beitrag, 0)} €/Mon. (Fixbetrag)"
+                                if p2.krankenversicherung == "PKV" else "GKV-Beitrag (AN-Anteil)")
+                    _ba_pct  = f"{e2.besteuerungsanteil:.0%}".replace(".", ",")
+                    _eff_pct = f"{e2.effektiver_steuersatz:.1%}".replace(".", ",")
+                _wf_x    = ["Rente/Pension", "− Einkommensteuer", "− KV / PV"]
+                _wf_meas = ["absolute", "relative", "relative"]
+                _wf_y    = [_b_basis, -_s, -_k]
+                _wf_t    = [f"{_de(_b_basis)} €", f"−{_de(_s)} €", f"−{_de(_k)} €"]
+                _wf_h    = [
+                    f"<b>Rente/Pension (brutto)</b><br>"
+                    f"{_de(_b_basis)} €/Mon.<br>"
+                    f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
+                    f"Besteuerungsanteil: {_ba_pct} (§ 22 EStG)",
+                    f"<b>Einkommensteuer + Solidaritätszuschlag</b><br>"
+                    f"−{_de(_s)} €/Mon.<br>"
+                    f"§ 32a EStG Grundtarif; eff. Steuersatz {_eff_pct}.<br>"
+                    f"Soli: 5,5 % ab 17.543 € ESt (§ 51a EStG).",
+                    f"<b>Kranken- + Pflegeversicherung</b><br>"
+                    f"−{_de(_k)} €/Mon.<br>"
+                    f"{_kv_txt}.<br>"
+                    f"PV-Kinderstaffelung: § 55 Abs. 3a SGB XI. BBG: 5.175 €/Mon.",
+                ]
+                if _bav_m_wf > 0:
+                    _wf_x.insert(1, "+ bAV"); _wf_meas.insert(1, "relative")
+                    _wf_y.insert(1, _bav_m_wf); _wf_t.insert(1, f"+{_de(_bav_m_wf)} €")
+                    _wf_h.insert(1,
+                        f"<b>Betriebliche Altersversorgung (bAV)</b><br>"
+                        f"+{_de(_bav_m_wf)} €/Mon.<br>"
+                        f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
+                        f"KV: abzgl. Freibetrag 187,25 €/Mon. (§ 226 Abs. 2 SGB V)."
+                    )
+                if _riester_m_wf > 0:
+                    _ins = 2 if _bav_m_wf > 0 else 1
+                    _wf_x.insert(_ins, "+ Riester"); _wf_meas.insert(_ins, "relative")
+                    _wf_y.insert(_ins, _riester_m_wf); _wf_t.insert(_ins, f"+{_de(_riester_m_wf)} €")
+                    _wf_h.insert(_ins,
+                        f"<b>Riester-Rente</b><br>"
+                        f"+{_de(_riester_m_wf)} €/Mon.<br>"
+                        f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
+                        f"Nicht KVdR-pflichtig (private Rentenleistung)."
+                    )
+                _wf_x.append("Netto"); _wf_meas.append("total")
+                _wf_y.append(_n); _wf_t.append(f"{_de(abs(_n))} €")
+                _wf_h.append(
+                    f"<b>Nettoeinkommen</b><br>"
+                    f"{_de(_n)} €/Mon.<br>"
+                    f"Brutto nach Einkommensteuer, KV und PV."
+                )
 
-            _wf_x    = ["Rente/Pension", "− Einkommensteuer", "− KV / PV"]
-            _wf_meas = ["absolute", "relative", "relative"]
-            _wf_y    = [_b_basis, -_s, -_k]
-            _wf_t    = [f"{_de(_b_basis)} €", f"−{_de(_s)} €", f"−{_de(_k)} €"]
-            _wf_h    = [
-                f"<b>Rente/Pension (brutto)</b><br>"
-                f"{_de(_b_basis)} €/Mon.<br>"
-                f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
-                f"Besteuerungsanteil: {_ba_pct} (§ 22 EStG)",
-                f"<b>Einkommensteuer + Solidaritätszuschlag</b><br>"
-                f"−{_de(_s)} €/Mon.<br>"
-                f"§ 32a EStG Grundtarif; eff. Steuersatz {_eff_pct}.{_ver_txt}<br>"
-                f"Soli: 5,5 % ab 17.543 € ESt (§ 51a EStG).",
-                f"<b>Kranken- + Pflegeversicherung</b><br>"
-                f"−{_de(_k)} €/Mon.<br>"
-                f"{_kv_txt}.<br>"
-                f"PV-Kinderstaffelung: § 55 Abs. 3a SGB XI. BBG: 5.175 €/Mon.",
-            ]
-            # bAV / Riester als separate Schritte (vor Steuer, grün eingefärbt via increasing)
-            if _bav_m_wf > 0:
-                _wf_x.insert(1, "+ bAV")
-                _wf_meas.insert(1, "relative")
-                _wf_y.insert(1, _bav_m_wf)
-                _wf_t.insert(1, f"+{_de(_bav_m_wf)} €")
-                _wf_h.insert(1,
-                    f"<b>Betriebliche Altersversorgung (bAV)</b><br>"
-                    f"+{_de(_bav_m_wf)} €/Mon.<br>"
-                    f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
-                    f"KV: abzgl. Freibetrag 187,25 €/Mon. (§ 226 Abs. 2 SGB V)."
-                )
-            if _riester_m_wf > 0:
-                _ins = 2 if _bav_m_wf > 0 else 1
-                _wf_x.insert(_ins, "+ Riester")
-                _wf_meas.insert(_ins, "relative")
-                _wf_y.insert(_ins, _riester_m_wf)
-                _wf_t.insert(_ins, f"+{_de(_riester_m_wf)} €")
-                _wf_h.insert(_ins,
-                    f"<b>Riester-Rente</b><br>"
-                    f"+{_de(_riester_m_wf)} €/Mon.<br>"
-                    f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
-                    f"Nicht KVdR-pflichtig (private Rentenleistung)."
-                )
+            # ── Gemeinsame Abzüge (Vorsorge, Fixe, Hypothek, Lebenshaltung) ──
             if _vorsorge_nbav_m > 0:
                 _vb_detail = "; ".join(f"{n}: {_de(v)} €" for n, v in _vorsorge_nbav_einzeln)
                 _wf_x.append("− Vorsorge\n(ohne bAV)")
@@ -690,9 +785,9 @@ def render(
             _hyp_schedule_wf = get_hyp_schedule()
             _hyp_row_wf = next((r for r in _hyp_schedule_wf if r["Jahr"] == betrachtungsjahr), None)
             _hyp_faktor_wf = 0.5 if ansicht in ("Person 1", "Person 2") else 1.0
+            _hyp_hint = " (½ Haushalt)" if _hyp_faktor_wf < 1.0 else ""
             _hyp_m_wf = (_hyp_row_wf["Jahresausgabe"] / 12 if _hyp_row_wf else 0.0) * _hyp_faktor_wf
             if _hyp_m_wf > 0:
-                _hyp_hint = " (½ Haushalt)" if _hyp_faktor_wf < 1.0 else ""
                 _wf_x.append("− Hypothek")
                 _wf_meas.append("relative")
                 _wf_y.append(-_hyp_m_wf)
@@ -716,7 +811,6 @@ def render(
                     f"−{_de(_ak_m_wf)} €/Mon.<br>"
                     f"Annuität auf Restschuld nach Hypothek-Endjahr."
                 )
-            # Lebenshaltungskosten
             _lhk_p1 = float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0))
             _lhk_p2 = float(st.session_state.get(f"rc{_rc}_p2_lhk", 0.0))
             if ansicht == "Person 1":
@@ -736,12 +830,11 @@ def render(
                     f"Monatliche Fixkosten (Miete, Lebensmittel …).<br>"
                     f"Konfiguration im Expander 'Lebenshaltungskosten'."
                 )
-
             _verfuegbar_m = _n - _vorsorge_nbav_m - _fix_m_wf - _hyp_m_wf - _ak_m_wf - _lhk_m_wf
             _wf_x.append("Verfügbar")
             _wf_meas.append("total")
             _wf_y.append(_verfuegbar_m)
-            _wf_t.append(f"{_de(_verfuegbar_m)} €")
+            _wf_t.append(f"{_de(abs(_verfuegbar_m))} €")
             _wf_h.append(
                 f"<b>Verfügbares Einkommen</b><br>"
                 f"{_de(_verfuegbar_m)} €/Mon.<br>"
@@ -771,7 +864,6 @@ def render(
                 annotation_position="top right",
             )
             st.plotly_chart(fig_wf_hh, use_container_width=True)
-            # Infobox für bAV / Riester
             if _bav_m_wf > 0 or _riester_m_wf > 0:
                 _info_parts = []
                 if _bav_m_wf > 0:
@@ -831,7 +923,7 @@ def render(
                 m_before = m - 1
                 m_after  = 12 - m_before
                 blended  = m_before * salary_mono + m_after * pension_mono
-                _df.loc[ej, "Brutto"] = blended * 12
+                _df.loc[ej, "Brutto"] = blended
 
             if ansicht == "Person 1":
                 _blend_brutto(p1, _jd_p1)
@@ -856,7 +948,7 @@ def render(
                     _sm = _prev.get("Src_Gehalt", 0.0) / 12
                     _mb = _prof.renteneintritt_monat - 1
                     _ma = 12 - _mb
-                    _bl = (_mb * _sm + _ma * _pm) * 12
+                    _bl = _mb * _sm + _ma * _pm
                     # Difference to replace in combined df
                     _old = _by_y.get(_ej, {}).get("Brutto", 0.0)
                     _df.loc[_ej, "Brutto"] = _df.loc[_ej, "Brutto"] - _old + _bl
@@ -878,9 +970,10 @@ def render(
                    / 12 * _hyp_faktor_jv
                 for j in _alle_jahre
             }
+            _fix_jv_faktor = 0.5 if ansicht in ("Person 1", "Person 2") else 1.0
             _fix_py    = {
                 j: sum(fa["betrag_monatlich"] for fa in _fixausgaben
-                       if fa["startjahr"] <= j <= fa["endjahr"])
+                       if fa["startjahr"] <= j <= fa["endjahr"]) * _fix_jv_faktor
                 for j in _alle_jahre
             }
             _lhk_p1_jv = float(st.session_state.get(f"rc{_rc}_p1_lhk", 0.0))
@@ -913,6 +1006,26 @@ def render(
                     parts.append(f"Fixausgaben: −{_de(_fix_py[j])} €/Mon.")
                 return "<br>".join(parts)
             _cd_jv2 = [_jv2_hover(j) for j in _alle_jahre]
+            # ── Sekundäre Y-Achse: Nulllinien-Ausrichtung ────────────────────
+            _zf_jv = 0.28   # 28 % der Chart-Höhe unterhalb der Null
+            _max_brutto_jv = max(
+                (_df.loc[j, "Brutto"] / 12) for j in _alle_jahre
+            ) if _alle_jahre else 1000.0
+            _y1_hi = max(_max_brutto_jv * 1.1, 100.0)
+            _y1_lo = -_y1_hi * _zf_jv / (1.0 - _zf_jv)
+            _max_ded_jv = max(
+                (_bav_beitrag_py[j] + _vbnbav_py[j]
+                 + _hyp_py[j] + _lhk_py[j] + _fix_py[j])
+                for j in _alle_jahre
+            ) if _alle_jahre else 0.0
+            _hat_abzuege_jv = _max_ded_jv > 0
+            if _hat_abzuege_jv:
+                _y2_lo = -_max_ded_jv * 1.3
+                _y2_hi = abs(_y2_lo) * (1.0 - _zf_jv) / _zf_jv
+            else:
+                _y2_lo, _y2_hi = -1.0, 1.0
+            _ded_yaxis = "y2" if _hat_abzuege_jv else "y"
+
             fig_jv2 = go.Figure()
             fig_jv2.add_trace(go.Bar(
                 name="Brutto", x=_alle_jahre,
@@ -925,6 +1038,7 @@ def render(
                     name="− bAV-Beiträge (AN)", x=_alle_jahre,
                     y=[-_bav_beitrag_py[j] for j in _alle_jahre],
                     marker_color="#F48FB1",
+                    yaxis=_ded_yaxis,
                     customdata=_cd_jv2,
                     hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>bAV-Beitrag</extra>",
                 ))
@@ -933,6 +1047,7 @@ def render(
                     name="− Vorsorge (ohne bAV)", x=_alle_jahre,
                     y=[-_vbnbav_py[j] for j in _alle_jahre],
                     marker_color="#EF9A9A",
+                    yaxis=_ded_yaxis,
                     customdata=_cd_jv2,
                     hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Vorsorge-Abzug</extra>",
                 ))
@@ -941,6 +1056,7 @@ def render(
                     name="− Hypothek", x=_alle_jahre,
                     y=[-_hyp_py[j] for j in _alle_jahre],
                     marker_color="#B0BEC5",
+                    yaxis=_ded_yaxis,
                     customdata=_cd_jv2,
                     hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Hypothek</extra>",
                 ))
@@ -949,6 +1065,7 @@ def render(
                     name="− Lebenshaltungskosten", x=_alle_jahre,
                     y=[-_lhk_py[j] for j in _alle_jahre],
                     marker_color="#CE93D8",
+                    yaxis=_ded_yaxis,
                     customdata=_cd_jv2,
                     hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Lebenshaltungskosten</extra>",
                 ))
@@ -957,6 +1074,7 @@ def render(
                     name="− Fixausgaben", x=_alle_jahre,
                     y=[-_fix_py[j] for j in _alle_jahre],
                     marker_color="#FFCC80",
+                    yaxis=_ded_yaxis,
                     customdata=_cd_jv2,
                     hovertemplate="%{x}: %{y:,.0f} €/Mon.<br>%{customdata}<extra>Fixausgaben</extra>",
                 ))
@@ -981,20 +1099,53 @@ def render(
                 annotation_text=str(betrachtungsjahr),
                 annotation_position="top right",
             )
+            # Renteneintritt-Markierungen
+            _re_lines = []
+            if ansicht == "Person 1" and not p1.bereits_rentner:
+                _re_lines = [(p1.eintritt_jahr, f"Renteneintritt {p1.eintritt_jahr}")]
+            elif ansicht == "Person 2" and not p2.bereits_rentner:
+                _re_lines = [(p2.eintritt_jahr, f"Renteneintritt {p2.eintritt_jahr}")]
+            else:  # Haushalt gesamt
+                if not p1.bereits_rentner:
+                    _re_lines.append((p1.eintritt_jahr, f"Rente P1 {p1.eintritt_jahr}"))
+                if not p2.bereits_rentner:
+                    _re_lines.append((p2.eintritt_jahr, f"Rente P2 {p2.eintritt_jahr}"))
+            for _re_j, _re_lbl in _re_lines:
+                fig_jv2.add_vline(
+                    x=_re_j, line_width=1.5, line_dash="dot",
+                    line_color="#9C27B0",
+                    annotation_text=_re_lbl,
+                    annotation_position="top",
+                    annotation_font_color="#9C27B0",
+                )
             _mindest_jv = float(st.session_state.get("mindest_haushalt_mono", 2_000))
             fig_jv2.add_hline(
                 y=_mindest_jv, line_dash="dot", line_color="orange", line_width=2,
                 annotation_text=f"Mindest {_de(_mindest_jv)} €",
                 annotation_position="top right",
             )
-            fig_jv2.update_layout(
-                barmode="overlay", template="plotly_white", height=400,
+            _layout_jv2: dict = dict(
+                barmode="overlay", template="plotly_white", height=520,
                 xaxis=dict(title="Jahr", dtick=2),
-                yaxis=dict(title="€ / Monat", tickformat=",.0f"),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                margin=dict(l=10, r=10, t=40, b=10),
+                yaxis=dict(
+                    title="€ / Monat",
+                    tickformat=",.0f",
+                    range=[_y1_lo, _y1_hi],
+                ),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+                margin=dict(l=10, r=60, t=80, b=10),
                 separators=",.",
             )
+            if _hat_abzuege_jv:
+                _layout_jv2["yaxis2"] = dict(
+                    title="Abzüge (€ / Mon.)",
+                    overlaying="y", side="right",
+                    range=[_y2_lo, _y2_hi],
+                    showgrid=False,
+                    tickformat=",.0f",
+                    zeroline=False,
+                )
+            fig_jv2.update_layout(**_layout_jv2)
             st.plotly_chart(fig_jv2, use_container_width=True)
 
         st.divider()
@@ -1238,6 +1389,22 @@ def render(
         )
         st.caption("Zusammen/Getrennt = Haushalt gesamt (beide Personen); P1/P2 = Einzelwerte je Person.")
         st.plotly_chart(fig_st, use_container_width=True)
+
+        with st.expander("🧾 Steuer- & KV-Details Person 1", expanded=False):
+            steuern.render_section(p1, e1, mieteinnahmen / 2 if mieteinnahmen > 0 else 0.0,
+                                   key_prefix="hh_p1")
+        with st.expander("🧾 Steuer- & KV-Details Person 2", expanded=False):
+            steuern.render_section(p2, e2, mieteinnahmen / 2 if mieteinnahmen > 0 else 0.0,
+                                   key_prefix="hh_p2")
+
+        render_analyse(
+            p1, e1, label="Person 1",
+            profil2=p2, ergebnis2=e2,
+            veranlagung=veranlagung,
+            mieteinnahmen=mieteinnahmen / 2,
+            hh=hh,
+            rc=_rc,
+        )
 
         st.divider()
 
