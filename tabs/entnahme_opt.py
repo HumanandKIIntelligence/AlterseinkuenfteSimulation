@@ -1870,10 +1870,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         _ak_bal = max(0.0, _ak_bal - _ak_ez_map[_ak_y])
                         _remaining = _ak_start + _anschluss_lz - _ak_y
                         _ak_rate = _ak_annuitat(_ak_bal, _markt_zins_pa, _remaining)
-                    _ak_xs.append(_ak_y)
-                    _ak_ys.append(_ak_bal)
+                    # Tilgung zuerst abziehen, dann Punkt setzen – so zeigt Jahr Y
+                    # den Saldo nach der Jahresrate (konsistent mit Restschuld_Ende-Konvention).
                     _ak_zinsen = _ak_bal * _markt_zins_pa
                     _ak_bal = max(0.0, _ak_bal - (_ak_rate - _ak_zinsen))
+                    _ak_xs.append(_ak_y)
+                    _ak_ys.append(_ak_bal)
                 if _ak_xs:
                     fig_spar.add_trace(go.Scatter(
                         name="Anschlusskredit",
