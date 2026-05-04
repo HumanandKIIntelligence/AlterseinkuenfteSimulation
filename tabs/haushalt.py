@@ -652,11 +652,12 @@ def render(
                 _miete_wf = _row_comb.get("Src_Miete", 0) / 12 if _row_comb else mieteinnahmen
                 _sonst_wf = max(0.0, _b - _p1_b_wf - _p2_b_wf
                                 - _bav_m_wf - _riester_m_wf - _miete_wf)
-                _wf_x    = [f"P1 {_lbl_p1_wf}", f"P2 {_lbl_p2_wf}"]
-                _wf_meas = ["absolute", "relative"]
-                _wf_y    = [_p1_b_wf, _p2_b_wf]
-                _wf_t    = [f"{_de(_p1_b_wf)} €", f"+{_de(_p2_b_wf)} €"]
-                _wf_h    = [
+                _wf_x      = [f"P1 {_lbl_p1_wf}", f"P2 {_lbl_p2_wf}"]
+                _wf_meas   = ["absolute", "relative"]
+                _wf_y      = [_p1_b_wf, _p2_b_wf]
+                _wf_t      = [f"{_de(_p1_b_wf)} €", f"+{_de(_p2_b_wf)} €"]
+                _wf_colors = ["#2196F3", "#2196F3"]
+                _wf_h      = [
                     f"<b>P1 {_lbl_p1_wf} (brutto)</b><br>"
                     f"{_de(_p1_b_wf)} €/Mon.<br>"
                     f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
@@ -669,6 +670,7 @@ def render(
                 if _bav_m_wf > 0:
                     _wf_x.append("+ bAV"); _wf_meas.append("relative")
                     _wf_y.append(_bav_m_wf); _wf_t.append(f"+{_de(_bav_m_wf)} €")
+                    _wf_colors.append("#4CAF50")
                     _wf_h.append(
                         f"<b>Betriebliche Altersversorgung (P1+P2)</b><br>"
                         f"+{_de(_bav_m_wf)} €/Mon.<br>"
@@ -678,6 +680,7 @@ def render(
                 if _riester_m_wf > 0:
                     _wf_x.append("+ Riester"); _wf_meas.append("relative")
                     _wf_y.append(_riester_m_wf); _wf_t.append(f"+{_de(_riester_m_wf)} €")
+                    _wf_colors.append("#4CAF50")
                     _wf_h.append(
                         f"<b>Riester-Rente (P1+P2)</b><br>"
                         f"+{_de(_riester_m_wf)} €/Mon.<br>"
@@ -687,6 +690,7 @@ def render(
                 if _miete_wf > 0:
                     _wf_x.append("Mieteinnahmen"); _wf_meas.append("relative")
                     _wf_y.append(_miete_wf); _wf_t.append(f"+{_de(_miete_wf)} €")
+                    _wf_colors.append("#4CAF50")
                     _wf_h.append(
                         f"<b>Mieteinnahmen (gesamt)</b><br>"
                         f"+{_de(_miete_wf)} €/Mon.<br>"
@@ -696,6 +700,7 @@ def render(
                 if _sonst_wf > 0.5:
                     _wf_x.append("+ Sonstige"); _wf_meas.append("relative")
                     _wf_y.append(_sonst_wf); _wf_t.append(f"+{_de(_sonst_wf)} €")
+                    _wf_colors.append("#4CAF50")
                     _wf_h.append(
                         f"<b>Sonstige Einnahmen</b><br>"
                         f"+{_de(_sonst_wf)} €/Mon.<br>"
@@ -707,6 +712,7 @@ def render(
                 _wf_meas += ["relative", "relative"]
                 _wf_y    += [-_s, -_k]
                 _wf_t    += [f"−{_de(_s)} €", f"−{_de(_k)} €"]
+                _wf_colors += ["#F44336", "#F44336"]
                 _wf_h    += [
                     f"<b>Einkommensteuer + Solidaritätszuschlag</b><br>"
                     f"−{_de(_s)} €/Mon.<br>"
@@ -722,6 +728,7 @@ def render(
                 if _bav_contrib_wf > 0:
                     _wf_x.append("− bAV-Beiträge"); _wf_meas.append("relative")
                     _wf_y.append(-_bav_contrib_wf); _wf_t.append(f"−{_de(_bav_contrib_wf)} €")
+                    _wf_colors.append("#F44336")
                     _wf_h.append(
                         f"<b>bAV-Beiträge (Entgeltumwandlung)</b><br>"
                         f"−{_de(_bav_contrib_wf)} €/Mon.<br>"
@@ -730,6 +737,7 @@ def render(
                     )
                 _wf_x.append("Netto Haushalt"); _wf_meas.append("total")
                 _wf_y.append(_n_nach_kv_hh); _wf_t.append(f"{_de(_n_nach_kv_hh)} €")
+                _wf_colors.append("#2196F3")
                 _wf_h.append(
                     f"<b>Netto Haushalt</b><br>"
                     f"{_de(_n_nach_kv_hh)} €/Mon.<br>"
@@ -747,11 +755,12 @@ def render(
                                 if p2.krankenversicherung == "PKV" else "GKV-Beitrag (AN-Anteil)")
                     _ba_pct  = f"{e2.besteuerungsanteil:.0%}".replace(".", ",")
                     _eff_pct = f"{e2.effektiver_steuersatz:.1%}".replace(".", ",")
-                _wf_x    = ["Rente/Pension", "− Einkommensteuer", "− KV / PV"]
-                _wf_meas = ["absolute", "relative", "relative"]
-                _wf_y    = [_b_basis, -_s, -_k]
-                _wf_t    = [f"{_de(_b_basis)} €", f"−{_de(_s)} €", f"−{_de(_k)} €"]
-                _wf_h    = [
+                _wf_x      = ["Rente/Pension", "− Einkommensteuer", "− KV / PV"]
+                _wf_meas   = ["absolute", "relative", "relative"]
+                _wf_y      = [_b_basis, -_s, -_k]
+                _wf_t      = [f"{_de(_b_basis)} €", f"−{_de(_s)} €", f"−{_de(_k)} €"]
+                _wf_colors = ["#2196F3", "#F44336", "#F44336"]
+                _wf_h      = [
                     f"<b>Rente/Pension (brutto)</b><br>"
                     f"{_de(_b_basis)} €/Mon.<br>"
                     f"Gesetzliche Rente + Zusatzrente vor Steuer und KV.<br>"
@@ -768,6 +777,7 @@ def render(
                 if _bav_m_wf > 0:
                     _wf_x.insert(1, "+ bAV"); _wf_meas.insert(1, "relative")
                     _wf_y.insert(1, _bav_m_wf); _wf_t.insert(1, f"+{_de(_bav_m_wf)} €")
+                    _wf_colors.insert(1, "#4CAF50")
                     _wf_h.insert(1,
                         f"<b>Betriebliche Altersversorgung (bAV)</b><br>"
                         f"+{_de(_bav_m_wf)} €/Mon.<br>"
@@ -778,6 +788,7 @@ def render(
                     _ins = 2 if _bav_m_wf > 0 else 1
                     _wf_x.insert(_ins, "+ Riester"); _wf_meas.insert(_ins, "relative")
                     _wf_y.insert(_ins, _riester_m_wf); _wf_t.insert(_ins, f"+{_de(_riester_m_wf)} €")
+                    _wf_colors.insert(_ins, "#4CAF50")
                     _wf_h.insert(_ins,
                         f"<b>Riester-Rente</b><br>"
                         f"+{_de(_riester_m_wf)} €/Mon.<br>"
@@ -788,6 +799,7 @@ def render(
                 if _bav_contrib_wf > 0:
                     _wf_x.append("− bAV-Beiträge"); _wf_meas.append("relative")
                     _wf_y.append(-_bav_contrib_wf); _wf_t.append(f"−{_de(_bav_contrib_wf)} €")
+                    _wf_colors.append("#F44336")
                     _wf_h.append(
                         f"<b>bAV-Beiträge (Entgeltumwandlung)</b><br>"
                         f"−{_de(_bav_contrib_wf)} €/Mon.<br>"
@@ -796,38 +808,26 @@ def render(
                     )
                 _wf_x.append("Netto"); _wf_meas.append("total")
                 _wf_y.append(_n_nach_kv_p); _wf_t.append(f"{_de(_n_nach_kv_p)} €")
+                _wf_colors.append("#2196F3")
                 _wf_h.append(
                     f"<b>Nettoeinkommen</b><br>"
                     f"{_de(_n_nach_kv_p)} €/Mon.<br>"
                     f"Nach Einkommensteuer, KV, PV und bAV-Beiträgen."
                 )
 
-            # ── Gemeinsame Abzüge (Vorsorge, Fixe, Hypothek, Lebenshaltung) ──
+            # ── Gemeinsame Abzüge (Vorsorge, Hypothek, Lebenshaltung, Fixe) ──
             if _vorsorge_nbav_m > 0:
                 _vb_detail = "; ".join(f"{n}: {_de(v)} €" for n, v in _vorsorge_nbav_einzeln)
                 _wf_x.append("− Vorsorge\n(ohne bAV)")
                 _wf_meas.append("relative")
                 _wf_y.append(-_vorsorge_nbav_m)
                 _wf_t.append(f"−{_de(_vorsorge_nbav_m)} €")
+                _wf_colors.append("#F44336")
                 _wf_h.append(
                     f"<b>Vorsorge-Beiträge (ohne bAV)</b><br>"
                     f"−{_de(_vorsorge_nbav_m)} €/Mon.<br>"
                     f"Laufende Beiträge: {_vb_detail}.<br>"
                     f"Reduzieren das verfügbare Netto während der Beitragsphase."
-                )
-            if _fix_m_wf > 0:
-                _fix_detail = "; ".join(
-                    f"{fa['name']}: {_de(fa['betrag_monatlich'])} €" for fa in _aktive_fix
-                )
-                _wf_x.append("− Fixe Ausgaben")
-                _wf_meas.append("relative")
-                _wf_y.append(-_fix_m_wf)
-                _wf_t.append(f"−{_de(_fix_m_wf)} €")
-                _wf_h.append(
-                    f"<b>Fixe monatliche Ausgaben</b><br>"
-                    f"−{_de(_fix_m_wf)} €/Mon.<br>"
-                    f"Summe aktiver Fixausgaben {betrachtungsjahr}.<br>"
-                    + (f"{_fix_detail}." if _fix_detail else "")
                 )
             _hyp_schedule_wf = get_hyp_schedule()
             _hyp_row_wf = next((r for r in _hyp_schedule_wf if r["Jahr"] == betrachtungsjahr), None)
@@ -839,6 +839,7 @@ def render(
                 _wf_meas.append("relative")
                 _wf_y.append(-_hyp_m_wf)
                 _wf_t.append(f"−{_de(_hyp_m_wf)} €")
+                _wf_colors.append("#F44336")
                 _wf_h.append(
                     f"<b>Hypothek-Jahresrate{_hyp_hint}</b><br>"
                     f"−{_de(_hyp_m_wf)} €/Mon.<br>"
@@ -853,6 +854,7 @@ def render(
                 _wf_meas.append("relative")
                 _wf_y.append(-_ak_m_wf)
                 _wf_t.append(f"−{_de(_ak_m_wf)} €")
+                _wf_colors.append("#F44336")
                 _wf_h.append(
                     f"<b>Anschlussfinanzierung{_hyp_hint}</b><br>"
                     f"−{_de(_ak_m_wf)} €/Mon.<br>"
@@ -863,17 +865,34 @@ def render(
                 _wf_meas.append("relative")
                 _wf_y.append(-_lhk_m_wf)
                 _wf_t.append(f"−{_de(_lhk_m_wf)} €")
+                _wf_colors.append("#F44336")
                 _wf_h.append(
                     f"<b>Lebenshaltungskosten</b><br>"
                     f"−{_de(_lhk_m_wf)} €/Mon.<br>"
                     f"Monatliche Fixkosten (Miete, Lebensmittel …).<br>"
                     f"Konfiguration im Expander 'Lebenshaltungskosten'."
                 )
+            if _fix_m_wf > 0:
+                _fix_detail = "; ".join(
+                    f"{fa['name']}: {_de(fa['betrag_monatlich'])} €" for fa in _aktive_fix
+                )
+                _wf_x.append("− Fixe Ausgaben")
+                _wf_meas.append("relative")
+                _wf_y.append(-_fix_m_wf)
+                _wf_t.append(f"−{_de(_fix_m_wf)} €")
+                _wf_colors.append("#F44336")
+                _wf_h.append(
+                    f"<b>Fixe monatliche Ausgaben</b><br>"
+                    f"−{_de(_fix_m_wf)} €/Mon.<br>"
+                    f"Summe aktiver Fixausgaben {betrachtungsjahr}.<br>"
+                    + (f"{_fix_detail}." if _fix_detail else "")
+                )
             _verfuegbar_m = _n - _fix_m_wf - _hyp_m_wf - _ak_m_wf
             _wf_x.append("Verfügbar")
             _wf_meas.append("total")
             _wf_y.append(_verfuegbar_m)
             _wf_t.append(f"{_de(abs(_verfuegbar_m))} €")
+            _wf_colors.append("#2196F3")
             _wf_h.append(
                 f"<b>Verfügbares Einkommen</b><br>"
                 f"{_de(_verfuegbar_m)} €/Mon.<br>"
@@ -886,9 +905,7 @@ def render(
                 customdata=_wf_h,
                 hovertemplate="%{customdata}<extra></extra>",
                 connector=dict(line=dict(color="#888")),
-                increasing=dict(marker=dict(color="#4CAF50")),
-                decreasing=dict(marker=dict(color="#F44336")),
-                totals=dict(marker=dict(color="#2196F3")),
+                marker_color=_wf_colors,
             ))
             fig_wf_hh.update_layout(
                 template="plotly_white", height=380,
