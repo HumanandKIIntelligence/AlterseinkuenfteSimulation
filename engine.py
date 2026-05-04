@@ -897,7 +897,8 @@ def _netto_ueber_horizont(
     for y in range(_gesamt_jahre):
         jahr = _sim_start + y
         in_rente = profil.bereits_rentner or (jahr >= profil.eintritt_jahr)
-        _r_y = max(0, jahr - profil.eintritt_jahr)   # Jahre seit Renteneintritt
+        _r_ref = profil.rentenbeginn_jahr if profil.bereits_rentner else profil.eintritt_jahr
+        _r_y = max(0, jahr - _r_ref)   # Jahre seit Renteneintritt/-beginn
 
         # M5: Einkommensbasis je Phase
         if in_rente:

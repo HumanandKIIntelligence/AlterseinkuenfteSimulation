@@ -456,6 +456,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _ergebnis2_eo = None
             _ver_eo = "Getrennt"
 
+        _eo_solo     = eo_person in ("Person 1", "Person 2")
+        _eo_solo_fak = 0.5 if _eo_solo else 1.0
+        _miet_eo     = mieteinnahmen * _eo_solo_fak
+
         produkte_dicts = [
             p for p in st.session_state.get("vp_produkte", [])
         ]
@@ -668,7 +672,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
         _eff_netto, _eff_jd_raw = _netto_ueber_horizont(
             _profil_eo, _ergebnis_eo, _eff_entsch, horizon,
-            mieteinnahmen, mietsteigerung,
+            _miet_eo, mietsteigerung,
             profil2=_profil2_eo, ergebnis2=_ergebnis2_eo, veranlagung=_ver_eo,
             gehalt_monatlich=gehalt,
             ausgaben_plan=_ausgaben_plan if _ausgaben_plan else None,
@@ -687,7 +691,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         if _any_spaet:
             _base_netto, _ = _netto_ueber_horizont(
                 _profil_eo, _ergebnis_eo, _base_entsch, horizon,
-                mieteinnahmen, mietsteigerung,
+                _miet_eo, mietsteigerung,
                 profil2=_profil2_eo, ergebnis2=_ergebnis2_eo, veranlagung=_ver_eo,
                 gehalt_monatlich=gehalt,
                 ausgaben_plan=_ausgaben_plan if _ausgaben_plan else None,
@@ -986,7 +990,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _has_pool_data = (
             "Kap_Injektion" in df_jd.columns and df_jd["Kap_Injektion"].sum() > 0
         )
-        _mindest_mono = st.session_state.get("mindest_haushalt_mono", 0)
+        _mindest_mono = int(st.session_state.get("mindest_haushalt_mono", 0) * _eo_solo_fak)
         _mindest_j_topup = _mindest_mono * 12
         _manual_w_key = "pool_topup_withdrawals"
         _manual_withdrawals: dict[int, float] = dict(st.session_state.get(_manual_w_key, {}))
@@ -1136,10 +1140,23 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 hovertemplate="%{x}: %{y:,.0f} €<br><i>%{customdata}</i><extra>KV/PV</extra>",
             ))
         else:
+            _kv_custom_solo = []
+            for _yr_kv, _row_kv in df_jd.iterrows():
+                _kv_val = int(_row_kv.get("KV_PV", 0))
+                _in_rente_yr = _profil_eo.bereits_rentner or int(_yr_kv) >= _profil_eo.eintritt_jahr
+                if not _in_rente_yr:
+                    _kv_custom_solo.append(f"AN-Anteil GKV: {_de(_kv_val)} €")
+                elif _profil_eo.krankenversicherung == "PKV":
+                    _kv_custom_solo.append(f"PKV: {_de(_kv_val)} €")
+                elif _profil_eo.kvdr_pflicht:
+                    _kv_custom_solo.append(f"KVdR: {_de(_kv_val)} €")
+                else:
+                    _kv_custom_solo.append(f"freiwillig GKV: {_de(_kv_val)} €")
             fig_tax.add_trace(go.Bar(
                 name="KV/PV", x=df_jd.index, y=df_jd["KV_PV"],
                 marker_color="#FFF176",
-                hovertemplate="%{x}: %{y:,.0f} €<extra>KV/PV</extra>",
+                customdata=_kv_custom_solo,
+                hovertemplate="%{x}: %{y:,.0f} €<br><i>%{customdata}</i><extra>KV/PV</extra>",
             ))
         fig_tax.add_trace(go.Scatter(
             name="zvE", x=df_jd.index, y=df_jd["zvE"],
@@ -1457,7 +1474,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             hovertemplate="%{x}: %{y:,.0f} € Netto (nach Steuer+KV)<br>%{customdata}<extra>Netto</extra>",
         ))
         # Mindesthaushaltsbetrag als blaue Linie
-        _mindest_mono = st.session_state.get("mindest_haushalt_mono", 0)
+        _mindest_mono = int(st.session_state.get("mindest_haushalt_mono", 0) * _eo_solo_fak)
         _mindest_j_line = _mindest_mono * 12
         if _mindest_j_line > 0:
             fig_src.add_hline(
@@ -1496,20 +1513,28 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     line=dict(color="#FF6F00", width=2, dash="dot"),
                     hovertemplate="%{x}: %{y:,.0f} € nach Anschlusskredit<extra></extra>",
                 ))
-        # Gelbe Linie: frei verfügbares Einkommen nach Mindesthaushalt + Hypothek
-        if _mindest_j_line > 0:
-            _yel_yrs = list(df_jd.index)
-            _yel_ys = [
-                df_jd.loc[yr, "Netto"] - _ausgaben_plan.get(yr, 0.0) - _mindest_j_line
-                for yr in _yel_yrs
-            ]
-            fig_src.add_trace(go.Scatter(
-                name="Frei nach Ausg.+Hyp.",
-                x=_yel_yrs, y=_yel_ys,
-                mode="lines+markers",
-                line=dict(color="#F9A825", width=2, dash="dash"),
-                hovertemplate="%{x}: %{y:,.0f} € frei nach Mindesthaushalt + Hyp.<extra>Frei nach Ausg.+Hyp.</extra>",
-            ))
+        # Gelbe Linie: frei verfügbares Einkommen nach allen Ausgaben + Hypothek
+        # Formel: engine_Netto − Fixausgaben − Hypothek
+        # (engine_Netto hat LHK, VB und bAV bereits abgezogen)
+        _fixausgaben_eo = list(st.session_state.get("hh_fixausgaben", []))
+        _yel_yrs = list(df_jd.index)
+        _yel_ys = []
+        for _yr in _yel_yrs:
+            _fix_j = sum(
+                fa["betrag_monatlich"] * 12
+                for fa in _fixausgaben_eo
+                if fa["startjahr"] <= _yr <= fa["endjahr"]
+            ) * _eo_solo_fak
+            _hyp_j = _ausgaben_plan.get(_yr, 0.0) * _eo_solo_fak
+            _yel_ys.append(df_jd.loc[_yr, "Netto"] - _fix_j - _hyp_j)
+        fig_src.add_trace(go.Scatter(
+            name="Frei nach Ausg.+Hyp.",
+            x=_yel_yrs, y=_yel_ys,
+            mode="lines+markers",
+            line=dict(color="#F9A825", width=2, dash="dash"),
+            customdata=[f"{v:,.0f} € Ausgaben + Hypothek" for v in _yel_ys],
+            hovertemplate="%{x}: %{customdata}<extra>Frei nach Ausg.+Hyp.</extra>",
+        ))
         if not _profil_eo.bereits_rentner:
             _vline_label_src = "P1 Renteneintritt" if _profil2_eo else "Renteneintritt"
             fig_src.add_vline(
