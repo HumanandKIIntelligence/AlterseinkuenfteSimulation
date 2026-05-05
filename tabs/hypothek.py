@@ -131,8 +131,8 @@ def get_restschuld_end() -> float:
 def get_anschluss_schedule() -> list[dict]:
     """Anschlusskredit-Tilgungsplan als Liste von Dicts. Leer wenn nicht konfiguriert.
 
-    Startet im Endjahr der Primärhypothek (= Jahr der letzten Rate). Jedes Dict
-    enthält "Jahr" und "Jahresausgabe" (Annuität Anschlusskredit).
+    Startet im Endjahr der Primärhypothek (= Jahr der letzten Rate). Erstes Jahr
+    wird anteilig berechnet: (12 − endmonat) / 12 wenn endmonat < 12.
     """
     d = st.session_state.get("hyp_daten", {})
     if not d.get("aktiv", False) or d.get("restschuld_behandlung", "keine") != "ratenkredit":
@@ -148,7 +148,12 @@ def get_anschluss_schedule() -> list[dict]:
         return []
     rate = _annuitaet_rate(restschuld, zins, laufzeit)
     anschluss_start = endjahr + 1 if endmonat == 12 else endjahr
-    return [{"Jahr": anschluss_start + i, "Jahresausgabe": rate} for i in range(laufzeit)]
+    schedule = []
+    for i in range(laufzeit):
+        yr = anschluss_start + i
+        rate_yr = rate * (12 - endmonat) / 12 if i == 0 and endmonat < 12 else rate
+        schedule.append({"Jahr": yr, "Jahresausgabe": rate_yr})
+    return schedule
 
 
 def get_ausgaben_plan() -> dict[int, float]:
@@ -184,7 +189,9 @@ def get_ausgaben_plan() -> dict[int, float]:
             rate = _annuitaet_rate(restschuld, zins, laufzeit)
             _ak_start = endjahr + 1 if endmonat == 12 else endjahr
             for i in range(laufzeit):
-                plan[_ak_start + i] = plan.get(_ak_start + i, 0.0) + rate
+                yr = _ak_start + i
+                ak_rate_yr = rate * (12 - endmonat) / 12 if i == 0 and endmonat < 12 else rate
+                plan[yr] = plan.get(yr, 0.0) + ak_rate_yr
         elif behandlung == "einmalzahlungen":
             zins = float(d.get("anschluss_zins_pa", 0.04))
             laufzeit = int(d.get("anschluss_laufzeit", 10))
@@ -303,7 +310,9 @@ def get_ausgaben_plan_optimierung(sondertilgung_endjahr: float = 0.0) -> dict[in
             rate = _annuitaet_rate(eff_rs, zins, laufzeit)
             _ak_start = endjahr + 1 if endmonat == 12 else endjahr
             for i in range(laufzeit):
-                plan[_ak_start + i] = plan.get(_ak_start + i, 0.0) + rate
+                yr = _ak_start + i
+                ak_rate_yr = rate * (12 - endmonat) / 12 if i == 0 and endmonat < 12 else rate
+                plan[yr] = plan.get(yr, 0.0) + ak_rate_yr
     elif behandlung == "einmalzahlungen":
         plan = _ez_ausgaben_plan(
             list(d.get("anschluss_einmalzahlungen", [])),

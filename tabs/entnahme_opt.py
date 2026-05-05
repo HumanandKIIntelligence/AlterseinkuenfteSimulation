@@ -563,6 +563,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
         _anschluss_lz    = 10
         _ak_zeitleiste_rs        = 0.0
         _ak_zeitleiste_startjahr = 0
+        _endmonat_hyp            = 12
         _spkap_pool_startjahr    = _spkap_eintritt_j
         _spkap_pool_wert         = _spkap
         _hyp_ezl: list[dict]     = []
@@ -580,6 +581,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             # Restliche Hypothek-Variablen aus hyp_daten lesen
             hyp_d = st.session_state.get("hyp_daten", {})
             _endjahr_hyp = int(hyp_d.get("endjahr", AKTUELLES_JAHR + 20))
+            _endmonat_hyp = int(hyp_d.get("endmonat", 12))
             _markt_zins_pa = float(hyp_d.get("anschluss_zins_pa", 0.04))
             _anschluss_lz = int(hyp_d.get("anschluss_laufzeit", 10))
             _behandlung = str(hyp_d.get("behandlung", "keine"))
@@ -591,7 +593,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _einmal_tilgung = (_behandlung == "einmalzahlungen")
             _raten_aus_kapital = bool(hyp_d.get("raten_in_simulation", False))
             _ak_zeitleiste_rs = _rs
-            _ak_zeitleiste_startjahr = _endjahr_hyp + 1
+            _ak_zeitleiste_startjahr = _endjahr_hyp if _endmonat_hyp < 12 else _endjahr_hyp + 1
             _spkap_pool_startjahr = _spkap_eintritt_j
             _spkap_pool_wert = _spkap
 
@@ -1671,6 +1673,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 yr for yr in df_jd.index
                 if _ausgaben_plan.get(yr, 0) > 0 and yr not in _prim_sched_yrs
             )
+            # Anschlusskredit-Linie beim letzten Primär-Jahr beginnen lassen (visueller Anschluss)
+            if _ap_prim_yrs and _ap_ak_yrs:
+                _connect_yr = _ap_prim_yrs[-1]
+                if _connect_yr not in _ap_ak_yrs:
+                    _ap_ak_yrs = [_connect_yr] + _ap_ak_yrs
             if _ap_prim_yrs:
                 fig_src.add_trace(go.Scatter(
                     name="Netto nach Hyp.-Rate",
@@ -1684,7 +1691,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 fig_src.add_trace(go.Scatter(
                     name="Netto nach Anschlusskredit",
                     x=_ap_ak_yrs,
-                    y=[_netto_korr_eo.loc[yr] - _ausgaben_plan[yr] for yr in _ap_ak_yrs],
+                    y=[_netto_korr_eo.loc[yr] - _ausgaben_plan.get(yr, 0) for yr in _ap_ak_yrs],
                     mode="lines+markers",
                     line=dict(color="#FF6F00", width=2, dash="dot"),
                     hovertemplate="%{x}: %{y:,.0f} € nach Anschlusskredit<extra></extra>",
@@ -2071,10 +2078,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         _ak_bal = max(0.0, _ak_bal - _ak_ez_map[_ak_y])
                         _remaining = _ak_start + _anschluss_lz - _ak_y
                         _ak_rate = _ak_annuitat(_ak_bal, _markt_zins_pa, _remaining)
-                    # Tilgung zuerst abziehen, dann Punkt setzen – so zeigt Jahr Y
-                    # den Saldo nach der Jahresrate (konsistent mit Restschuld_Ende-Konvention).
-                    _ak_zinsen = _ak_bal * _markt_zins_pa
-                    _ak_bal = max(0.0, _ak_bal - (_ak_rate - _ak_zinsen))
+                    # Anteil für erstes Jahr berechnen (wenn endmonat < 12)
+                    _ak_fak = (12 - _endmonat_hyp) / 12 if _ak_y == _ak_start and _endmonat_hyp < 12 else 1.0
+                    _ak_zinsen = _ak_bal * _markt_zins_pa * _ak_fak
+                    _ak_bal = max(0.0, _ak_bal - (_ak_rate * _ak_fak - _ak_zinsen))
                     _ak_xs.append(_ak_y)
                     _ak_ys.append(_ak_bal)
                 if _ak_xs:
