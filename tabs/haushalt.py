@@ -185,11 +185,13 @@ def render(
                     "Src_GesRente": (_r1.get("Src_GesRente", 0) if _r1 else 0),
                     "Src_Gehalt":   (_r1.get("Src_Gehalt", 0) if _r1 else 0),
                     "Src_P2_Rente": (_r2.get("Src_GesRente", 0) + _r2.get("Src_Gehalt", 0) if _r2 else 0),
-                    "Src_bAV_P1":    (_r1.get("Src_bAV_P1", 0) if _r1 else 0),
-                    "Src_Riester_P1":(_r1.get("Src_Riester_P1", 0) if _r1 else 0),
-                    "Src_bAV_P2":    (_r2.get("Src_bAV_P1", 0) if _r2 else 0),
-                    "Src_Riester_P2":(_r2.get("Src_Riester_P1", 0) if _r2 else 0),
-                    "Src_Miete":     (_r1.get("Src_Miete", 0) if _r1 else 0),
+                    "Src_bAV_P1":       (_r1.get("Src_bAV_P1", 0) if _r1 else 0),
+                    "Src_Riester_P1":   (_r1.get("Src_Riester_P1", 0) if _r1 else 0),
+                    "Src_bAV_P2":       (_r2.get("Src_bAV_P1", 0) if _r2 else 0),
+                    "Src_Riester_P2":   (_r2.get("Src_Riester_P1", 0) if _r2 else 0),
+                    "Src_Miete":        (_r1.get("Src_Miete", 0) if _r1 else 0),
+                    "Src_KapInjektion": ((_r1.get("Src_KapInjektion", 0) if _r1 else 0)
+                                         + (_r2.get("Src_KapInjektion", 0) if _r2 else 0)),
                 })
 
         _row_comb = _row_for_year(_jd_combined, betrachtungsjahr)
@@ -555,19 +557,22 @@ def render(
             _fix_faktor_wf = 0.5 if ansicht in ("Person 1", "Person 2") else 1.0
             _fix_m_wf = sum(fa["betrag_monatlich"] for fa in _aktive_fix) * _fix_faktor_wf
 
-            # bAV und Riester aus der aktuellen Zeile extrahieren
+            # bAV, Riester und Pool-Einzahlung aus der aktuellen Zeile extrahieren
             if ansicht == "Haushalt gesamt" and _row_comb:
                 _bav_m_wf     = (_row_comb.get("Src_bAV_P1", 0) + _row_comb.get("Src_bAV_P2", 0)) / 12
                 _riester_m_wf = (_row_comb.get("Src_Riester_P1", 0) + _row_comb.get("Src_Riester_P2", 0)) / 12
+                _kap_inj_wf   = _row_comb.get("Src_KapInjektion", 0) / 12
             elif ansicht == "Person 1" and _row_p1:
                 _bav_m_wf     = _row_p1.get("Src_bAV_P1", 0) / 12
                 _riester_m_wf = _row_p1.get("Src_Riester_P1", 0) / 12
+                _kap_inj_wf   = _row_p1.get("Src_KapInjektion", 0) / 12
             elif ansicht == "Person 2" and _row_p2:
                 _bav_m_wf     = _row_p2.get("Src_bAV_P1", 0) / 12
                 _riester_m_wf = _row_p2.get("Src_Riester_P1", 0) / 12
+                _kap_inj_wf   = _row_p2.get("Src_KapInjektion", 0) / 12
             else:
-                _bav_m_wf = _riester_m_wf = 0.0
-            _b_basis = _b - _bav_m_wf - _riester_m_wf
+                _bav_m_wf = _riester_m_wf = _kap_inj_wf = 0.0
+            _b_basis = _b - _bav_m_wf - _riester_m_wf - _kap_inj_wf
 
             # ── Wasserfall-Einkommensquellen (ansichtsabhängig) ──────────────
             if ansicht == "Haushalt gesamt":
@@ -598,7 +603,7 @@ def render(
                     _p2_b_wf = _bl2_wf
                 _miete_wf = _row_comb.get("Src_Miete", 0) / 12 if _row_comb else mieteinnahmen
                 _sonst_wf = max(0.0, _b - _p1_b_wf - _p2_b_wf
-                                - _bav_m_wf - _riester_m_wf - _miete_wf)
+                                - _bav_m_wf - _riester_m_wf - _miete_wf - _kap_inj_wf)
                 _wf_x      = [f"P1 {_lbl_p1_wf}", f"P2 {_lbl_p2_wf}"]
                 _wf_meas   = ["absolute", "relative"]
                 _wf_y      = [_p1_b_wf, _p2_b_wf]
@@ -654,6 +659,17 @@ def render(
                         f"Rürup, Private RV, Kapitalverzehr u.a.<br>"
                         f"Steuerlich nach jeweiliger Regelung."
                     )
+                if _kap_inj_wf > 0:
+                    _wf_x.append("+ Pool-Einzahlung"); _wf_meas.append("relative")
+                    _wf_y.append(_kap_inj_wf); _wf_t.append(f"+{_de(_kap_inj_wf)} €")
+                    _wf_colors.append("#4CAF50")
+                    _wf_h.append(
+                        f"<b>Pool-Einzahlung (Kapitalanlage)</b><br>"
+                        f"+{_de(_kap_inj_wf)} €/Mon. ({_de(_kap_inj_wf * 12)} €/Jahr)<br>"
+                        f"Einmalauszahlung aus Vorsorgevertrag → Kapitalanlage-Pool.<br>"
+                        f"Nettobetrag nach Steuer fließt in den Pool; "
+                        f"jährliche Entnahme als Annuität (→ Kapitalverzehr)."
+                    )
                 _n_nach_kv_hh = _n + _lhk_m_wf + _vorsorge_nbav_m
                 _wf_x    += ["− Einkommensteuer", "− KV/PV"]
                 _wf_meas += ["relative", "relative"]
@@ -681,6 +697,16 @@ def render(
                         f"−{_de(_bav_contrib_wf)} €/Mon.<br>"
                         f"AN-Anteil laufender bAV-Einzahlungen.<br>"
                         f"Reduziert das disponible Bruttoeinkommen."
+                    )
+                if _kap_inj_wf > 0:
+                    _wf_x.append("− Pool-Einzahlung"); _wf_meas.append("relative")
+                    _wf_y.append(-_kap_inj_wf); _wf_t.append(f"−{_de(_kap_inj_wf)} €")
+                    _wf_colors.append("#F44336")
+                    _wf_h.append(
+                        f"<b>− Pool-Einzahlung (reinvestiert)</b><br>"
+                        f"−{_de(_kap_inj_wf)} €/Mon.<br>"
+                        f"Einmalauszahlung fließt in den Kapitalanlage-Pool (nicht disponibel).<br>"
+                        f"Ab dem Folgejahr: Kapitalverzehr (Annuität) als laufende Einnahme."
                     )
                 _wf_x.append("Netto Haushalt"); _wf_meas.append("total")
                 _wf_y.append(_n_nach_kv_hh); _wf_t.append(f"{_de(_n_nach_kv_hh)} €")
@@ -742,6 +768,20 @@ def render(
                         f"§ 22 Nr. 5 EStG – voll steuerpflichtig.<br>"
                         f"Nicht KVdR-pflichtig (private Rentenleistung)."
                     )
+                if _kap_inj_wf > 0:
+                    _pool_ins = 1 + (1 if _bav_m_wf > 0 else 0) + (1 if _riester_m_wf > 0 else 0)
+                    _wf_x.insert(_pool_ins, "+ Pool-Einzahlung")
+                    _wf_meas.insert(_pool_ins, "relative")
+                    _wf_y.insert(_pool_ins, _kap_inj_wf)
+                    _wf_t.insert(_pool_ins, f"+{_de(_kap_inj_wf)} €")
+                    _wf_colors.insert(_pool_ins, "#4CAF50")
+                    _wf_h.insert(_pool_ins,
+                        f"<b>Pool-Einzahlung (Kapitalanlage)</b><br>"
+                        f"+{_de(_kap_inj_wf)} €/Mon. ({_de(_kap_inj_wf * 12)} €/Jahr)<br>"
+                        f"Einmalauszahlung aus Vorsorgevertrag → Kapitalanlage-Pool.<br>"
+                        f"Nettobetrag nach Steuer fließt in den Pool; "
+                        f"jährliche Entnahme als Annuität (→ Kapitalverzehr)."
+                    )
                 _n_nach_kv_p = _n + _lhk_m_wf + _vorsorge_nbav_m
                 if _bav_contrib_wf > 0:
                     _wf_x.append("− bAV-Beiträge"); _wf_meas.append("relative")
@@ -752,6 +792,16 @@ def render(
                         f"−{_de(_bav_contrib_wf)} €/Mon.<br>"
                         f"AN-Anteil laufender bAV-Einzahlungen.<br>"
                         f"Reduziert das disponible Bruttoeinkommen."
+                    )
+                if _kap_inj_wf > 0:
+                    _wf_x.append("− Pool-Einzahlung"); _wf_meas.append("relative")
+                    _wf_y.append(-_kap_inj_wf); _wf_t.append(f"−{_de(_kap_inj_wf)} €")
+                    _wf_colors.append("#F44336")
+                    _wf_h.append(
+                        f"<b>− Pool-Einzahlung (reinvestiert)</b><br>"
+                        f"−{_de(_kap_inj_wf)} €/Mon.<br>"
+                        f"Einmalauszahlung fließt in den Kapitalanlage-Pool (nicht disponibel).<br>"
+                        f"Ab dem Folgejahr: Kapitalverzehr (Annuität) als laufende Einnahme."
                     )
                 _wf_x.append("Netto"); _wf_meas.append("total")
                 _wf_y.append(_n_nach_kv_p); _wf_t.append(f"{_de(_n_nach_kv_p)} €")

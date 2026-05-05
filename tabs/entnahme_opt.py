@@ -584,7 +584,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _endmonat_hyp = int(hyp_d.get("endmonat", 12))
             _markt_zins_pa = float(hyp_d.get("anschluss_zins_pa", 0.04))
             _anschluss_lz = int(hyp_d.get("anschluss_laufzeit", 10))
-            _behandlung = str(hyp_d.get("behandlung", "keine"))
+            _behandlung = str(hyp_d.get("restschuld_behandlung", "keine"))
             _hyp_ezl: list[dict] = list(hyp_d.get("sondertilgungen", []))
             if _behandlung == "einmalzahlungen":
                 _hyp_ezl += list(hyp_d.get("anschluss_einmalzahlungen", []))
@@ -784,9 +784,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
             _akc2.metric("Jahresrate", f"{_de(_ak_rate_j)} €",
                          help=f"{_de(_ak_rate_j / 12, 0)} €/Mon. · Nominalzins {_markt_zins_pa * 100:.2f} %")
             _akc3.metric("Laufzeit", f"{_anschluss_lz} Jahre",
-                         help=f"Ab {_endjahr_hyp + 1} bis {_endjahr_hyp + _anschluss_lz}")
+                         help=f"Ab {_ak_zeitleiste_startjahr} bis {_ak_zeitleiste_startjahr + _anschluss_lz - 1}")
             _akc4.metric("Gesamtzinsen", f"{_de(_ak_zinsen)} €",
                          help=f"Gesamtbelastung {_de(_ak_gesamt)} €")
+            _ak_sm = _endmonat_hyp + 1 if _endmonat_hyp < 12 else 1
+            _ak_sy = _endjahr_hyp if _endmonat_hyp < 12 else _endjahr_hyp + 1
+            _monate_de = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+                          "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+            _ak_start_str = f"{_monate_de[_ak_sm - 1]} {_ak_sy}"
+            _prim_end_str = f"{_monate_de[_endmonat_hyp - 1]} {_endjahr_hyp}"
+            st.caption(
+                f"Primärhypothek endet: **{_prim_end_str}** (Endmonat {_endmonat_hyp}) · "
+                f"Anschlusskredit startet: **{_ak_start_str}** · "
+                f"Endmonat falsch? → Hypothek-Verwaltung öffnen und erneut speichern."
+            )
 
         # ── Einzelvergleich bei flexiblen Verträgen ──────────────────────────
         _LABELS_EV = {
@@ -1118,8 +1129,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _pool_bal_eo = (_pool_bal_eo * (1 + _pool_rendite)) + _inj_eo
                     _netto_j_eo = float(df_jd.loc[_tj, "Netto"]) if "Netto" in df_jd.columns else 0.0
                     _auto_annuity_eo = float(df_jd.loc[_tj, "Src_Kapitalverzehr"]) if "Src_Kapitalverzehr" in df_jd.columns else 0.0
-                    _hyp_rate_eo = _ausgaben_plan.get(_tj, 0.0)
-                    _base_netto_eo = _netto_j_eo - _auto_annuity_eo - _hyp_rate_eo - _mindest_j_topup
+                    # Kap_Sonder_Tilgung: the share of Sonderausgabe (hypothek) covered by pool.
+                    # Netto already has the uncovered residual deducted; subtracting kap_sonder
+                    # (instead of the full ausgaben_plan amount) avoids double-counting.
+                    _kap_sonder_eo = float(df_jd.loc[_tj, "Kap_Sonder_Tilgung"]) if "Kap_Sonder_Tilgung" in df_jd.columns else 0.0
+                    _base_netto_eo = _netto_j_eo - _auto_annuity_eo - _kap_sonder_eo - _mindest_j_topup
                     _manual_w_eo = _manual_withdrawals.get(_tj, 0.0)
                     _pool_bal_eo = max(0.0, _pool_bal_eo - _manual_w_eo)
                     # Sparkapital-Bestand (aus Profil): dieselbe Formel wie Kapital-Zeitleiste
@@ -1164,7 +1178,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         ),
                         "Frei nach Ausg.+Hyp. (€)": st.column_config.NumberColumn(
                             "Frei nach Ausg.+Hyp. (€)", format="%.0f",
-                            help="Netto (ohne Pool-Automatik) − Hypothekenrate − Mindesthaushalt. Entspricht der gelben Linie im Diagramm.",
+                            help="Basiseinkommen − volle Hypothekenrate − Mindesthaushalt. Entspricht der gelben Linie im Diagramm. (Pool-Entnahmen sind nicht enthalten — separat in 'Entnahme aus Pool' erfassbar.)",
                         ),
                         "Mindesthaushalt (€/Jahr)": st.column_config.NumberColumn("Mindesthaushalt (€/Jahr)", format="%.0f"),
                         "Abweichung": st.column_config.TextColumn("Abweichung",
@@ -1697,8 +1711,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     hovertemplate="%{x}: %{y:,.0f} € nach Anschlusskredit<extra></extra>",
                 ))
         # Gelbe Linie: frei verfügbares Einkommen nach allen Ausgaben + Hypothek
-        # Formel: engine_Netto − Fixausgaben − Hypothek
-        # (engine_Netto hat LHK, VB und bAV bereits abgezogen)
+        # Formel: engine_Netto − Fixausgaben − Kap_Sonder_Tilgung
+        # Netto hat den nicht-pool-gedeckten Hypothek-Anteil bereits abgezogen; nur der
+        # pool-gedeckte Anteil (kap_sonder) muss noch subtrahiert werden, damit die Linie
+        # konsistent "Netto nach voller Hypothekenbelastung" zeigt – unabhängig vom Pool-Zustand.
         _fixausgaben_eo = list(st.session_state.get("hh_fixausgaben", []))
         _yel_yrs = list(df_jd.index)
         _yel_ys = []
@@ -1708,8 +1724,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 for fa in _fixausgaben_eo
                 if fa["startjahr"] <= _yr <= fa["endjahr"]
             ) * _eo_solo_fak
-            _hyp_j = _ausgaben_plan.get(_yr, 0.0) * _eo_solo_fak
-            _yel_ys.append(df_jd.loc[_yr, "Netto"] - _fix_j - _hyp_j)
+            _kap_sonder_yr = (float(df_jd.loc[_yr, "Kap_Sonder_Tilgung"])
+                              if "Kap_Sonder_Tilgung" in df_jd.columns else 0.0) * _eo_solo_fak
+            _yel_ys.append(df_jd.loc[_yr, "Netto"] - _fix_j - _kap_sonder_yr)
         fig_src.add_trace(go.Scatter(
             name="Frei nach Ausg.+Hyp.",
             x=_yel_yrs, y=_yel_ys,

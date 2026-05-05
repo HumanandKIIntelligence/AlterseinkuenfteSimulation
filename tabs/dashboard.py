@@ -958,6 +958,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Eigenbeitrag zur betrieblichen Altersversorgung.<br>"
                 f"Reduziert verfügbares Netto in der Ansparphase."
             )
+        if _d_kap_inj > 0:
+            _wf_x_e.append("− Pool-Einzahlung")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(-_d_kap_inj)
+            _wf_t_e.append(f"−{_de(_d_kap_inj)} €")
+            _wf_h_e.append(
+                f"<b>− Pool-Einzahlung (reinvestiert)</b><br>"
+                f"−{_de(_d_kap_inj)} €/Mon.<br>"
+                f"Einmalauszahlung fließt in den Kapitalanlage-Pool (nicht disponibel).<br>"
+                f"Ab dem Folgejahr: Kapitalverzehr (Annuität) als laufende Einnahme."
+            )
         _wf_x_e.append("Netto")
         _wf_m_e.append("total")
         _wf_y_e.append(_d_netto_nach_kv)
