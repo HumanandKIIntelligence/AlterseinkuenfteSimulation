@@ -83,6 +83,10 @@ _LABELS = {"einmal": "Einmalauszahlung", "monatlich": "Monatliche Rente",
 _FARBEN = {"Einmal": "#2196F3", "Monatlich": "#4CAF50", "50/50": "#FF9800"}
 _TF_OPTS = {"30 % (Aktien-ETF)": 0.30, "15 % (Misch-ETF)": 0.15,
             "60 % (Immobilien-ETF)": 0.60, "0 % (Anleihen-ETF)": 0.0}
+_MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni",
+           "Juli", "August", "September", "Oktober", "November", "Dezember"]
+_MON_KURZ = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+             "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
 
 
 def _init_state() -> None:
@@ -140,6 +144,10 @@ def _migriere(p: dict) -> dict:
         p["riester_kinder_zulage_alt"] = 0
     if "bav_ag_zuschuss" not in p:
         p["bav_ag_zuschuss"] = False
+    if "fruehestes_startmonat" not in p:
+        p["fruehestes_startmonat"] = 1
+    if "spaetestes_startmonat" not in p:
+        p["spaetestes_startmonat"] = 12
     return p
 
 
@@ -169,6 +177,8 @@ def _aus_dict(d: dict) -> VorsorgeProdukt:
         riester_kinder_zulage=d.get("riester_kinder_zulage", 0),
         riester_kinder_zulage_alt=d.get("riester_kinder_zulage_alt", 0),
         bav_ag_zuschuss=d.get("bav_ag_zuschuss", False),
+        fruehestes_startmonat=d.get("fruehestes_startmonat", 1),
+        spaetestes_startmonat=d.get("spaetestes_startmonat", 12),
     )
 
 
@@ -332,18 +342,34 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
                 value=max(_AJ, int(p["fruehestes_startjahr"])), step=1,
                 key=f"ve_frueh_{pid}",
             ))
+            new_frueh_monat = _MONATE.index(st.selectbox(
+                "Startmonat (fix)", _MONATE,
+                index=max(0, int(p.get("fruehestes_startmonat", 1)) - 1),
+                key=f"ve_frueh_monat_{pid}",
+            )) + 1
             new_spaet = new_frueh
+            new_spaet_monat = new_frueh_monat
         else:
             new_frueh = int(st.number_input(
                 "Frühestes Startjahr", _AJ, _AJ + 30,
                 value=max(_AJ, int(p["fruehestes_startjahr"])), step=1,
                 key=f"ve_frueh_{pid}",
             ))
+            new_frueh_monat = _MONATE.index(st.selectbox(
+                "Frühester Startmonat", _MONATE,
+                index=max(0, int(p.get("fruehestes_startmonat", 1)) - 1),
+                key=f"ve_frueh_monat_{pid}",
+            )) + 1
             new_spaet = int(st.number_input(
                 "Spätestes Startjahr", _AJ, _AJ + 35,
                 value=max(new_frueh, int(p["spaetestes_startjahr"])), step=1,
                 key=f"ve_spaet_{pid}",
             ))
+            new_spaet_monat = _MONATE.index(st.selectbox(
+                "Spätester Startmonat", _MONATE,
+                index=max(0, int(p.get("spaetestes_startmonat", 12)) - 1),
+                key=f"ve_spaet_monat_{pid}",
+            )) + 1
 
         new_aufschub = st.slider(
             "Aufschubverzinsung p.a. (%)", 0.0, 6.0,
@@ -497,6 +523,8 @@ def _render_edit_felder(p: dict, profil2, profil: Profil) -> dict:
         "laufzeit_jahre": new_lz,
         "fruehestes_startjahr": new_frueh,
         "spaetestes_startjahr": new_spaet,
+        "fruehestes_startmonat": new_frueh_monat,
+        "spaetestes_startmonat": new_spaet_monat,
         "startjahr_fix": fix_jahr,
         "aufschub_rendite": new_aufschub,
         "vertragsbeginn": new_vbeg,
@@ -637,6 +665,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     step=1, key="vp_add_spaet",
                     help="Spätestes Jahr, bis zu dem die Auszahlung gestartet sein muss.",
                 )
+                frueh_monat = _MONATE.index(st.selectbox(
+                    "Frühester Startmonat", _MONATE, index=0,
+                    key="vp_add_frueh_monat",
+                    help="Monat im Frühesten Startjahr, ab dem Auszahlung möglich ist.",
+                )) + 1
+                spaet_monat = _MONATE.index(st.selectbox(
+                    "Spätester Startmonat", _MONATE, index=11,
+                    key="vp_add_spaet_monat",
+                    help="Monat im Spätesten Startjahr, bis zu dem Auszahlung gestartet sein muss.",
+                )) + 1
                 aufschub = st.slider(
                     "Aufschubverzinsung p.a. (%)", 0.0, 6.0, 2.0, step=0.1,
                     key="vp_add_aufschub",
@@ -669,6 +707,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         "laufzeit_jahre": laufzeit_jahre,
                         "fruehestes_startjahr": int(frueh),
                         "spaetestes_startjahr": int(spaet),
+                        "fruehestes_startmonat": int(frueh_monat),
+                        "spaetestes_startmonat": int(spaet_monat),
                         "aufschub_rendite": aufschub,
                         "vertragsbeginn": int(vertragsbeginn),
                         "einzahlungen_gesamt": float(einzahlungen_gesamt),
@@ -721,7 +761,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                             f"Einmal: **{_de(p['max_einmalzahlung'])} €** · "
                             f"Monatl.: **{_de(p['max_monatsrente'])} €/Mon.** · "
                             f"Laufzeit: {lz} · "
-                            f"Start: {p['fruehestes_startjahr']}–{p['spaetestes_startjahr']} · "
+                            f"Start: {_MON_KURZ[p.get('fruehestes_startmonat', 1) - 1]}.{p['fruehestes_startjahr']}–"
+                            f"{_MON_KURZ[p.get('spaetestes_startmonat', 12) - 1]}.{p['spaetestes_startjahr']} · "
                             f"Aufschub: {aufschub_txt}"
                             + _steuer_hinweis(p)
                         )

@@ -52,6 +52,28 @@ def _actual_startjahr(vp: dict) -> int:
     return int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR))
 
 
+def _actual_anteil(vp: dict) -> float:
+    """Tatsächlich gewählter Auszahlungs-Anteil (0.0=mono, 1.0=einmal) aus vp_sels.
+
+    Liest rc{_rc}_vp_sels; Fallback: max_monatsrente > 0 → 0.0 (mono), sonst 1.0 (einmal).
+    als_kapitalanlage gibt immer 1.0 zurück (Pool-Injektion erfordert Einmalauszahlung).
+    """
+    if vp.get("als_kapitalanlage", False):
+        return 1.0
+    _rc = st.session_state.get("_rc", 0)
+    _sels = st.session_state.get(f"rc{_rc}_vp_sels", {})
+    _pid = vp.get("id")
+    _sel = _sels.get(_pid) if _pid else None
+    if _sel is not None:
+        try:
+            _parts = str(_sel).rsplit("_", 1)
+            if len(_parts) > 1:
+                return 1.0 if _parts[1] == "einmal" else 0.0
+        except (ValueError, IndexError):
+            pass
+    return 0.0 if float(vp.get("max_monatsrente", 0.0)) > 0 else 1.0
+
+
 def _blend_brutto_wf(prof: Profil, jd: list[dict], sel_jahr: int) -> float | None:
     """Monatlich gemitteltes Brutto für das Renteneintritts-Jahr.
 
@@ -149,7 +171,6 @@ def _vorsorge_ausz_breakdown(row: dict) -> tuple[float, str]:
         ("Riester/PrivRV P1",   "Src_Riester_P1"),
         ("bAV P2",              "Src_bAV_P2"),
         ("Riester/PrivRV P2",   "Src_Riester_P2"),
-        ("Versorgungsbez.",     "Src_Versorgung"),
         ("DUV",                 "Src_DUV_P1"),
         ("BUV",                 "Src_BUV_P1"),
         ("Einmalausz. (÷12)",   "Src_Einmal"),
@@ -163,14 +184,23 @@ def _vorsorge_ausz_breakdown(row: dict) -> tuple[float, str]:
         if v > 0.5:
             total += v
             parts.append(f"{label}: {_de(v)} €/Mon.")
+    # Versorgung: Rürup/PrivRV-Anteil dedupliziert (bAV + Riester bereits separat gezeigt)
+    _vers_adj = max(0.0, (
+        row.get("Src_Versorgung", 0)
+        - row.get("Src_bAV_P1", 0) - row.get("Src_bAV_P2", 0)
+        - row.get("Src_Riester_P1", 0) - row.get("Src_Riester_P2", 0)
+    ) / 12)
+    if _vers_adj > 0.5:
+        total += _vers_adj
+        parts.append(f"Versorgung (Rürup/Privat): {_de(_vers_adj)} €/Mon.")
     detail = (" | ".join(parts)) if parts else "Keine Vorsorgeauszahlungen in diesem Jahr."
     help_text = (
         f"Monatliche Einnahmen aus Vorsorgeprodukten: {detail}\n\n"
         "Enthält:\n"
         "• bAV: Betriebliche Altersversorgung (laufende Monatsrente)\n"
         "• Riester / PrivRV / LV: Private Rentenversicherungen und Lebensversicherungen (Monatsrente, Ertragsanteil-besteuert)\n"
-        "• Versorgungsbez.: Zusatzversorgung aus Versorgungswerk, Pensionskasse oder arbeitgeberfinanzierten Direktzusagen "
-        "(§ 19 Abs. 2 EStG; Versorgungsfreibetrag anwendbar)\n"
+        "• Versorgung (Rürup/Privat): Rürup-Rente (§ 22 Nr. 1 S. 3a aa EStG) und sonstige Versorgung "
+        "(Versorgungswerk, Pensionskasse, Direktzusage; § 19 Abs. 2 EStG – bAV und Riester bereits separat ausgewiesen)\n"
         "• DUV / BUV: Dienstunfähigkeits- bzw. Berufsunfähigkeitsrente (Ertragsanteil-besteuert, nicht KVdR-pflichtig)\n"
         "• Einmalausz. (÷ 12): Kapitalabfindung aus Vorsorgeverträgen (kein Pool), gleichmäßig auf 12 Monate verteilt\n"
         "• Pool-Einzahlung (÷ 12): Brutto-Einzahlung in den Kapitalanlage-Pool im Injektionsjahr "

@@ -12,19 +12,21 @@ from engine import (
 from tabs import steuern
 from tabs.analyse import render_analyse
 from tabs.utils import (
-    _de, _actual_startjahr, _blend_brutto_wf,
+    _de, _actual_startjahr, _actual_anteil, _blend_brutto_wf,
     _vorsorge_non_bav_einzeln, _vorsorge_non_bav_monatlich, _vorsorge_bav_monatlich,
     _eink_label, _netto_label, _kv_pv_split, _vorsorge_ausz_breakdown,
     render_zeitstrahl,
 )
 
 try:
-    from tabs.hypothek import get_hyp_schedule, get_anschluss_schedule
+    from tabs.hypothek import get_hyp_schedule, get_anschluss_schedule, get_ausgaben_plan
 except ImportError:
     def get_hyp_schedule():
         return []
     def get_anschluss_schedule():
         return []
+    def get_ausgaben_plan():
+        return {}
 
 
 def _load_laufende_entsch(person: str | None = None) -> list:
@@ -42,7 +44,7 @@ def _load_laufende_entsch(person: str | None = None) -> list:
             if float(d.get("max_einmalzahlung", 0.0)) > 0:
                 try:
                     prod = _vd(d)
-                    entsch.append((prod, _actual_startjahr(d), 1.0))
+                    entsch.append((prod, _actual_startjahr(d), _actual_anteil(d)))
                 except Exception:
                     pass
             continue
@@ -50,7 +52,7 @@ def _load_laufende_entsch(person: str | None = None) -> list:
             continue
         try:
             prod = _vd(d)
-            entsch.append((prod, _actual_startjahr(d), 0.0))
+            entsch.append((prod, _actual_startjahr(d), _actual_anteil(d)))
         except Exception:
             pass
     return entsch
@@ -532,7 +534,25 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     f"P1 + P2, Miete, Lebensmittel u.a.<br>"
                     f"Konfiguration im Tab Haushalt."
                 )
-            _hh_verfuegbar = _hh_netto - _hh_fix_m - _hyp_m_hh - _ak_m_hh
+            # Einmaltilgung (Sondertilgung aus Ausgabenplan, exkl. laufende Raten)
+            _ausgaben_plan_hh = get_ausgaben_plan()
+            _sonder_j_hh = _ausgaben_plan_hh.get(_sel_j_dash, 0.0)
+            _hyp_j_hh = _hyp_row_hh["Jahresausgabe"] if _hyp_row_hh else 0.0
+            _ak_j_hh  = _ak_row_hh["Jahresausgabe"]  if _ak_row_hh  else 0.0
+            _einmaltilgung_j_hh = max(0.0, _sonder_j_hh - _hyp_j_hh - _ak_j_hh)
+            _einmaltilgung_m_hh = _einmaltilgung_j_hh / 12
+            if _einmaltilgung_m_hh > 0:
+                _wf_x.append("− Einmaltilgung")
+                _wf_m.append("relative")
+                _wf_y.append(-_einmaltilgung_m_hh)
+                _wf_t.append(f"−{_de(_einmaltilgung_m_hh)} €")
+                _wf_h.append(
+                    f"<b>Einmaltilgung</b><br>"
+                    f"−{_de(_einmaltilgung_m_hh)} €/Mon.<br>"
+                    f"Einmalige Sondertilgung {_sel_j_dash}: {_de(_einmaltilgung_j_hh)} € gesamt<br>"
+                    f"(÷ 12 zur monatlichen Darstellung)."
+                )
+            _hh_verfuegbar = _hh_netto - _hh_fix_m - _hyp_m_hh - _ak_m_hh - _einmaltilgung_m_hh
             _wf_x.append("Verfügbar")
             _wf_m.append("total")
             _wf_y.append(_hh_verfuegbar)
@@ -692,8 +712,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         _d_riester= _row_dash.get("Src_Riester_P1", 0) / 12 if _row_dash else 0.0
         _d_duv    = _row_dash.get("Src_DUV_P1", 0) / 12 if _row_dash else 0.0
         _d_buv    = _row_dash.get("Src_BUV_P1", 0) / 12 if _row_dash else 0.0
-        # Basis = Rente/Pension ohne bAV/Riester/DUV/BUV/Mieteinnahmen
-        _d_basis  = _d_brutto - _d_bav - _d_riester - _d_duv - _d_buv
+        _d_kap_inj = _row_dash.get("Src_KapInjektion", 0) / 12 if _row_dash else 0.0
+        # Basis = Rente/Pension ohne bAV/Riester/DUV/BUV/Pool-Injektion/Mieteinnahmen
+        _d_basis  = _d_brutto - _d_bav - _d_riester - _d_duv - _d_buv - _d_kap_inj
 
         abschlag_info = (
             f"  |  **Rentenabschlag:** {ergebnis.rentenabschlag:.1%}".replace(".", ",") +
@@ -875,6 +896,26 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Ertragsanteil § 22 Nr. 1 S. 3a bb EStG.<br>"
                 f"Nicht KV-pflichtig (private Versicherungsleistung)."
             )
+        if _d_kap_inj > 0:
+            _kap_inj_progr = _row_dash.get("Src_KapInjektion_progr", 0) / 12 if _row_dash else 0.0
+            _kap_inj_tax_hint = (
+                f"Steuerpfl. Anteil (progressiv): {_de(_kap_inj_progr)} €/Mon. "
+                f"(entspricht {_de(_kap_inj_progr * 12)} €/Jahr)"
+                if _kap_inj_progr > 0 else
+                "Steuerfreie oder abgeltungsteuerpflichtige Einzahlung."
+            )
+            _wf_x_e.append("+ Pool-Einzahlung")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(_d_kap_inj)
+            _wf_t_e.append(f"+{_de(_d_kap_inj)} €")
+            _wf_h_e.append(
+                f"<b>Pool-Einzahlung (Kapitalanlage)</b><br>"
+                f"+{_de(_d_kap_inj)} €/Mon. ({_de(_d_kap_inj * 12)} €/Jahr)<br>"
+                f"Einmalauszahlung aus Vorsorgevertrag → Kapitalanlage-Pool.<br>"
+                f"Nettobetrag nach Steuer fließt in den Pool; "
+                f"jährliche Entnahme als Annuität (→ Kapitalverzehr).<br>"
+                + _kap_inj_tax_hint
+            )
         if _d_miete > 0:
             _wf_x_e.append("+ Mieteinnahmen")
             _wf_m_e.append("relative")
@@ -1001,7 +1042,27 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"Monatliche Fixkosten (Miete, Lebensmittel …).<br>"
                 f"Konfiguration im Tab Haushalt."
             )
-        _d_verfuegbar = _d_netto - _d_fix_m - _hyp_m_e_val - _ak_m_e_val
+        # Einmaltilgung (Sondertilgung aus Ausgabenplan, exkl. laufende Raten)
+        _ausgaben_plan_e = get_ausgaben_plan()
+        _sonder_j_e = _ausgaben_plan_e.get(_sel_j_dash, 0.0)
+        _hyp_j_e = (_hyp_row_e["Jahresausgabe"] if _hyp_row_e else 0.0)
+        _ak_j_e  = (_ak_row_e["Jahresausgabe"]  if _ak_row_e  else 0.0)
+        _einmaltilgung_j_e = max(0.0, _sonder_j_e - _hyp_j_e - _ak_j_e)
+        _einmaltilgung_m_e = _einmaltilgung_j_e * _hyp_faktor_e / 12
+        _hyp_hint_et = " (½ Haushalt)" if hat_partner else ""
+        if _einmaltilgung_m_e > 0:
+            _wf_x_e.append("− Einmaltilgung")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(-_einmaltilgung_m_e)
+            _wf_t_e.append(f"−{_de(_einmaltilgung_m_e)} €")
+            _wf_h_e.append(
+                f"<b>Einmaltilgung{_hyp_hint_et}</b><br>"
+                f"−{_de(_einmaltilgung_m_e)} €/Mon.<br>"
+                f"Einmalige Sondertilgung {_sel_j_dash}: "
+                f"{_de(_einmaltilgung_j_e * _hyp_faktor_e)} € gesamt<br>"
+                f"(÷ 12 zur monatlichen Darstellung)."
+            )
+        _d_verfuegbar = _d_netto - _d_fix_m - _hyp_m_e_val - _ak_m_e_val - _einmaltilgung_m_e
         _wf_x_e.append("Verfügbar")
         _wf_m_e.append("total")
         _wf_y_e.append(_d_verfuegbar)
@@ -1052,6 +1113,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             _pie_bav = max(0.0, _d_bav)
             _pie_riester = max(0.0, _d_riester)
             _pie_miete = max(0.0, _d_miete)
+            _pie_kap_inj = max(0.0, _d_kap_inj)
             labels = []
             values = []
             if _pie_basis > 0:
@@ -1063,6 +1125,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             if _pie_riester > 0:
                 labels.append("Riester")
                 values.append(_pie_riester)
+            if _pie_kap_inj > 0:
+                labels.append("Pool-Einzahlung")
+                values.append(_pie_kap_inj)
             if _pie_miete > 0:
                 labels.append("Mieteinnahmen")
                 values.append(_pie_miete)

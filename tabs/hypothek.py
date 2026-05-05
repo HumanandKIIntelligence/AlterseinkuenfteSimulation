@@ -13,11 +13,17 @@ def _de(v: float, dec: int = 0) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+_MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni",
+           "Juli", "August", "September", "Oktober", "November", "Dezember"]
+
+
 def _default_hyp_daten() -> dict:
     return {
         "aktiv": False,
         "startjahr": AKTUELLES_JAHR,
+        "startmonat": 1,
         "endjahr": AKTUELLES_JAHR + 20,
+        "endmonat": 12,
         "betrag": 300_000.0,
         "jaehrl_rate": 15_000.0,
         "zins_pa": 0.035,
@@ -61,7 +67,11 @@ def _annuitaet_rate(kapital: float, zins_pa: float, laufzeit_jahre: int) -> floa
 
 
 def get_hyp_schedule() -> list[dict]:
-    """Tilgungsplan als Liste von Dicts. Leer wenn nicht konfiguriert."""
+    """Tilgungsplan als Liste von Dicts. Leer wenn nicht konfiguriert.
+
+    Das Endjahr ist inklusive und wird anhand des Endmonats anteilig berechnet:
+    Jahresrate und Zinsen werden mit endmonat/12 gewichtet.
+    """
     d = st.session_state.get("hyp_daten", {})
     if not d.get("aktiv", False):
         return []
@@ -71,18 +81,22 @@ def get_hyp_schedule() -> list[dict]:
     zins_pa = float(d.get("zins_pa", 0.0))
     startjahr = int(d.get("startjahr", AKTUELLES_JAHR))
     endjahr = int(d.get("endjahr", AKTUELLES_JAHR + 20))
+    endmonat = int(d.get("endmonat", 12))
     sondertilgungen_raw = d.get("sondertilgungen", [])
     sondertilgungen = {int(s["jahr"]): float(s["betrag"]) for s in sondertilgungen_raw}
 
     schedule = []
-    for jahr in range(startjahr, endjahr):
+    for jahr in range(startjahr, endjahr + 1):  # endjahr inklusive
         if restschuld <= 0.0:
             break
+        # Im Endjahr nur die Monate 1..endmonat berücksichtigen
+        anteil = endmonat / 12 if jahr == endjahr else 1.0
         restschuld_anfang = restschuld
-        zinsen = restschuld_anfang * zins_pa
-        tilgung = max(0.0, jaehrl_rate - zinsen)
+        zinsen = restschuld_anfang * zins_pa * anteil
+        jahresrate = jaehrl_rate * anteil
+        tilgung = max(0.0, jahresrate - zinsen)
         sondertilgung = sondertilgungen.get(jahr, 0.0)
-        jahresausgabe = min(jaehrl_rate + sondertilgung, restschuld_anfang + zinsen)
+        jahresausgabe = min(jahresrate + sondertilgung, restschuld_anfang + zinsen)
         restschuld_neu = max(0.0, restschuld_anfang - tilgung - sondertilgung)
         schedule.append({
             "Jahr": jahr,
@@ -119,12 +133,14 @@ def get_anschluss_schedule() -> list[dict]:
     if restschuld <= 0.0:
         return []
     endjahr  = int(d.get("endjahr", AKTUELLES_JAHR + 20))
+    endmonat = int(d.get("endmonat", 12))
     zins     = float(d.get("anschluss_zins_pa", 0.04))
     laufzeit = int(d.get("anschluss_laufzeit", 10))
     if laufzeit <= 0:
         return []
     rate = _annuitaet_rate(restschuld, zins, laufzeit)
-    return [{"Jahr": endjahr + i, "Jahresausgabe": rate} for i in range(laufzeit)]
+    anschluss_start = endjahr + 1 if endmonat == 12 else endjahr
+    return [{"Jahr": anschluss_start + i, "Jahresausgabe": rate} for i in range(laufzeit)]
 
 
 def get_ausgaben_plan() -> dict[int, float]:
@@ -156,9 +172,11 @@ def get_ausgaben_plan() -> dict[int, float]:
         elif behandlung == "ratenkredit":
             zins = float(d.get("anschluss_zins_pa", 0.04))
             laufzeit = int(d.get("anschluss_laufzeit", 10))
+            endmonat = int(d.get("endmonat", 12))
             rate = _annuitaet_rate(restschuld, zins, laufzeit)
+            _ak_start = endjahr + 1 if endmonat == 12 else endjahr
             for i in range(laufzeit):
-                plan[endjahr + 1 + i] = plan.get(endjahr + 1 + i, 0.0) + rate
+                plan[_ak_start + i] = plan.get(_ak_start + i, 0.0) + rate
         elif behandlung == "einmalzahlungen":
             zins = float(d.get("anschluss_zins_pa", 0.04))
             laufzeit = int(d.get("anschluss_laufzeit", 10))
@@ -273,9 +291,11 @@ def get_ausgaben_plan_optimierung(sondertilgung_endjahr: float = 0.0) -> dict[in
             plan[endjahr] = plan.get(endjahr, 0.0) + eff_rs
     elif behandlung == "ratenkredit":
         if eff_rs > 0.0:
+            endmonat = int(d.get("endmonat", 12))
             rate = _annuitaet_rate(eff_rs, zins, laufzeit)
+            _ak_start = endjahr + 1 if endmonat == 12 else endjahr
             for i in range(laufzeit):
-                plan[endjahr + 1 + i] = plan.get(endjahr + 1 + i, 0.0) + rate
+                plan[_ak_start + i] = plan.get(_ak_start + i, 0.0) + rate
     elif behandlung == "einmalzahlungen":
         plan = _ez_ausgaben_plan(
             list(d.get("anschluss_einmalzahlungen", [])),
@@ -330,9 +350,11 @@ def _restschuld_vergleich_ui(restschuld: float, endjahr: int, d: dict, _rc: int)
     if behandlung == "ratenkredit":
         rate_j = _annuitaet_rate(restschuld, anschluss_zins, anschluss_laufzeit)
         zinslast = rate_j * anschluss_laufzeit - restschuld
+        _endmonat_ui = int(d.get("endmonat", 12))
+        _ak_start_lbl = f"01/{endjahr + 1}" if _endmonat_ui == 12 else f"{_endmonat_ui + 1:02d}/{endjahr}"
         st.info(
             f"Jahresrate: **{_de(rate_j)} €** ({_de(rate_j / 12, 0)} €/Mon.) · "
-            f"Laufzeit: {anschluss_laufzeit} J. ab {endjahr + 1} · "
+            f"Laufzeit: {anschluss_laufzeit} J. ab {_ak_start_lbl} · "
             f"Gesamtzinslast: {_de(zinslast)} €",
             icon="🏦",
         )
@@ -394,6 +416,11 @@ def render(T: dict, _rc: int) -> None:
                         value=int(d.get("startjahr", AKTUELLES_JAHR)), step=1,
                         key=f"rc{_rc}_hyp_startjahr_f",
                     )
+                    startmonat = _MONATE.index(st.selectbox(
+                        "Startmonat", _MONATE,
+                        index=max(0, int(d.get("startmonat", 1)) - 1),
+                        key=f"rc{_rc}_hyp_startmonat_f",
+                    )) + 1
                     betrag = st.number_input(
                         "Darlehensbetrag (€)", 0.0, 10_000_000.0,
                         value=float(d.get("betrag", 300_000.0)),
@@ -410,6 +437,11 @@ def render(T: dict, _rc: int) -> None:
                         value=int(d.get("endjahr", AKTUELLES_JAHR + 20)), step=1,
                         key=f"rc{_rc}_hyp_endjahr_f",
                     )
+                    endmonat = _MONATE.index(st.selectbox(
+                        "Endmonat", _MONATE,
+                        index=max(0, int(d.get("endmonat", 12)) - 1),
+                        key=f"rc{_rc}_hyp_endmonat_f",
+                    )) + 1
                     jaehrl_rate = st.number_input(
                         "Jährl. Annuitätsrate (€/Jahr)", 0.0, 1_000_000.0,
                         value=float(d.get("jaehrl_rate", 15_000.0)),
@@ -433,7 +465,9 @@ def render(T: dict, _rc: int) -> None:
                             **_default_hyp_daten(),
                             "aktiv": True,
                             "startjahr": int(startjahr),
+                            "startmonat": int(startmonat),
                             "endjahr": int(endjahr),
+                            "endmonat": int(endmonat),
                             "betrag": float(betrag),
                             "jaehrl_rate": float(jaehrl_rate),
                             "zins_pa": float(zins_pct) / 100.0,
@@ -482,6 +516,11 @@ def render(T: dict, _rc: int) -> None:
                         value=int(d.get("startjahr", AKTUELLES_JAHR)), step=1,
                         key=f"rc{_rc}_hyp_e_startjahr",
                     )
+                    e_startmonat = _MONATE.index(st.selectbox(
+                        "Startmonat", _MONATE,
+                        index=max(0, int(d.get("startmonat", 1)) - 1),
+                        key=f"rc{_rc}_hyp_e_startmonat",
+                    )) + 1
                     e_betrag = st.number_input(
                         "Darlehensbetrag (€)", 0.0, 10_000_000.0,
                         value=float(d.get("betrag", 300_000.0)),
@@ -498,6 +537,11 @@ def render(T: dict, _rc: int) -> None:
                         value=int(d.get("endjahr", AKTUELLES_JAHR + 20)), step=1,
                         key=f"rc{_rc}_hyp_e_endjahr",
                     )
+                    e_endmonat = _MONATE.index(st.selectbox(
+                        "Endmonat", _MONATE,
+                        index=max(0, int(d.get("endmonat", 12)) - 1),
+                        key=f"rc{_rc}_hyp_e_endmonat",
+                    )) + 1
                     e_rate = st.number_input(
                         "Jährl. Annuitätsrate (€/Jahr)", 0.0, 1_000_000.0,
                         value=float(d.get("jaehrl_rate", 15_000.0)),
@@ -521,7 +565,9 @@ def render(T: dict, _rc: int) -> None:
                     else:
                         st.session_state["hyp_daten"].update({
                             "startjahr": int(e_startjahr),
+                            "startmonat": int(e_startmonat),
                             "endjahr": int(e_endjahr),
+                            "endmonat": int(e_endmonat),
                             "betrag": float(e_betrag),
                             "jaehrl_rate": float(e_rate),
                             "zins_pa": float(e_zins) / 100.0,

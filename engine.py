@@ -662,6 +662,8 @@ class VorsorgeProdukt:
     riester_kinder_zulage_alt: int = 0   # Kinder vor 01.01.2008 (185 €/Kind/Jahr, § 85 Abs. 1 S. 1 EStG)
     # bAV: AG-Pflichtzuschuss 15 % (§ 1a Abs. 1a BetrAVG ab 2022) in Einzahlung einbeziehen
     bav_ag_zuschuss: bool = False        # Effektive Einzahlung += 15 % AG-Anteil
+    fruehestes_startmonat: int = 1       # Monat des frühesten Starttermins (1–12)
+    spaetestes_startmonat: int = 12      # Monat des spätesten Starttermins (1–12)
 
     @property
     def ist_lebensversicherung(self) -> bool:
@@ -1011,6 +1013,15 @@ def _netto_ueber_horizont(
 
         vorsorge_beitraege_j = 0.0
         for prod, startjahr, anteil in entscheidungen:
+            # Startmonat bestimmen: frühest/spätester Termin → ggf. anteiliges Erstjahr
+            if startjahr == prod.fruehestes_startjahr:
+                _startmonat = prod.fruehestes_startmonat
+            elif startjahr == prod.spaetestes_startjahr:
+                _startmonat = prod.spaetestes_startmonat
+            else:
+                _startmonat = 1
+            _ausz_fak = (13 - _startmonat) / 12  # Auszahlungsanteil im Startjahr
+
             if jahr < startjahr:
                 # Beitragsphase: laufende Jahresbeiträge als Ausgabe erfassen
                 if prod.jaehrl_einzahlung > 0.0:
@@ -1103,7 +1114,8 @@ def _netto_ueber_horizont(
 
             # ── Laufende Monatsrente ──────────────────────────────────────────
             if 0 <= jahr - startjahr < lz and anteil < 1.0:
-                mono = mono_wert * (1 - anteil) * 12
+                _fak = _ausz_fak if jahr == startjahr else 1.0
+                mono = mono_wert * (1 - anteil) * 12 * _fak
                 if ist_bav:
                     if _is_p2: p2_bav_lfd_j += mono
                     else: bav_lfd_j += mono
@@ -1451,6 +1463,7 @@ def _netto_ueber_horizont(
                                       + p2_einmal_brutto_j + p2_etf_brutto_j
                                       - kap_injection_gross_j),  # nur nicht-Pool Einmalauszahlungen
             "Src_KapInjektion": round(kap_injection_gross_j),    # Pool-Einzahlungs-Brutto im Injektionsjahr
+            "Src_KapInjektion_progr": round(sum(kap_injection_zvE_per_prod.values())),  # progressiv steuerpflichtig
             "Src_Kapitalverzehr": round(kap_verzehr_j),
             "Kap_Pool":           round(sum(_kap_pools.values())),
             # Per-Pool-Einträge für individuelle Diagramme

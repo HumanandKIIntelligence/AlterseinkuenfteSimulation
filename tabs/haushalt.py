@@ -13,17 +13,19 @@ from engine import (
 )
 
 try:
-    from tabs.hypothek import get_hyp_schedule, get_anschluss_schedule
+    from tabs.hypothek import get_hyp_schedule, get_anschluss_schedule, get_ausgaben_plan
 except ImportError:
     def get_hyp_schedule():
         return []
     def get_anschluss_schedule():
         return []
+    def get_ausgaben_plan():
+        return {}
 
 from tabs import steuern
 from tabs.analyse import render_analyse
 from tabs.utils import (
-    _de, _actual_startjahr, _blend_brutto_wf,
+    _de, _actual_startjahr, _actual_anteil, _blend_brutto_wf,
     _vorsorge_non_bav_einzeln, _vorsorge_non_bav_monatlich, _vorsorge_bav_monatlich,
     _eink_label, _vorsorge_ausz_breakdown, render_zeitstrahl,
 )
@@ -109,14 +111,14 @@ def render(
                 if d.get("als_kapitalanlage", False):
                     if float(d.get("max_einmalzahlung", 0.0)) > 0:
                         try:
-                            _entsch.append((_vd(d), _actual_startjahr(d), 1.0))
+                            _entsch.append((_vd(d), _actual_startjahr(d), _actual_anteil(d)))
                         except Exception:
                             pass
                     continue
                 if float(d.get("max_monatsrente", 0.0)) <= 0:
                     continue
                 try:
-                    _entsch.append((_vd(d), _actual_startjahr(d), 0.0))
+                    _entsch.append((_vd(d), _actual_startjahr(d), _actual_anteil(d)))
                 except Exception:
                     pass
             return _entsch
@@ -832,7 +834,27 @@ def render(
                     f"Summe aktiver Fixausgaben {betrachtungsjahr}.<br>"
                     + (f"{_fix_detail}." if _fix_detail else "")
                 )
-            _verfuegbar_m = _n - _fix_m_wf - _hyp_m_wf - _ak_m_wf
+            # Einmaltilgung (Sondertilgung aus Ausgabenplan, exkl. laufende Raten)
+            _ausgaben_plan_wf = get_ausgaben_plan()
+            _sonder_j_wf = _ausgaben_plan_wf.get(betrachtungsjahr, 0.0)
+            _hyp_j_wf = (_hyp_row_wf["Jahresausgabe"] if _hyp_row_wf else 0.0)
+            _ak_j_wf  = (_ak_row_wf["Jahresausgabe"]  if _ak_row_wf  else 0.0)
+            _einmaltilgung_j_wf = max(0.0, _sonder_j_wf - _hyp_j_wf - _ak_j_wf)
+            _einmaltilgung_m_wf = _einmaltilgung_j_wf * _hyp_faktor_wf / 12
+            if _einmaltilgung_m_wf > 0:
+                _wf_x.append("− Einmaltilgung")
+                _wf_meas.append("relative")
+                _wf_y.append(-_einmaltilgung_m_wf)
+                _wf_t.append(f"−{_de(_einmaltilgung_m_wf)} €")
+                _wf_colors.append("#F44336")
+                _wf_h.append(
+                    f"<b>Einmaltilgung{_hyp_hint}</b><br>"
+                    f"−{_de(_einmaltilgung_m_wf)} €/Mon.<br>"
+                    f"Einmalige Sondertilgung {betrachtungsjahr}: "
+                    f"{_de(_einmaltilgung_j_wf * _hyp_faktor_wf)} € gesamt<br>"
+                    f"(÷ 12 zur monatlichen Darstellung)."
+                )
+            _verfuegbar_m = _n - _fix_m_wf - _hyp_m_wf - _ak_m_wf - _einmaltilgung_m_wf
             _wf_x.append("Verfügbar")
             _wf_meas.append("total")
             _wf_y.append(_verfuegbar_m)

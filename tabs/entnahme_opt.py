@@ -43,6 +43,10 @@ except ImportError:
 
 
 
+_MON_KURZ = ("Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+             "Jul", "Aug", "Sep", "Okt", "Nov", "Dez")
+
+
 def _aus_dict(d: dict) -> VorsorgeProdukt:
     """Importiert _aus_dict aus vorsorge ohne zirkulären Import."""
     from tabs.vorsorge import _aus_dict as _vp_aus_dict
@@ -888,6 +892,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _sel_ev = _sels.get(_pname_ev)
                     _yr_ev, _mode_ev = _parse_sel(_sel_ev)
                     _yr_val_ev = _yr_ev if _yr_ev is not None else _p.fruehestes_startjahr
+                    # Startmonat des gewählten Jahres für anteilige Berechnung im ersten Auszahlungsjahr
+                    _sm_ev = (
+                        int(_pd_dict.get("spaetestes_startmonat", 12)) if _yr_val_ev >= _p.spaetestes_startjahr
+                        else int(_pd_dict.get("fruehestes_startmonat", 1)) if _yr_val_ev <= _p.fruehestes_startjahr
+                        else 1
+                    )
+                    _auzz_fak_ev = (13 - _sm_ev) / 12
+                    _eff_lz_ev = min(_p.laufzeit_jahre if _p.laufzeit_jahre > 0 else horizon, horizon)
+                    _t_mono_prorated = _p.max_monatsrente * 12 * (_eff_lz_ev - 1 + _auzz_fak_ev)
                     _be_y_ev = (_p.max_einmalzahlung / (_p.max_monatsrente * 12)
                                 if _hat_mono and _hat_einz and _p.max_monatsrente > 0 else None)
                     _yf = _yf_rows_ev.get(_pname_ev, {})
@@ -900,7 +913,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                             if _hat_einz else "–"
                         ),
                         "Monatlich (Total / Mon.)":  (
-                            f"{_de(_v['monatlich']['total'])} € / "
+                            f"{_de(_t_mono_prorated)} € / "
                             f"{_de(_v['monatlich']['monatlich'])} €"
                             if _hat_mono else "–"
                         ),
@@ -912,6 +925,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         "Einfach-Empfehlung ✅":     _empf,
                         "Früh":                      _p.fruehestes_startjahr,
                         "Spät":                      _p.spaetestes_startjahr,
+                        "Endmonat":                  _MON_KURZ[int(_pd_dict.get("spaetestes_startmonat", 12)) - 1],
                         "Auszahlungsjahr":           int(_yr_val_ev),
                         "Netto früh (€)":            _yf.get("Netto früh (€)", "–"),
                         "Netto spät (€)":            _yf.get("Netto spät (€)", "–"),
@@ -958,6 +972,8 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     help="Frühestmögliches Auszahlungsjahr.")
                 _col_cfg_ev["Spät"] = st.column_config.NumberColumn("Spät", format="%d",
                     help="Spätestmögliches Auszahlungsjahr.")
+                _col_cfg_ev["Endmonat"] = st.column_config.TextColumn(
+                    "Endmonat", help="Monat im Spätesten Startjahr (aus dem Vorsorgevertrag).")
                 _col_cfg_ev["Auszahlungsjahr"] = st.column_config.NumberColumn(
                     "Auszahlungsjahr", min_value=2020, max_value=2099, step=1, format="%d",
                     help="Auszahlungsjahr – muss zwischen Früh und Spät liegen.",
@@ -978,7 +994,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     help="Monatliche Rente (☑) oder Einmalauszahlung (☐).",
                 )
 
-                _dis_ev = _INFO_COLS_EV + _YF_COLS_EV + ["Früh", "Spät"]
+                _dis_ev = _INFO_COLS_EV + _YF_COLS_EV + ["Früh", "Spät", "Endmonat"]
                 _dis_ev_fixed_yr = _dis_ev + ["Auszahlungsjahr"]
                 _edited_ev_both = _edited_ev_both_no_yr = _edited_ev_single = None
 
@@ -1057,6 +1073,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
 
                 if _new_sels != _sels:
                     st.session_state[_sels_key] = _new_sels
+                    # Sync → vp_sels (ID-keyed) damit Dashboard/Haushalt/Simulation/Vorsorge
+                    # sofort die geänderten Auszahlungseinstellungen übernehmen.
+                    _vp_sels_upd = dict(st.session_state.get(f"rc{_rc}_vp_sels", {}))
+                    for _pn_s, _sv_s in _new_sels.items():
+                        _prod_s = _ev_name_map.get(_pn_s)
+                        if _prod_s is not None and _sv_s is not None:
+                            _vp_sels_upd[_prod_s.id] = _sv_s
+                    st.session_state[f"rc{_rc}_vp_sels"] = _vp_sels_upd
                     st.rerun()
 
         # ── Frühe Definitionen für Empfehlung-von-Entnahmen-Block ────────────
@@ -1279,6 +1303,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                 _parts_zv.append(f"Mieteinnahmen: {_de(int(_miete_z))} € (100 %, § 21 EStG)")
             if _duv_buv_z > 0:
                 _parts_zv.append(f"DUV/BUV: {_de(int(_duv_buv_z))} € (Ertragsanteil, § 22 EStG)")
+            _kap_inj_z = _row_tax.get("Src_KapInjektion", 0)
+            _kap_inj_progr_z = _row_tax.get("Src_KapInjektion_progr", 0)
+            if _kap_inj_z > 0:
+                if _kap_inj_progr_z > 0:
+                    _parts_zv.append(
+                        f"Pool-Einzahlung: {_de(int(_kap_inj_z))} € Brutto "
+                        f"→ {_de(int(_kap_inj_progr_z))} € steuerpfl. "
+                        f"(50 % Ertrag, § 20 Abs. 1 Nr. 6 EStG)"
+                    )
+                else:
+                    _parts_zv.append(
+                        f"Pool-Einzahlung: {_de(int(_kap_inj_z))} € "
+                        f"(steuerfrei oder Abgeltungsteuer – kein zvE-Beitrag)"
+                    )
             _parts_zv.append(f"(Abzgl. Grundfreibetrag, Werbungskosten, Sonderausgaben)")
             _zve_custom.append("<br>".join(_parts_zv))
         fig_tax.add_trace(go.Scatter(

@@ -11,7 +11,7 @@ from engine import (
     berechne_haushalt, berechne_rente, kapitalwachstum,
     simuliere_szenarien, _netto_ueber_horizont,
 )
-from tabs.utils import render_zeitstrahl
+from tabs.utils import render_zeitstrahl, _actual_startjahr, _actual_anteil
 
 _FARBEN = {
     "Pessimistisch": "#F44336",
@@ -98,14 +98,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 if d.get("als_kapitalanlage", False):
                     if float(d.get("max_einmalzahlung", 0.0)) > 0:
                         try:
-                            _entsch.append((_vd(d), int(d.get("fruehestes_startjahr", AKTUELLES_JAHR + 5)), 1.0))
+                            _entsch.append((_vd(d), _actual_startjahr(d), _actual_anteil(d)))
                         except Exception:
                             pass
                     continue
                 if float(d.get("max_monatsrente", 0.0)) <= 0:
                     continue
                 try:
-                    _entsch.append((_vd(d), int(d.get("fruehestes_startjahr", AKTUELLES_JAHR + 5)), 0.0))
+                    _entsch.append((_vd(d), _actual_startjahr(d), _actual_anteil(d)))
                 except Exception:
                     pass
             return _entsch
