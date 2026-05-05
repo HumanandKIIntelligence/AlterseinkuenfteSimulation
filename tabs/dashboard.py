@@ -713,6 +713,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         _d_duv    = _row_dash.get("Src_DUV_P1", 0) / 12 if _row_dash else 0.0
         _d_buv    = _row_dash.get("Src_BUV_P1", 0) / 12 if _row_dash else 0.0
         _d_kap_inj = _row_dash.get("Src_KapInjektion", 0) / 12 if _row_dash else 0.0
+        _d_pool_w_m = st.session_state.get("pool_topup_withdrawals", {}).get(_sel_j_dash, 0.0) / 12 / (2 if hat_partner else 1)
         # Basis = Rente/Pension ohne bAV/Riester/DUV/BUV/Pool-Injektion/Mieteinnahmen
         _d_basis  = _d_brutto - _d_bav - _d_riester - _d_duv - _d_buv - _d_kap_inj
 
@@ -777,6 +778,12 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     f"Vorsorgeauszahlungen {_sel_j_dash}", f"{_de(_d_vors)} €/Mon.",
                     help=_d_vors_help,
                 )
+        if _d_pool_w_m > 0:
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            pc1.metric(
+                f"Kapitalpool-Entnahme {_sel_j_dash}", f"+{_de(_d_pool_w_m)} €/Mon.",
+                help="Manuelle Entnahme aus dem Kapitalanlage-Pool zur Aufstockung des Nettoeinkommens (Entnahme-Optimierung).",
+            )
 
         # KV/PV-Split berechnen (Eintrittsmonat-Verhältnis auf Jahr-KV anwenden)
         _kv_ratio = _kv_pv_split(profil, ergebnis.kv_monatlich, ergebnis)
@@ -978,6 +985,17 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             f"{_de(_d_netto_nach_kv)} €/Mon.<br>"
             f"Brutto nach Einkommensteuer, KV, PV und bAV-Beiträgen."
         )
+        if _d_pool_w_m > 0:
+            _wf_x_e.append("+ Kapitalpool")
+            _wf_m_e.append("relative")
+            _wf_y_e.append(_d_pool_w_m)
+            _wf_t_e.append(f"+{_de(_d_pool_w_m)} €")
+            _wf_h_e.append(
+                f"<b>Kapitalpool-Entnahme</b><br>"
+                f"+{_de(_d_pool_w_m)} €/Mon. ({_de(_d_pool_w_m * 12)} €/Jahr)<br>"
+                f"Manuelle Entnahme aus dem Kapitalanlage-Pool.<br>"
+                f"Eingetragen im Tab Entnahme-Optimierung zur Aufstockung des Nettoeinkommens."
+            )
         # Vorsorgebeiträge: sonstige (ohne bAV)
         if _vb_m_e > 0:
             _vb_detail_e = "; ".join(f"{n}: {_de(v)} €" for n, v in _vb_einzeln_e)
@@ -1013,11 +1031,11 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             )
         # Hypothek (bei Paar: 50/50 je Person)
         _hyp_faktor_e = 0.5 if hat_partner else 1.0
+        _hyp_hint_e = " (½ Haushalt)" if hat_partner else ""
         _hyp_sched_e = get_hyp_schedule()
         _hyp_row_e = next((r for r in _hyp_sched_e if r["Jahr"] == _sel_j_dash), None)
         _hyp_m_e_val = (_hyp_row_e["Jahresausgabe"] / 12 if _hyp_row_e else 0.0) * _hyp_faktor_e
         if _hyp_m_e_val > 0:
-            _hyp_hint_e = " (½ Haushalt)" if hat_partner else ""
             _wf_x_e.append("− Hypothek")
             _wf_m_e.append("relative")
             _wf_y_e.append(-_hyp_m_e_val)
@@ -1073,7 +1091,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                 f"{_de(_einmaltilgung_j_e * _hyp_faktor_e)} € gesamt<br>"
                 f"(÷ 12 zur monatlichen Darstellung)."
             )
-        _d_verfuegbar = _d_netto - _d_fix_m - _hyp_m_e_val - _ak_m_e_val - _einmaltilgung_m_e
+        _d_verfuegbar = _d_netto + _d_pool_w_m - _d_fix_m - _hyp_m_e_val - _ak_m_e_val - _einmaltilgung_m_e
         _wf_x_e.append("Verfügbar")
         _wf_m_e.append("total")
         _wf_y_e.append(_d_verfuegbar)

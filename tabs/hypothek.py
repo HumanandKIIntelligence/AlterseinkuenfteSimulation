@@ -198,6 +198,7 @@ def get_ausgaben_plan() -> dict[int, float]:
             plan = _ez_ausgaben_plan(
                 list(d.get("anschluss_einmalzahlungen", [])),
                 get_hyp_schedule(), restschuld, endjahr, zins, laufzeit,
+                endmonat=int(d.get("endmonat", 12)),
             )
 
     return plan
@@ -230,6 +231,7 @@ def _ez_ausgaben_plan(
     endjahr: int,
     markt_zins_pa: float,
     anschluss_lz: int,
+    endmonat: int = 12,
 ) -> dict[int, float]:
     """Ausgaben-Plan für Einmalzahlungs-Strategie: laufende Raten + EZ + Anschlusskredit auf Rest."""
     def _rate(k: float, z: float, n: int) -> float:
@@ -249,6 +251,15 @@ def _ez_ausgaben_plan(
     ak_bal = max(0.0, restschuld_endjahr - primary_sum)
     if ak_bal <= 0.01 or anschluss_lz <= 0:
         return plan
+
+    # Wenn Primärhypothek vor Jahresende endet: anteiliger AK-Start im Endjahr selbst
+    if endmonat < 12:
+        _partial_fak = (12 - endmonat) / 12
+        _first_rate = _rate(ak_bal, markt_zins_pa, anschluss_lz)
+        _partial_payment = _first_rate * _partial_fak
+        plan[endjahr] = plan.get(endjahr, 0.0) + _partial_payment
+        _partial_zinsen = ak_bal * markt_zins_pa * _partial_fak
+        ak_bal = max(0.0, ak_bal - max(0.0, _partial_payment - _partial_zinsen))
 
     ak_payments = sorted(
         [(int(e["jahr"]), float(e["betrag"])) for e in sorted_ezl if int(e["jahr"]) > endjahr],
@@ -317,6 +328,7 @@ def get_ausgaben_plan_optimierung(sondertilgung_endjahr: float = 0.0) -> dict[in
         plan = _ez_ausgaben_plan(
             list(d.get("anschluss_einmalzahlungen", [])),
             get_hyp_schedule(), restschuld, endjahr, zins, laufzeit,
+            endmonat=int(d.get("endmonat", 12)),
         )
     return plan
 

@@ -273,6 +273,7 @@ def render(
             )
             _vorsorge_nbav_m = sum(b for _, b in _vorsorge_nbav_einzeln)
             _n_nach_kv = _n + _lhk_m_wf + _vorsorge_nbav_m
+            _pool_topup_m = st.session_state.get("pool_topup_withdrawals", {}).get(betrachtungsjahr, 0.0) / 12 / (2 if ansicht in ("Person 1", "Person 2") else 1)
 
             c1.metric("Brutto", f"{_de(_b)} €",
                       help=f"{_label}: Bruttoeinkommen inkl. Mieteinnahmen")
@@ -310,6 +311,12 @@ def render(
                         f"Vorsorgeauszahlungen {betrachtungsjahr}", f"{_de(_vors_m_hh)} €/Mon.",
                         help=_vors_help_hh,
                     )
+            if _pool_topup_m > 0:
+                pp1, pp2, pp3, pp4 = st.columns(4)
+                pp1.metric(
+                    f"Kapitalpool-Entnahme {betrachtungsjahr}", f"+{_de(_pool_topup_m)} €/Mon.",
+                    help="Manuelle Entnahme aus dem Kapitalanlage-Pool zur Aufstockung des Nettoeinkommens (Entnahme-Optimierung).",
+                )
 
         if ansicht == "Haushalt gesamt" and hh["steuerersparnis_splitting"] > 0:
             st.caption(
@@ -812,6 +819,17 @@ def render(
                     f"Nach Einkommensteuer, KV, PV und bAV-Beiträgen."
                 )
 
+            if _pool_topup_m > 0:
+                _wf_x.append("+ Kapitalpool"); _wf_meas.append("relative")
+                _wf_y.append(_pool_topup_m); _wf_t.append(f"+{_de(_pool_topup_m)} €")
+                _wf_colors.append("#4CAF50")
+                _wf_h.append(
+                    f"<b>Kapitalpool-Entnahme</b><br>"
+                    f"+{_de(_pool_topup_m)} €/Mon. ({_de(_pool_topup_m * 12)} €/Jahr)<br>"
+                    f"Manuelle Entnahme aus dem Kapitalanlage-Pool.<br>"
+                    f"Eingetragen im Tab Entnahme-Optimierung zur Aufstockung des Nettoeinkommens."
+                )
+
             # ── Gemeinsame Abzüge (Vorsorge, Hypothek, Lebenshaltung, Fixe) ──
             if _vorsorge_nbav_m > 0:
                 _vb_detail = "; ".join(f"{n}: {_de(v)} €" for n, v in _vorsorge_nbav_einzeln)
@@ -904,7 +922,7 @@ def render(
                     f"{_de(_einmaltilgung_j_wf * _hyp_faktor_wf)} € gesamt<br>"
                     f"(÷ 12 zur monatlichen Darstellung)."
                 )
-            _verfuegbar_m = _n - _fix_m_wf - _hyp_m_wf - _ak_m_wf - _einmaltilgung_m_wf
+            _verfuegbar_m = _n + _pool_topup_m - _fix_m_wf - _hyp_m_wf - _ak_m_wf - _einmaltilgung_m_wf
             _wf_x.append("Verfügbar")
             _wf_meas.append("total")
             _wf_y.append(_verfuegbar_m)
