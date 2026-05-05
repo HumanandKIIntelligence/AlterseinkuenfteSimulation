@@ -1110,6 +1110,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _pool_rendite = getattr(_profil_eo, "rendite_pa", 0.03)
                 _topup_rows_eo = []
                 _pool_bal_eo = 0.0
+                _monatl_kap_eo = float(getattr(_ergebnis_eo, "kapital_monatlich", 0.0))
                 for _tj in sorted(df_jd.index):
                     _inj_eo = float(df_jd.loc[_tj, "Kap_Injektion"]) if "Kap_Injektion" in df_jd.columns else 0.0
                     _pool_bal_eo = (_pool_bal_eo * (1 + _pool_rendite)) + _inj_eo
@@ -1119,8 +1120,21 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                     _base_netto_eo = _netto_j_eo - _auto_annuity_eo - _hyp_rate_eo - _mindest_j_topup
                     _manual_w_eo = _manual_withdrawals.get(_tj, 0.0)
                     _pool_bal_eo = max(0.0, _pool_bal_eo - _manual_w_eo)
+                    # Sparkapital-Bestand (aus Profil): dieselbe Formel wie Kapital-Zeitleiste
+                    _spar_bal_eo = 0.0
+                    if _spkap_orig > 0:
+                        if _tj < _spkap_eintritt_j and not _profil_eo.bereits_rentner:
+                            _spar_bal_eo = kapitalwachstum(
+                                _spkap_orig, _spkap_sparrate, _spkap_rendite,
+                                max(0, _tj - AKTUELLES_JAHR),
+                            )
+                        elif _tj >= _spkap_eintritt_j:
+                            _spar_bal_eo = max(0.0, kapitalwachstum(
+                                _spkap, -_monatl_kap_eo, _spkap_rendite,
+                                max(0, _tj - _spkap_eintritt_j),
+                            ))
                     _abw_val = round(_base_netto_eo + _manual_w_eo)
-                    _abw_str = (f"🔴 {_de(_abw_val)}" if _abw_val < _mindest_j_topup
+                    _abw_str = (f"🔴 {_de(_abw_val)}" if _abw_val < 0
                                 else f"🟢 {_de(_abw_val)}")
                     _topup_rows_eo.append({
                         "Jahr": _tj,
@@ -1128,7 +1142,7 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis, profil2=None,
                         "Frei nach Ausg.+Hyp. (€)": round(_base_netto_eo),
                         "Mindesthaushalt (€/Jahr)": _mindest_j_topup,
                         "Abweichung": _abw_str,
-                        "Pool-Bestand (€)": round(_pool_bal_eo),
+                        "Pool-Bestand (€)": round(_pool_bal_eo + _spar_bal_eo),
                     })
                 _topup_df_eo = pd.DataFrame(_topup_rows_eo)
 
