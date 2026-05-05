@@ -11,6 +11,12 @@ from engine import (
 )
 from tabs import steuern
 from tabs.analyse import render_analyse
+from tabs.utils import (
+    _de, _actual_startjahr, _blend_brutto_wf,
+    _vorsorge_non_bav_einzeln, _vorsorge_non_bav_monatlich, _vorsorge_bav_monatlich,
+    _eink_label, _netto_label, _kv_pv_split, _vorsorge_ausz_breakdown,
+    render_zeitstrahl,
+)
 
 try:
     from tabs.hypothek import get_hyp_schedule, get_anschluss_schedule
@@ -21,118 +27,8 @@ except ImportError:
         return []
 
 
-def _blend_brutto_wf(prof: "Profil", jd: list[dict], sel_jahr: int) -> "float | None":
-    """Monatlich gemitteltes Brutto für das Renteneintritts-Jahr.
-
-    Gibt None zurück wenn kein Blend nötig (Aufrufer nutzt Engine-Wert).
-    Formel: (m_vor × Gehalt/Mon. + m_nach × Rente/Mon.) / 12
-    """
-    if prof.bereits_rentner or sel_jahr != prof.eintritt_jahr:
-        return None
-    m = getattr(prof, "renteneintritt_monat", 1)
-    if m <= 1:
-        return None
-    by_y = {r["Jahr"]: r for r in jd}
-    row_ej   = by_y.get(sel_jahr)
-    row_prev = by_y.get(sel_jahr - 1)
-    if row_ej is None or row_prev is None:
-        return None
-    pension_mono = row_ej.get("Src_GesRente", 0.0) / 12
-    salary_mono  = row_prev.get("Src_Gehalt", 0.0) / 12
-    m_before = m - 1
-    m_after  = 12 - m_before
-    return (m_before * salary_mono + m_after * pension_mono) / 12
-
-
-def _actual_startjahr(vp: dict) -> int:
-    """Tatsächlich gewähltes Auszahlungs-Startjahr aus dem Vorsorge-Tab.
-
-    Liest rc{_rc}_vp_sels (vom Vorsorge-Tab gespeichert); Fallback: fruehestes_startjahr.
-    """
-    _rc = st.session_state.get("_rc", 0)
-    _sels = st.session_state.get(f"rc{_rc}_vp_sels", {})
-    _pid = vp.get("id")
-    _sel = _sels.get(_pid) if _pid else None
-    if _sel is not None:
-        try:
-            return int(str(_sel).rsplit("_", 1)[0])
-        except (ValueError, IndexError):
-            pass
-    return int(vp.get("fruehestes_startjahr", AKTUELLES_JAHR))
-
-
-def _vorsorge_non_bav_einzeln(produkte: list[dict], jahr: int,
-                               person: str | None = None) -> list[tuple[str, float]]:
-    result: list[tuple[str, float]] = []
-    for vp in produkte:
-        if vp.get("typ") == "bAV":
-            continue
-        if person is not None and vp.get("person", "Person 1") != person:
-            continue
-        je = float(vp.get("jaehrl_einzahlung", 0.0))
-        if je <= 0.0:
-            continue
-        # LV: Beiträge enden nicht am Auszahlungsjahr, sondern per Beitragsbefreiung
-        if vp.get("typ") != "LV":
-            if _actual_startjahr(vp) <= jahr:
-                continue
-        bbj = int(vp.get("beitragsbefreiung_jahr", 0))
-        if bbj > 0 and jahr >= bbj:
-            continue
-        dyn = float(vp.get("jaehrl_dynamik", 0.0))
-        monatlich = je * (1.0 + dyn) ** max(0, jahr - AKTUELLES_JAHR) / 12.0
-        result.append((vp.get("name", "Vorsorge"), monatlich))
-    return result
-
-
-def _vorsorge_non_bav_monatlich(produkte: list[dict], jahr: int,
-                                 person: str | None = None) -> float:
-    return sum(b for _, b in _vorsorge_non_bav_einzeln(produkte, jahr, person=person))
-
-
-def _vorsorge_bav_monatlich(produkte: list[dict], jahr: int,
-                             person: str | None = None) -> float:
-    """Monatliche bAV-Beiträge (AN-Anteil) für das gegebene Jahr."""
-    total = 0.0
-    for vp in produkte:
-        if vp.get("typ") != "bAV":
-            continue
-        if person is not None and vp.get("person", "Person 1") != person:
-            continue
-        je = float(vp.get("jaehrl_einzahlung", 0.0))
-        if je <= 0.0:
-            continue
-        if _actual_startjahr(vp) <= jahr:
-            continue
-        bbj = int(vp.get("beitragsbefreiung_jahr", 0))
-        if bbj > 0 and jahr >= bbj:
-            continue
-        dyn = float(vp.get("jaehrl_dynamik", 0.0))
-        total += je * (1.0 + dyn) ** max(0, jahr - AKTUELLES_JAHR) / 12.0
-    return total
-
-
-def _eink_label(profil: "Profil", sel_jahr: int) -> str:
-    """Einkommens-Label abhängig vom Zustand der Person im gewählten Jahr."""
-    in_rente = profil.bereits_rentner or sel_jahr >= profil.eintritt_jahr
-    if not in_rente:
-        return "Brutto"
-    return "Pension" if profil.ist_pensionaer else "Rente"
-
-
-def _netto_label(eink_lbl: str) -> str:
-    """Netto-Label für das Ende des Wasserfalls."""
-    return {"Rente": "Nettorente", "Pension": "Nettopension"}.get(eink_lbl, "Nettoeinkommen")
-
-
-def _de(v: float, dec: int = 0) -> str:
-    """Zahl im deutschen Format: 1.234,56"""
-    s = f"{v:,.{dec}f}"
-    return s.replace(",", "X").replace(".", ",").replace("X", ".")
-
-
 def _load_laufende_entsch(person: str | None = None) -> list:
-    """VorsorgeProdukt-Entscheidungen für laufende (nicht als_kapitalanlage) Produkte."""
+    """VorsorgeProdukt-Entscheidungen (laufende Produkte + als_kapitalanlage als Einmal)."""
     try:
         from tabs.vorsorge import _aus_dict as _vd, _migriere as _vm
     except ImportError:
@@ -140,11 +36,17 @@ def _load_laufende_entsch(person: str | None = None) -> list:
     entsch = []
     for d in st.session_state.get("vp_produkte", []):
         d = _vm(d)
+        if person is not None and d.get("person", "Person 1") != person:
+            continue
         if d.get("als_kapitalanlage", False):
+            if float(d.get("max_einmalzahlung", 0.0)) > 0:
+                try:
+                    prod = _vd(d)
+                    entsch.append((prod, _actual_startjahr(d), 1.0))
+                except Exception:
+                    pass
             continue
         if float(d.get("max_monatsrente", 0.0)) <= 0:
-            continue
-        if person is not None and d.get("person", "Person 1") != person:
             continue
         try:
             prod = _vd(d)
@@ -166,26 +68,6 @@ def _grenzsteuersatz(zvE: float) -> float:
     if zvE <= 277_825:
         return 0.42
     return 0.45
-
-
-def _kv_pv_split(profil: Profil, kv_gesamt: float,
-                  ergebnis: RentenErgebnis | None = None) -> tuple[float, float]:
-    """Gibt (GKV-Anteil, PV-Anteil) des monatlichen KV-Beitrags zurück."""
-    if ergebnis is not None and (ergebnis.kv_gkv_monatlich + ergebnis.kv_pv_monatlich) > 0:
-        return ergebnis.kv_gkv_monatlich, ergebnis.kv_pv_monatlich
-    if profil.krankenversicherung == "PKV":
-        return kv_gesamt, 0.0
-    _freiwillig = profil.ist_pensionaer or not profil.kvdr_pflicht
-    if _freiwillig:
-        _kv_rate = 0.146 + profil.gkv_zusatzbeitrag
-        _pv_rate = 0.034 if profil.kinder else 0.040
-    else:
-        _kv_rate = 0.073 + profil.gkv_zusatzbeitrag / 2
-        _pv_rate = 0.017 if profil.kinder else 0.023
-    _total = _kv_rate + _pv_rate
-    if _total == 0:
-        return 0.0, 0.0
-    return kv_gesamt * _kv_rate / _total, kv_gesamt * _pv_rate / _total
 
 
 def _steuerampel(zvE: float, titel: str = "", splitting: bool = False) -> None:
@@ -244,7 +126,18 @@ def _steuerampel(zvE: float, titel: str = "", splitting: bool = False) -> None:
     zc1.metric("Grenzsteuersatz", f"{gst:.1%}".replace(".", ","),
                help="Steuersatz auf jeden zusätzlichen Euro Einkommen.")
     _zvE_label = "zvE Haushalt" if splitting else "zvE aktuell"
-    zc2.metric(_zvE_label, f"{_de(zvE)} €/Jahr")
+    _zvE_help = (
+        "Gemeinsames zu versteuerndes Einkommen (§ 2 Abs. 5 EStG) beider Personen. "
+        "Enthält: gesetzliche Renten (Besteuerungsanteil § 22 EStG), Pensionen (nach VFB § 19 Abs. 2 EStG), "
+        "Vorsorgeauszahlungen, Mieteinnahmen (§ 21 EStG). "
+        "Basis für das Splittingverfahren (§ 32a Abs. 5 EStG): ESt = 2 × ESt(zvE/2)."
+        if splitting else
+        "Zu versteuerndes Einkommen (§ 2 Abs. 5 EStG) für das gewählte Betrachtungsjahr. "
+        "Enthält: gesetzliche Rente × Besteuerungsanteil (§ 22 EStG) bzw. Pension nach VFB (§ 19 Abs. 2 EStG), "
+        "Vorsorgeauszahlungen (bAV, Riester, PrivRV), Mieteinnahmen (§ 21 EStG), "
+        "DUV/BUV-Ertragsanteile – abzüglich Grundfreibetrag (§ 32a EStG) und Altersentlastungsbetrag (§ 24a EStG)."
+    )
+    zc2.metric(_zvE_label, f"{_de(zvE)} €/Jahr", help=_zvE_help)
     if splitting:
         _est  = einkommensteuer_splitting(zvE)
         _soli = 2 * solidaritaetszuschlag(einkommensteuer(zvE_ind))
@@ -304,20 +197,26 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             _entsch_all = _load_laufende_entsch(None)
             _entsch_p1  = _load_laufende_entsch("Person 1")
             _entsch_p2  = _load_laufende_entsch("Person 2")
-            _, _jd_dash    = _netto_ueber_horizont(
-                profil, ergebnis, _entsch_all, _hz_p1, mieteinnahmen, mietsteigerung,
-                profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
-                gehalt_monatlich=_g_p1,
-            )
+            # Entnahme-Opt Simulation für HH-Ansicht nutzen wenn verfügbar
+            _eo_jd_z   = st.session_state.get("_sb_eo_jd")
+            _eo_pers_z = st.session_state.get("_sb_eo_person")
+            if _eo_jd_z and _eo_pers_z == "Zusammen":
+                _jd_dash = _eo_jd_z
+            else:
+                _, _jd_dash = _netto_ueber_horizont(
+                    profil, ergebnis, _entsch_all, _hz_p1, mieteinnahmen, mietsteigerung,
+                    profil2=profil2, ergebnis2=ergebnis2, veranlagung=veranlagung,
+                    gehalt_monatlich=_g_p1,
+                )
             _miete_je_dash = mieteinnahmen / 2  # 50/50 je Person bei Paar
             _, _jd_dash_p1 = _netto_ueber_horizont(profil,  ergebnis,  _entsch_p1, _hz_p1,
                                                     _miete_je_dash, mietsteigerung, gehalt_monatlich=_g_p1)
             _, _jd_dash_p2 = _netto_ueber_horizont(profil2, ergebnis2, _entsch_p2, _hz_p2,
                                                     _miete_je_dash, mietsteigerung, gehalt_monatlich=_g_p2)
-            _sel_j_dash = st.slider(
-                "Betrachtungsjahr", _start_slider_hh, _end_hh,
-                min(_end_hh, _start_slider_hh), key=f"rc{_rc}_dash_jahr",
-                help="Zeigt projizierte Haushaltswerte mit Rentenanpassung für das gewählte Jahr.",
+            _sel_j_dash = render_zeitstrahl(
+                _rc, _start_slider_hh, _end_hh,
+                min(_end_hh, _start_slider_hh), "_dash",
+                help_text="Zeigt projizierte Haushaltswerte mit Rentenanpassung für das gewählte Jahr.",
             )
             _row_dash    = next((r for r in _jd_dash    if r["Jahr"] == _sel_j_dash), None)
             _row_dash_p1 = next((r for r in _jd_dash_p1 if r["Jahr"] == _sel_j_dash), None)
@@ -439,6 +338,15 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
                     "Veranlagung", veranlagung,
                     help="Getrennte oder gemeinsame Einkommensteuerveranlagung.",
                 )
+
+            if _row_dash:
+                _d_vors_z, _d_vors_z_help = _vorsorge_ausz_breakdown(_row_dash)
+                if _d_vors_z > 0:
+                    vz1, vz2, vz3, vz4 = st.columns(4)
+                    vz1.metric(
+                        f"Vorsorgeauszahlungen {_sel_j_dash}", f"{_de(_d_vors_z)} €/Mon.",
+                        help=_d_vors_z_help,
+                    )
 
             st.divider()
 
@@ -753,14 +661,20 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         _start_slider_einzel = AKTUELLES_JAHR if _g_einzel > 0 else _start_einzel
         _end_einzel = _start_einzel + 30
         _person_label_einzel = "Person 2" if wahl == "Person 2" else "Person 1"
-        _entsch_einzel = _load_laufende_entsch(_person_label_einzel)
-        # Beim Paar: Mieteinnahmen 50/50 für Einzelperson-Sicht
         _miete_einzel = mieteinnahmen / 2 if hat_partner else mieteinnahmen
-        _, _jd_dash = _netto_ueber_horizont(profil, ergebnis, _entsch_einzel, 31, _miete_einzel, mietsteigerung, gehalt_monatlich=_g_einzel)
-        _sel_j_dash = st.slider(
-            "Betrachtungsjahr", _start_slider_einzel, _end_einzel,
-            min(_end_einzel, _start_slider_einzel), key=f"rc{_rc}_dash_jahr",
-            help="Zeigt projizierte Jahreswerte mit Rentenanpassung für das gewählte Jahr.",
+        # Entnahme-Opt Simulation nutzen wenn verfügbar und Person-Ansicht stimmt überein
+        # (enthält alle Produkte inkl. Einmalauszahlungen → konsistente Steuer/KV/Einnahmen)
+        _eo_jd   = st.session_state.get("_sb_eo_jd")
+        _eo_pers = st.session_state.get("_sb_eo_person")
+        if _eo_jd and _eo_pers == wahl:
+            _jd_dash = _eo_jd
+        else:
+            _entsch_einzel = _load_laufende_entsch(_person_label_einzel)
+            _, _jd_dash = _netto_ueber_horizont(profil, ergebnis, _entsch_einzel, 31, _miete_einzel, mietsteigerung, gehalt_monatlich=_g_einzel)
+        _sel_j_dash = render_zeitstrahl(
+            _rc, _start_slider_einzel, _end_einzel,
+            min(_end_einzel, _start_slider_einzel), "_dash",
+            help_text="Zeigt projizierte Jahreswerte mit Rentenanpassung für das gewählte Jahr.",
         )
         _row_dash = next((r for r in _jd_dash if r["Jahr"] == _sel_j_dash), None)
         _d_miete  = _row_dash.get("Src_Miete", 0) / 12 if _row_dash else 0.0
@@ -834,6 +748,14 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             help=f"Aktuell {ergebnis.gesamtpunkte - profil.punkte_pro_jahr * profil.jahre_bis_rente:.1f} "
                  f"+ {profil.punkte_pro_jahr:.2f} Punkte/Jahr × {profil.jahre_bis_rente} Jahre.".replace(".", ","),
         )
+        if _row_dash:
+            _d_vors, _d_vors_help = _vorsorge_ausz_breakdown(_row_dash)
+            if _d_vors > 0:
+                vc1, vc2, vc3, vc4 = st.columns(4)
+                vc1.metric(
+                    f"Vorsorgeauszahlungen {_sel_j_dash}", f"{_de(_d_vors)} €/Mon.",
+                    help=_d_vors_help,
+                )
 
         # KV/PV-Split berechnen (Eintrittsmonat-Verhältnis auf Jahr-KV anwenden)
         _kv_ratio = _kv_pv_split(profil, ergebnis.kv_monatlich, ergebnis)
@@ -1227,8 +1149,9 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
 
         st.divider()
 
-        with st.expander("🧾 Steuer- & KV-Details", expanded=False):
-            steuern.render_section(profil, ergebnis, _miete_einzel)
+        if not hat_partner:
+            with st.expander("🧾 Steuer- & KV-Details", expanded=False):
+                steuern.render_section(profil, ergebnis, _miete_einzel)
 
         # ── HTML-Export ───────────────────────────────────────────────────────
         with st.expander("📄 Zusammenfassung exportieren", expanded=False):
@@ -1270,17 +1193,15 @@ h2{{color:#1976d2}}</style></head><body>
             )
             st.caption("Die HTML-Datei kann im Browser geöffnet und als PDF gedruckt werden (Strg+P).")
 
-        render_analyse(
-            profil, ergebnis,
-            label=wahl,
-            profil2=profil2 if hat_partner else None,
-            ergebnis2=ergebnis2 if hat_partner else None,
-            veranlagung=veranlagung,
-            mieteinnahmen=_miete_einzel,
-            rc=_rc,
-        )
+        if not hat_partner:
+            render_analyse(
+                profil, ergebnis,
+                label=wahl,
+                mieteinnahmen=_miete_einzel,
+                rc=_rc,
+            )
 
-        st.caption(
-            "⚠️ Alle Angaben sind Simulationswerte auf Basis vereinfachter Annahmen. "
-            "Keine Steuer- oder Anlageberatung."
-        )
+            st.caption(
+                "⚠️ Alle Angaben sind Simulationswerte auf Basis vereinfachter Annahmen. "
+                "Keine Steuer- oder Anlageberatung."
+            )

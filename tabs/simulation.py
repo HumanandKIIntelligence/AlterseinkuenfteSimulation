@@ -11,6 +11,7 @@ from engine import (
     berechne_haushalt, berechne_rente, kapitalwachstum,
     simuliere_szenarien, _netto_ueber_horizont,
 )
+from tabs.utils import render_zeitstrahl
 
 _FARBEN = {
     "Pessimistisch": "#F44336",
@@ -74,10 +75,10 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
         _end_sim = _start_ret + 30
         _g_sim = 0.0 if profil.ist_pensionaer or profil.bereits_rentner else profil.aktuelles_brutto_monatlich
         _start_slider_sim = AKTUELLES_JAHR if _g_sim > 0 else _start_ret
-        betrachtungsjahr = st.slider(
-            "Betrachtungsjahr", _start_slider_sim, _end_sim,
-            min(_end_sim, max(_start_slider_sim, _start_ret)), key=f"rc{_rc}_sim_jahr",
-            help="Zeigt projizierte Werte mit Rentenanpassung für das gewählte Jahr.",
+        betrachtungsjahr = render_zeitstrahl(
+            _rc, _start_slider_sim, _end_sim,
+            min(_end_sim, max(_start_slider_sim, _start_ret)), "_sim",
+            help_text="Zeigt projizierte Werte mit Rentenanpassung für das gewählte Jahr.",
         )
 
         # ── Genaue Jahressimulation je Szenario ──────────────────────────────
@@ -92,11 +93,16 @@ def render(T: dict, profil: Profil, ergebnis: RentenErgebnis,
             _entsch = []
             for d in st.session_state.get("vp_produkte", []):
                 d = _vm(d)
+                if person is not None and d.get("person", "Person 1") != person:
+                    continue
                 if d.get("als_kapitalanlage", False):
+                    if float(d.get("max_einmalzahlung", 0.0)) > 0:
+                        try:
+                            _entsch.append((_vd(d), int(d.get("fruehestes_startjahr", AKTUELLES_JAHR + 5)), 1.0))
+                        except Exception:
+                            pass
                     continue
                 if float(d.get("max_monatsrente", 0.0)) <= 0:
-                    continue
-                if person is not None and d.get("person", "Person 1") != person:
                     continue
                 try:
                     _entsch.append((_vd(d), int(d.get("fruehestes_startjahr", AKTUELLES_JAHR + 5)), 0.0))

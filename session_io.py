@@ -24,6 +24,7 @@ def save_session(
     eo_hvp_sels: dict | None = None,
     pool_topup_withdrawals: dict | None = None,
     vp_sels: dict | None = None,
+    fixausgaben: list | None = None,
 ) -> str:
     os.makedirs(DATA_DIR, exist_ok=True)
     safe = "".join(c for c in name if c.isalnum() or c in "-_")
@@ -40,6 +41,7 @@ def save_session(
         "eo_hvp_sels": eo_hvp_sels or {},
         "pool_topup_withdrawals": {str(k): v for k, v in (pool_topup_withdrawals or {}).items()},
         "vp_sels": vp_sels or {},
+        "fixausgaben": fixausgaben or [],
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

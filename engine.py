@@ -1383,7 +1383,7 @@ def _netto_ueber_horizont(
                 kap_net_inj_per_prod[_pid] = _net_inj
                 kap_net_inj_j += _net_inj
             netto -= kap_net_inj_j
-            brutto -= kap_injection_gross_j
+            # brutto intentionally kept high: injection visible in Brutto & Vorsorgeauszahlungen
         # Pool-Update je Produkt: Entnahme + Rendite + Einzahlung
         _all_pids = set(list(_kap_pools.keys()) + list(kap_net_inj_per_prod.keys()))
         for _pid in _all_pids:
@@ -1449,7 +1449,8 @@ def _netto_ueber_horizont(
                                       + p2_bav_lfd_j + p2_riester_j + p2_ruerup_brutto_j + p2_priv_brutto_j),
             "Src_Einmal":       round(einmal_brutto_j + etf_brutto_j
                                       + p2_einmal_brutto_j + p2_etf_brutto_j
-                                      - kap_injection_gross_j),  # Kapitalanlage-Einzahlung ausblenden
+                                      - kap_injection_gross_j),  # nur nicht-Pool Einmalauszahlungen
+            "Src_KapInjektion": round(kap_injection_gross_j),    # Pool-Einzahlungs-Brutto im Injektionsjahr
             "Src_Kapitalverzehr": round(kap_verzehr_j),
             "Kap_Pool":           round(sum(_kap_pools.values())),
             # Per-Pool-Einträge für individuelle Diagramme
