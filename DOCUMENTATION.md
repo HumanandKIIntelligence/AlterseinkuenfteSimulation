@@ -166,6 +166,8 @@ Zeigt den Effekt verschiedener Renteneintrittsalter (60–70) auf Nettorente und
 | Jährl. Beitrag (€/Jahr) | Laufender Jahresbeitrag ab heute bis Startjahr |
 | Dynamik p.a. (%) | Jährliche Beitragssteigerung |
 | Beitragsbefreiung ab Jahr | BU-Schutz: ab diesem Jahr entfällt der Beitrag; Leistungen werden als Einzahlungen behandelt |
+| Frühestmögl. Startmonat | Monat (1–12) in dem die Auszahlung im frühestmöglichen Startjahr beginnt. Das erste Auszahlungsjahr wird anteilig berechnet: `(13 − Startmonat) / 12`. Default: Januar (1). |
+| Spätestmögl. Startmonat | Entsprechend für das spätestmögliche Startjahr. Default: Dezember (12). |
 
 ### Kapitalanlage-Pool
 
@@ -201,6 +203,10 @@ Ziel: Maximierung des durchschnittlichen monatlichen Nettoeinkommens über den P
 
 **Referenzstrategien** für Vergleich: alle Produkte frühestmöglich monatlich, frühestmöglich einmal, spätestmöglich monatlich, spätestmöglich einmal. Die optimale Strategie ist stets ≥ jeder Referenzstrategie.
 
+### Echtzeit-Propagation in andere Tabs
+
+Änderungen an Auszahlungsart (monatlich/einmal) oder Startjahr in der "Empfehlungen zur Auszahlung"-Tabelle werden sofort in alle anderen Tabs übernommen: Dashboard-Wasserfall, Haushalt-Paarvergleich, Simulations-Jahresverlauf und Vorsorge-Bausteine-Chart spiegeln die gewählte Strategie ohne manuellen Reload.
+
 ### Steuer- und KV-Verlauf
 
 Gestapeltes Balkendiagramm mit drei Komponenten:
@@ -216,11 +222,15 @@ Zeigt das Sparkapital (aus dem Profil) als sich über die Zeit entwickelnde Lini
 
 ### Empfehlungen Kapital-Entnahmen
 
-Tabelle mit Jahreszeilen: Frei verfügbares Einkommen, Mindesthaushalt, Abweichung. Manuelle Pool-Entnahmen können direkt eingetragen werden.
+Tabelle mit Jahreszeilen: Frei verfügbares Einkommen, Mindesthaushalt, Abweichung, Pool-Bestand. Manuelle Pool-Entnahmen können direkt eingetragen werden.
 
 **Ampeln in der Abweichungs-Spalte:**
-- 🟢 Mindesthaushalt erreicht oder überschritten
-- 🔴 Einkommen unter Mindesthaushalt (auch nach Pool-Entnahme)
+- 🟢 Mindesthaushalt erreicht oder überschritten (`Abweichung ≥ 0`)
+- 🔴 Einkommen unter Mindesthaushalt, auch nach manueller Pool-Entnahme (`Abweichung < 0`)
+
+Die Abweichung berechnet sich als: `Netto − automatische Annuität − Hypothekenrate − Mindesthaushalt + manuelle Entnahme`. Ein Wert von 0 entspricht exakt dem Mindesthaushalt.
+
+**Pool-Bestand (€):** Zeigt den Gesamtbestand aller Kapitalanlage-Pools (Vorsorgeprodukte mit "Als Kapitalanlage reinvestieren") **plus** das Sparkapital aus dem Profil. Das Sparkapital wird vor Renteneintritt mit Sparrate und Rendite angesammelt, ab Renteneintritt als Annuität (`kapital_monatlich` aus `berechne_rente()`) verzehrt.
 
 ### Jahresverlauf
 
@@ -247,7 +257,8 @@ Eingabe von Hypothekendaten mit Validierung:
 | Darlehensbetrag (€) | Restschuld bei Simulationsstart oder Neudarlehen |
 | Jahresrate (€) | Jährliche Rückzahlungsrate (Tilgung + Zinsen) |
 | Zinssatz p.a. (%) | Nominalzins |
-| Startjahr / Endjahr | Laufzeit des Tilgungsplans |
+| Startjahr / Startmonat | Beginn des Tilgungsplans; das Startjahr wird anteilig berechnet: `(13 − Startmonat) / 12` |
+| Endjahr / Endmonat | Ende des Tilgungsplans; das Endjahr wird anteilig berechnet: `Endmonat / 12` |
 | Raten in Simulation | Laufende Jahresraten in den Ausgaben-Plan einbeziehen (sichtbar im Jahresverlauf) |
 | Restschuld-Behandlung | Keine / Als Kapitalanlage (Pool) / Als Ratenkredit nach Endjahr |
 

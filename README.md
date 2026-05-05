@@ -15,7 +15,8 @@ Eine interaktive Web-App zur Simulation und Optimierung des Renteneinkommens. Be
 - **Szenarien** – Pessimistisch / Neutral / Optimistisch mit exakter Jahres-Simulation je Szenario
 - **Entnahme-Optimierung** – Suche über alle Startjahr × Auszahlungsart-Kombinationen; 5-Säulen-Strategievergleich (frühest/spätestens × monatlich/einmal, optimal); Kapitalverzehr-Kalkulator
 - **Multi-Pool-Kapitalanlage** – Jede Einmalauszahlung wahlweise als eigener reinvestierter Kapitalanlage-Pool; produktspezifische Rendite; Annuitätenverzehr mit Abgeltungsteuer auf Gewinne; separater Pool-Verlauf-Chart
-- **Hypothek-Verwaltung** – Tilgungsplan mit Restschuld-Behandlung (als Kapitalanlage oder Ratenkredit); optionale Einbindung laufender Raten in die Simulation
+- **Hypothek-Verwaltung** – Tilgungsplan mit Start-/Endmonat-Proration, Restschuld-Behandlung (als Kapitalanlage oder Ratenkredit); optionale Einbindung laufender Raten in die Simulation
+- **Echtzeit-Selektionspropagation** – Änderungen an Auszahlungsart/-startjahr in der Entnahme-Optimierung werden sofort in Dashboard, Haushalt, Simulation und Vorsorge-Bausteine übernommen
 - **Dynamische Einzahlungsfelder** – je Vorsorgebaustein: Einmaleinzahlungen, jährl. Beitrag, Dynamik %, Beitragsbefreiungsjahr; auto-berechnete Kostenbasis bis Startjahr
 - **Mieteinnahmen** – §21 EStG; jährliche Steigerung konfigurierbar
 - **DUV / BUV** – Dienstunfähigkeits- und Berufsunfähigkeitsversicherung mit Ertragsanteil-Besteuerung
@@ -77,7 +78,7 @@ docker compose logs -f
 docker exec altereinkuenfte-app python -m pytest tests/ -v
 ```
 
-Alle Berechnungslogiken in `engine.py` sind durch Unit-Tests abgedeckt (304 Tests).
+Alle Berechnungslogiken in `engine.py` sind durch Unit-Tests abgedeckt (348 Tests).
 
 ## Projektstruktur
 
@@ -92,11 +93,12 @@ tabs/
   vorsorge.py       – Vertragserfassung, Steueroptimierung
   hypothek.py       – Hypothek-Verwaltung, Tilgungsplan, Ausgabenplan
   entnahme_opt.py   – Auszahlungsoptimierung, Jahresverlauf, Pool-Verlauf
+  utils.py          – Gemeinsame Hilfsfunktionen (_actual_startjahr, _actual_anteil)
   auszahlung.py     – Kapitalverzehr-Kalkulator
   steuern.py        – Steuer & KV-Detailansicht
   dokumentation.py  – Statische Dokumentationsseite
 tests/
-  test_engine.py    – Unit-Tests (336 Tests)
+  test_engine.py    – Unit-Tests (348 Tests)
 data/               – Gespeicherte Profile (JSON)
 ```
 

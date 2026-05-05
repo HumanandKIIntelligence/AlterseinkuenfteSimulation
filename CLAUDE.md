@@ -122,7 +122,8 @@ Profil-Tab (app.py) + Mieteinnahmen
 | `tabs/haushalt.py` | Paarvergleich, Splitting-Vorteil, Szenario-Tabelle (nur bei Partner) |
 | `tabs/vorsorge.py` | Vertragserfassung (bAV/Riester/Rürup/LV/ETF), Steueroptimierung; Netto/Steuer/KV-Balken via `_df_sel` (user-Selektion); geteilter data_editor (mono+einmal vs. nur eine Option) |
 | `tabs/hypothek.py` | `render_section()`: Hypothek-Eingabe, Tilgungsplan, `get_ausgaben_plan()`, `_validate_hyp()` |
-| `tabs/entnahme_opt.py` | Steuer-Steckbrief, Auszahlungsoptimierung, Jahresverlauf, Pool-Verlauf, Kapitalverzehr-Expander; Sparkapital nur in Kapital-Zeitleiste (kein synthetisches VorsorgeProdukt) |
+| `tabs/entnahme_opt.py` | Steuer-Steckbrief, Auszahlungsoptimierung, Jahresverlauf, Pool-Verlauf, Kapitalverzehr-Expander; Sparkapital nur in Kapital-Zeitleiste (kein synthetisches VorsorgeProdukt); synct `hvp_sels` → `vp_sels` bei Änderungen |
+| `tabs/utils.py` | Gemeinsame Hilfsfunktionen: `_actual_startjahr(vp)`, `_actual_anteil(vp)` – lesen aus `rc{_rc}_vp_sels` für cross-Tab-konsistente Selektionswerte |
 | `tabs/dokumentation.py` | Statische Erläuterungsseite |
 
 ### engine.py – wichtige Funktionen
@@ -297,6 +298,8 @@ netto -= vorsorge_beitraege_j
 - **`riester_kinder_zulage`** (int, default 0): Anzahl Kinder, geboren ab 01.01.2008 → 300 €/Kind/Jahr (§85 Abs. 1 S. 2 EStG).
 - **`riester_kinder_zulage_alt`** (int, default 0): Anzahl Kinder, geboren vor 01.01.2008 → 185 €/Kind/Jahr (§85 Abs. 1 S. 1 EStG).
 - **`bav_ag_zuschuss`** (bool, default False): AG-Pflichtzuschuss 15 % (§1a Abs. 1a BetrAVG ab 2022). Effektive Einzahlung = `beitrag × 1,15`. Nur für aktive Einzahlungsjahre.
+- **`fruehestes_startmonat`** (int, default 1): Startmonat (1–12) wenn Auszahlung im `fruehestes_startjahr` beginnt. Proration des ersten Jahres: `_ausz_fak = (13 − startmonat) / 12`. UI: Selectbox Monat neben Startjahr-Selectbox in vorsorge.py.
+- **`spaetestes_startmonat`** (int, default 12): Startmonat (1–12) wenn Auszahlung im `spaetestes_startjahr` beginnt. Gleiche Proration wie oben.
 
 `einzahlungen_effektiv(startjahr: int) -> float`: Methode auf VorsorgeProdukt. Berechnet Gesamteinzahlungen bis `startjahr`. Fallback auf `einzahlungen_gesamt` wenn `jaehrl_einzahlung==0`. Riester-Zulagen und bAV-AG-Zuschuss enden bei `fruehestes_startjahr` (Renteneintrittsjahr).
 
@@ -425,16 +428,35 @@ Der erste Balken im Chart heißt **"ESt + Soli"** und verwendet `df_jd["Steuer"]
 ## Abweichungs-Ampeln im Entnahmen-Expander (entnahme_opt.py)
 
 Die "Abweichung"-Spalte in der Entnahmen-Empfehlungs-Tabelle zeigt:
-- 🔴 wenn `_abw_val < _mindest_j_topup` (verfügbares Einkommen unter Mindesthaushalt)
-- 🟢 wenn `_abw_val >= _mindest_j_topup` (Mindesthaushalt erreicht oder überschritten)
+- 🔴 wenn `_abw_val < 0` (Mindesthaushalt nicht gedeckt)
+- 🟢 wenn `_abw_val >= 0` (Mindesthaushalt erreicht oder überschritten)
 
 `_abw_val = round(_base_netto_eo + _manual_w_eo)` wobei `_base_netto_eo = Netto - auto_annuity - hyp_rate - Mindesthaushalt`.
+Da `_base_netto_eo` den Mindesthaushalt bereits abzieht, entspricht `_abw_val = 0` genau dem Mindesthaushalt. Positiver Wert = Überschuss über Mindesthaushalt.
+
+**Pool-Bestand (€):** Enthält die Summe aus Vorsorge-Kapitalanlage-Pool (`Kap_Injektion`-getrieben) **und** dem Sparkapital aus dem Profil (`kapital_bei_renteneintritt`, abgebaut mit `kapital_monatlich`-Annuität). Formel analog zu `_p1_kap()` in der Kapital-Zeitleiste.
 
 ## vorsorge.py – Netto/Steuer/KV aus Nutzer-Selektion
 
 Netto/Steuer/KV-Balken im "Optimale Strategie"-Chart verwenden `_df_sel` (Ergebnis eines eigenen `_netto_ueber_horizont`-Aufrufs mit den aktuellen `_curr_sels`-Entscheidungen des Nutzers), nicht `_df_opt` des Optimierers. So spiegeln alle drei Balken die tatsächlich gewählte Auszahlungsart wider.
 
 `_entsch_anteil(prod)` in `entnahme_opt.py` bestimmt den `anteil` (0.0 = mono, 1.0 = einmal) für Produkte ohne Tabelleneintrag: mono wenn `max_monatsrente > 0`, einmal sonst.
+
+## Cross-Tab-Selektionssynchronisation (entnahme_opt.py → alle Tabs)
+
+`entnahme_opt.py` verwendet `rc{_rc}_hvp_sels` (Name-Schlüssel: `"Produktname (typ)"`) für die "Empfehlungen zur Auszahlung"-Tabelle. Alle anderen Tabs (dashboard, haushalt, simulation, vorsorge) lesen aus `rc{_rc}_vp_sels` (ID-Schlüssel: `prod.id`). Bei jeder Änderung in der Empfehlungs-Tabelle werden beide Stores synchronisiert:
+
+```python
+_vp_sels_upd = dict(st.session_state.get(f"rc{_rc}_vp_sels", {}))
+for _pn_s, _sv_s in _new_sels.items():
+    _prod_s = _ev_name_map.get(_pn_s)  # Name → VorsorgeProdukt
+    if _prod_s is not None and _sv_s is not None:
+        _vp_sels_upd[_prod_s.id] = _sv_s
+st.session_state[f"rc{_rc}_vp_sels"] = _vp_sels_upd
+st.rerun()
+```
+
+`tabs/utils.py` stellt `_actual_startjahr(vp)` und `_actual_anteil(vp)` bereit, die aus `rc{_rc}_vp_sels` lesen und in dashboard.py, haushalt.py und simulation.py identisch verwendet werden. Damit spiegeln Dashboard-Wasserfall, Haushalt-Charts und Simulations-Jahresverlauf stets die aktuelle Nutzer-Selektion aus der Entnahme-Empfehlungs-Tabelle.
 
 ## Widget-Key-Namensraum
 
@@ -450,11 +472,15 @@ Nicht-Pensionäre und nicht bereits-Rentner erhalten eine Warnung wenn `rentenei
 
 `get_ausgaben_plan() -> dict[int, float]`: Erzeugt den Ausgabenplan aus session_state. Gibt leeres Dict zurück wenn Hypothek nicht aktiv.
 
+`get_ausgaben_plan_optimierung() -> dict[int, float]`: Ausgabenplan für Entnahme-Optimierung; enthält ggf. Ratenkredit-Anschlussraten ab `endjahr+1` (bzw. `endjahr` wenn endmonat < 12).
+
 `get_restschuld_end() -> float`: Restschuld am Ende des Tilgungsplans.
 
-`get_hyp_schedule() -> list[dict]`: Tilgungsplan als Jahresliste.
+`get_hyp_schedule() -> list[dict]`: Tilgungsplan als Jahresliste. **Proration:** Startjahr anteilig `(13 − startmonat) / 12`, Endjahr anteilig `endmonat / 12`. Bei startjahr == endjahr: `(endmonat − startmonat + 1) / 12`.
 
 Validierungsregeln: `endjahr > startjahr`, `betrag > 0`, `rate > 0`, `rate <= betrag`.
+
+**Hypothek-Felder in session_state:** `startjahr`, `endjahr`, `startmonat` (1–12, default 1), `endmonat` (1–12, default 12), `betrag`, `jaehrl_rate`, `zinssatz`, `behandlung` (`"keine"` / `"kapitalanlage"` / `"ratenkredit"`), `raten_in_simulation` (bool).
 
 ## Bekannte Vereinfachungen
 
