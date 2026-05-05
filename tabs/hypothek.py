@@ -69,8 +69,9 @@ def _annuitaet_rate(kapital: float, zins_pa: float, laufzeit_jahre: int) -> floa
 def get_hyp_schedule() -> list[dict]:
     """Tilgungsplan als Liste von Dicts. Leer wenn nicht konfiguriert.
 
-    Das Endjahr ist inklusive und wird anhand des Endmonats anteilig berechnet:
-    Jahresrate und Zinsen werden mit endmonat/12 gewichtet.
+    Startjahr: anteilig ab startmonat → (13 - startmonat) / 12
+    Endjahr:   anteilig bis endmonat  → endmonat / 12
+    Startjahr == Endjahr: (endmonat - startmonat + 1) / 12
     """
     d = st.session_state.get("hyp_daten", {})
     if not d.get("aktiv", False):
@@ -80,6 +81,7 @@ def get_hyp_schedule() -> list[dict]:
     jaehrl_rate = float(d.get("jaehrl_rate", 0.0))
     zins_pa = float(d.get("zins_pa", 0.0))
     startjahr = int(d.get("startjahr", AKTUELLES_JAHR))
+    startmonat = int(d.get("startmonat", 1))
     endjahr = int(d.get("endjahr", AKTUELLES_JAHR + 20))
     endmonat = int(d.get("endmonat", 12))
     sondertilgungen_raw = d.get("sondertilgungen", [])
@@ -89,8 +91,14 @@ def get_hyp_schedule() -> list[dict]:
     for jahr in range(startjahr, endjahr + 1):  # endjahr inklusive
         if restschuld <= 0.0:
             break
-        # Im Endjahr nur die Monate 1..endmonat berücksichtigen
-        anteil = endmonat / 12 if jahr == endjahr else 1.0
+        if jahr == startjahr and jahr == endjahr:
+            anteil = max(0.0, endmonat - startmonat + 1) / 12
+        elif jahr == startjahr:
+            anteil = (13 - startmonat) / 12
+        elif jahr == endjahr:
+            anteil = endmonat / 12
+        else:
+            anteil = 1.0
         restschuld_anfang = restschuld
         zinsen = restschuld_anfang * zins_pa * anteil
         jahresrate = jaehrl_rate * anteil
